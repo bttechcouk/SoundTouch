@@ -1466,6 +1466,105 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"ok":False,"error":"no_device"})
 
+        # ── zone helpers for Matter / Alexa ───────────────────────────────────
+
+        elif path == "/api/zone/party":
+            # Join ALL speakers into one zone. The currently-playing speaker
+            # becomes master; if none is playing, use the first speaker.
+            devices = list(self.server_state.devices)
+            if len(devices) < 2:
+                self._json({"ok": False, "error": "need_two_speakers"})
+            else:
+                master = None
+                for d in devices:
+                    try:
+                        st = d.state()
+                        if st.get("playStatus") not in ("STOP_STATE", None, ""):
+                            master = d; break
+                    except Exception:
+                        pass
+                if master is None:
+                    master = devices[0]
+                slaves = [d for d in devices if d is not master]
+                master.set_zone(slaves)
+                log.info(f"[ZONE] Party mode — master={master.host} "
+                         f"slaves={[d.host for d in slaves]}")
+                self._json({"ok": True, "master": master.host,
+                            "slaves": [d.host for d in slaves]})
+
+        elif path == "/api/zone/dissolve-all":
+            # Dissolve every active zone across all speakers.
+            devices = list(self.server_state.devices)
+            dissolved = []
+            for d in devices:
+                try:
+                    zinfo = d.get_zone()
+                    if zinfo.get("is_master"):
+                        d.remove_zone()
+                        dissolved.append(d.host)
+                except Exception:
+                    pass
+            log.info(f"[ZONE] Dissolved zones on: {dissolved}")
+            self._json({"ok": True, "dissolved": dissolved})
+
+        elif path == "/api/zone/join":
+            # Add a specific speaker to the current zone. If no zone exists,
+            # the currently-playing speaker becomes master with host as slave.
+            host    = qs.get("host", [None])[0]
+            target  = self.server_state.get_device(host)
+            if not target:
+                self._json({"ok": False, "error": "no_device"}); return
+
+            devices = list(self.server_state.devices)
+            # Find existing zone master
+            master = None
+            existing_slaves = []
+            for d in devices:
+                try:
+                    zinfo = d.get_zone()
+                    if zinfo.get("is_master"):
+                        master = d
+                        existing_slaves = [
+                            self.server_state.get_device(m["ip"])
+                            for m in zinfo.get("members", [])
+                            if m["ip"] != d.host
+                        ]
+                        existing_slaves = [s for s in existing_slaves if s]
+                        break
+                except Exception:
+                    pass
+
+            if master is None:
+                # No existing zone — find a playing speaker to be master
+                for d in devices:
+                    if d is target:
+                        continue
+                    try:
+                        st = d.state()
+                        if st.get("playStatus") not in ("STOP_STATE", None, ""):
+                            master = d; break
+                    except Exception:
+                        pass
+                if master is None:
+                    # Fall back to first speaker that isn't the target
+                    others = [d for d in devices if d is not target]
+                    master = others[0] if others else None
+
+            if master is None:
+                self._json({"ok": False, "error": "no_master_found"})
+            elif target.host == master.host:
+                self._json({"ok": False, "error": "target_is_master"})
+            else:
+                # Add target to slaves if not already present
+                slave_hosts = {d.host for d in existing_slaves}
+                if target.host not in slave_hosts:
+                    existing_slaves.append(target)
+                master.set_zone(existing_slaves)
+                log.info(f"[ZONE] Join — master={master.host} "
+                         f"slaves={[d.host for d in existing_slaves]}")
+                self._json({"ok": True, "master": master.host,
+                            "slaves": [d.host for d in existing_slaves]})
+
         # ── station descriptor (fetched by the speaker itself) ────────────────
         elif path.startswith("/api/station-desc/"):
             sid = path.split("/")[-1]
