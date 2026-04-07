@@ -162,8 +162,10 @@ class SoundTouchDevice:
         # now playing
         np = self._get("/now_playing")
         if np is not None:
-            d["source"]  = np.get("source","")
-            d["playing"] = np.get("playStatus","") == "PLAY_STATE"
+            d["source"]     = np.get("source","")
+            play_status     = np.get("playStatus") or np.findtext("playStatus") or ""
+            d["playing"]    = play_status in ("PLAY_STATE", "BUFFERING_STATE")
+            d["playStatus"] = play_status
             for tag, key in [("track","track"),("artist","artist"),
                               ("album","album"),("stationName","track"),("art","art")]:
                 el = np.find(tag)
