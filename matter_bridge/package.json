@@ -1,0 +1,11 @@
+{
+  "name": "soundtouch-matter-bridge",
+  "version": "1.0.0",
+  "description": "Matter bridge exposing SoundTouch presets as smart-home devices",
+  "type": "module",
+  "main": "matter_bridge.js",
+  "scripts": { "start": "node matter_bridge.js" },
+  "dependencies": {
+    "@project-chip/matter-node.js": "0.7.5"
+  }
+}

@@ -1,0 +1,16 @@
+[Unit]
+Description=SoundTouch Matter Bridge (Alexa smart home)
+After=network.target soundtouch.service
+Wants=soundtouch.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/bturner/Projects/SoundTouch/matter_bridge
+ExecStart=/usr/bin/node matter_bridge.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

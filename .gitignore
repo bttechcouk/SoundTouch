@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+soundtouch.log*
+data/presets/
+data/stations/
+matter_bridge/data/
+matter_bridge/node_modules/
+.claude/
