@@ -1016,52 +1016,84 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   <div id="page-settings" class="page">
     <div class="manage-section">
 
-      <h2>Speaker Details</h2>
-      <div id="speaker-info">
-        <p style="font-size:12px;color:var(--fg3)">Select a speaker to view its details.</p>
-      </div>
-
-      <h2 style="margin-top:22px">Preset Backup</h2>
-      <p style="font-size:12px;color:var(--fg3);margin-bottom:10px">
-        Back up all speakers in one click. Speakers with no backup show ⚠ on their chip.
-        Critical before the Bose cloud shuts down on 6 May 2026.
-      </p>
-      <button class="mc-btn primary" onclick="backupAll()">Backup All Speakers</button>
-      <span id="backup-all-status" style="font-size:12px;color:var(--fg3);margin-left:10px"></span>
-
-      <h2 style="margin-top:22px">Discover Speakers</h2>
-      <p style="font-size:12px;color:var(--fg3);margin-bottom:10px">
-        Scan the local network to find all SoundTouch speakers.
-      </p>
-      <button id="scan-btn" onclick="rescan()">Scan for Speakers</button>
-
-      <h2 style="margin-top:22px">Alexa Integration</h2>
-      <div class="alexa-hint">
-        <strong>How it works:</strong> A separate Matter bridge process runs alongside
-        this app, exposing each speaker preset and power toggle as a Matter On/Off
-        device — <strong>no cloud, no account linking.</strong><br><br>
-        <strong>Step 1 —</strong> Scan for speakers above<br>
-        <strong>Step 2 —</strong> Commission the Matter bridge once in the Alexa app:<br>
-        &nbsp;&nbsp;Add Device → Other → Matter → expand panel below and scan QR<br>
-        <strong>Step 3 —</strong> Use phrases like:<br>
-        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on KISSTORY in Kitchen Bose</span><br>
-        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on Kitchen Bose power</span><br>
-        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, set Kitchen Bose volume to 40%</span><br><br>
-        <strong>Bridge logs:</strong>
-        <span class="alexa-phrase">journalctl --user -u soundtouch-matter -f</span>
-      </div>
-
-      <div class="qr-section" style="margin-top:12px">
-        <div class="qr-collapse-hdr" onclick="toggleQR()">
-          <span class="title">Commission Matter Bridge</span>
-          <span id="qr-status-badge" class="qr-collapse-badge warn">checking…</span>
-          <span id="qr-chevron" class="qr-chevron">&#9660;</span>
+      <!-- Discover Speakers -->
+      <div class="qr-section" style="margin-top:0">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-discover','chev-discover')">
+          <span class="title">Discover Speakers</span>
+          <span id="chev-discover" class="qr-chevron">&#9660;</span>
         </div>
-        <div id="qr-body" class="qr-body" style="display:none">
-          <div id="qr-box" class="qr-box">Loading…</div>
-          <div id="qr-manual" class="qr-manual"></div>
-          <div id="qr-status" class="qr-status" style="margin-top:8px"></div>
-          <button class="qr-refresh" onclick="loadAlexaQR()">Refresh</button>
+        <div id="sec-discover" class="qr-body" style="display:none">
+          <p style="font-size:12px;color:var(--fg3);margin-bottom:10px">
+            Scan the local network to find all SoundTouch speakers.
+          </p>
+          <button id="scan-btn" onclick="rescan()">Scan for Speakers</button>
+        </div>
+      </div>
+
+      <!-- Speaker Details -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-speaker','chev-speaker')">
+          <span class="title">Speaker Details</span>
+          <span id="chev-speaker" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-speaker" class="qr-body" style="display:none">
+          <div id="speaker-info">
+            <p style="font-size:12px;color:var(--fg3)">Select a speaker to view its details.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Preset Backup -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-backup','chev-backup')">
+          <span class="title">Preset Backup</span>
+          <span id="chev-backup" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-backup" class="qr-body" style="display:none">
+          <p style="font-size:12px;color:var(--fg3);margin-bottom:10px">
+            Back up all speakers in one click. Speakers with no backup show ⚠ on their chip.
+            Critical before the Bose cloud shuts down on 6 May 2026.
+          </p>
+          <button class="mc-btn primary" onclick="backupAll()">Backup All Speakers</button>
+          <span id="backup-all-status" style="font-size:12px;color:var(--fg3);margin-left:10px"></span>
+        </div>
+      </div>
+
+      <!-- Alexa Integration -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-alexa','chev-alexa')">
+          <span class="title">Alexa Integration</span>
+          <span id="chev-alexa" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-alexa" class="qr-body" style="display:none">
+          <div class="alexa-hint">
+            <strong>How it works:</strong> A separate Matter bridge process runs alongside
+            this app, exposing each speaker preset and power toggle as a Matter On/Off
+            device — <strong>no cloud, no account linking.</strong><br><br>
+            <strong>Step 1 —</strong> Scan for speakers above<br>
+            <strong>Step 2 —</strong> Commission the Matter bridge once in the Alexa app:<br>
+            &nbsp;&nbsp;Add Device → Other → Matter → expand panel below and scan QR<br>
+            <strong>Step 3 —</strong> Use phrases like:<br>
+            &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on KISSTORY in Kitchen Bose</span><br>
+            &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on Kitchen Bose power</span><br>
+            &nbsp;&nbsp;<span class="alexa-phrase">Alexa, set Kitchen Bose volume to 40%</span><br><br>
+            <strong>Bridge logs:</strong>
+            <span class="alexa-phrase">journalctl --user -u soundtouch-matter -f</span>
+          </div>
+
+          <div class="qr-section" style="margin-top:12px">
+            <div class="qr-collapse-hdr" onclick="toggleQR()">
+              <span class="title">Commission Matter Bridge</span>
+              <span id="qr-status-badge" class="qr-collapse-badge warn">checking…</span>
+              <span id="qr-chevron" class="qr-chevron">&#9660;</span>
+            </div>
+            <div id="qr-body" class="qr-body" style="display:none">
+              <div id="qr-box" class="qr-box">Loading…</div>
+              <div id="qr-manual" class="qr-manual"></div>
+              <div id="qr-status" class="qr-status" style="margin-top:8px"></div>
+              <button class="qr-refresh" onclick="loadAlexaQR()">Refresh</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1138,7 +1170,7 @@ function switchTab(name) {
     p.classList.toggle('visible', p.id === 'page-' + name));
   if (name === 'manage')   { loadStations(); loadBackupInfo(); }
   if (name === 'groups')   { loadGroups(); }
-  if (name === 'settings') { loadSpeakerInfo(); loadAlexaQR(); }
+  if (name === 'settings') { /* sections load on expand */ }
   localStorage.setItem('activeTab', name);
 }
 
@@ -1176,7 +1208,10 @@ function setActive(h) {
   const tab = document.querySelector('.tab.active')?.dataset?.tab;
   if (tab === 'manage')   loadBackupInfo();
   if (tab === 'groups')   loadGroups();
-  if (tab === 'settings') loadSpeakerInfo();
+  if (tab === 'settings') {
+    const sec = document.getElementById('sec-speaker');
+    if (sec && sec.style.display !== 'none') loadSpeakerInfo();
+  }
 }
 
 // ── Polling ──────────────────────────────────────────────────────────────────
@@ -1670,6 +1705,15 @@ async function loadAlexaQR() {
     if (status){ status.textContent = 'systemctl --user start soundtouch-matter';
                  status.style.color = 'var(--fg3)'; }
   }
+}
+function toggleSection(bodyId, chevronId) {
+  const body    = document.getElementById(bodyId);
+  const chevron = document.getElementById(chevronId);
+  const opening = body.style.display === 'none';
+  body.style.display = opening ? 'block' : 'none';
+  if (chevron) chevron.classList.toggle('open', opening);
+  if (opening && bodyId === 'sec-speaker') loadSpeakerInfo();
+  if (opening && bodyId === 'sec-alexa')   loadAlexaQR();
 }
 function toggleQR() {
   const body    = document.getElementById('qr-body');
