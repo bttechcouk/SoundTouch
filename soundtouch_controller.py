@@ -619,6 +619,9 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 /* Volume */
 #vol-row{padding:12px 4px 0;display:flex;align-items:center;gap:10px}
 .vol-icon{color:var(--fg3);font-size:15px;flex-shrink:0}
+.vol-btn{cursor:pointer;user-select:none;transition:color .15s}
+.vol-btn:hover{color:var(--fg1)}
+.vol-btn:active{color:var(--blue-light)}
 #vol-slider{flex:1;height:4px;-webkit-appearance:none;appearance:none;
   border-radius:2px;outline:none;cursor:pointer;
   background:linear-gradient(to right,var(--blue) var(--pct,20%),var(--surface2) var(--pct,20%))}
@@ -825,11 +828,11 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
     </div>
 
     <div id="vol-row">
-      <span class="vol-icon">&#128264;</span>
+      <span class="vol-icon vol-btn" onclick="nudgeVol(-1)">&#128264;</span>
       <input type="range" id="vol-slider" min="0" max="100" value="20"
              oninput="onVolInput(this.value)" onchange="sendVol(this.value)">
       <span id="vol-value">20</span>
-      <span class="vol-icon">&#128266;</span>
+      <span class="vol-icon vol-btn" onclick="nudgeVol(1)">&#128266;</span>
     </div>
 
     <div id="transport">
@@ -1080,6 +1083,11 @@ let volD=null;
 function sendVol(v) { clearTimeout(volD); volD=setTimeout(()=>{
   if (activeHost) fetch(`/api/cmd?host=${activeHost}&action=volume&value=${v}`);
 }, 200); }
+function nudgeVol(delta) {
+  const s = document.getElementById('vol-slider');
+  const v = Math.min(100, Math.max(0, parseInt(s.value) + delta));
+  s.value = v; onVolInput(v); sendVol(v);
+}
 
 // ── Commands ─────────────────────────────────────────────────────────────────
 async function cmd(a) {
