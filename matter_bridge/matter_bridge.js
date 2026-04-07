@@ -150,21 +150,21 @@ async function discoverDevices() {
             action: () => apiGet(`/api/cmd?host=${encodeURIComponent(host)}&action=power`),
         });
 
-        // Zone join device — adds this speaker to the current zone
+        // Zone join device — adds this speaker to the current group
         devices.push({
-            label: `Join Zone ${speakerName}`,
-            action: () => apiGet(`/api/zone/join?host=${encodeURIComponent(host)}`),
+            label: `Join Group ${speakerName}`,
+            action: () => apiGet(`/api/group/join?host=${encodeURIComponent(host)}`),
         });
     }
 
     // Global zone devices (one each, not per-speaker)
     devices.push({
         label: "Party Mode",
-        action: () => apiGet("/api/zone/party"),
+        action: () => apiGet("/api/group/party"),
     });
     devices.push({
-        label: "Dissolve Zone",
-        action: () => apiGet("/api/zone/dissolve-all"),
+        label: "Dissolve Group",
+        action: () => apiGet("/api/group/dissolve-all"),
     });
 
     logger.info(`Discovered ${devices.length} Matter devices total`);

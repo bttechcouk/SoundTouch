@@ -236,7 +236,7 @@ class SoundTouchDevice:
         )
         return self._post("/select", xml)
 
-    # ── zone / multi-room ─────────────────────────────────────────────────────
+    # ── group / multi-room ─────────────────────────────────────────────────────
     def get_zone(self):
         """Return zone membership info for this speaker."""
         zx = self._get("/getZone")
@@ -778,7 +778,7 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   <div id="tabs">
     <div class="tab active" data-tab="player" onclick="switchTab('player')">Player</div>
     <div class="tab"        data-tab="manage" onclick="switchTab('manage')">Presets</div>
-    <div class="tab"        data-tab="zones"  onclick="switchTab('zones')">Zones</div>
+    <div class="tab"        data-tab="groups"  onclick="switchTab('groups')">Groups</div>
     <div class="tab"        data-tab="alexa"  onclick="switchTab('alexa')">Alexa</div>
   </div>
 
@@ -853,16 +853,16 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
     </div>
   </div>
 
-  <!-- ═══ PAGE: Zones ═══ -->
-  <div id="page-zones" class="page">
+  <!-- ═══ PAGE: Groups ═══ -->
+  <div id="page-groups" class="page">
     <div class="manage-section">
-      <h2>Multi-Room Zones</h2>
+      <h2>Multi-Room Groups</h2>
       <p style="font-size:12px;color:var(--fg3);margin-bottom:14px">
         Group speakers together so they all play the same audio in sync.
-        The active speaker becomes the zone master.
+        The active speaker becomes the group master.
       </p>
-      <div id="zone-status"></div>
-      <div id="zone-builder"></div>
+      <div id="group-status"></div>
+      <div id="group-builder"></div>
     </div>
   </div>
 
@@ -956,7 +956,7 @@ function switchTab(name) {
   document.querySelectorAll('.page').forEach(p =>
     p.classList.toggle('visible', p.id === 'page-' + name));
   if (name === 'manage') { loadStations(); loadBackupInfo(); }
-  if (name === 'zones')  { loadZones(); }
+  if (name === 'groups')  { loadGroups(); }
 }
 
 // ── Speakers ─────────────────────────────────────────────────────────────────
@@ -1190,41 +1190,41 @@ function closePresets() {
   document.getElementById('preset-toggle').classList.remove('open');
 }
 
-// ── Zones ────────────────────────────────────────────────────────────────────
-async function loadZones() {
+// ── Groups ────────────────────────────────────────────────────────────────────
+async function loadGroups() {
   if (!activeHost) {
-    document.getElementById('zone-status').innerHTML =
+    document.getElementById('group-status').innerHTML =
       '<p style="font-size:12px;color:var(--fg3)">Select a speaker first.</p>';
-    document.getElementById('zone-builder').innerHTML = '';
+    document.getElementById('group-builder').innerHTML = '';
     return;
   }
   let zone;
-  try { zone = await (await fetch('/api/zone?host='+activeHost)).json(); }
+  try { zone = await (await fetch('/api/group?host='+activeHost)).json(); }
   catch(e){ return; }
 
-  const statusEl  = document.getElementById('zone-status');
-  const builderEl = document.getElementById('zone-builder');
+  const statusEl  = document.getElementById('group-status');
+  const builderEl = document.getElementById('group-builder');
 
   // ─ Status card ─────────────────────────────────────────────────────────────
   if (zone.is_master) {
     const count = (zone.members||[]).length;
     statusEl.innerHTML = `<div class="manage-card">
       <div class="mc-left">
-        <div class="mc-name">🔊 Zone Master</div>
+        <div class="mc-name">🔊 Group Master</div>
         <div class="mc-meta">${count} speaker${count!==1?'s':''} grouped</div>
       </div>
       <div class="mc-actions">
-        <button class="mc-btn danger" onclick="dissolveZone()">Dissolve</button>
+        <button class="mc-btn danger" onclick="dissolveGroup()">Dissolve</button>
       </div></div>`;
   } else if (zone.is_slave) {
     statusEl.innerHTML = `<div class="manage-card">
       <div class="mc-left">
-        <div class="mc-name">🔉 Zone Member</div>
+        <div class="mc-name">🔉 Group Member</div>
         <div class="mc-meta">Following master at ${zone.master_ip||'unknown'}</div>
       </div></div>`;
   } else {
     statusEl.innerHTML =
-      '<p style="font-size:12px;color:var(--fg3);margin-bottom:12px">Not in a zone. Add speakers below to create one.</p>';
+      '<p style="font-size:12px;color:var(--fg3);margin-bottom:12px">Not in a group. Add speakers below to create one.</p>';
   }
 
   // Slaves can't be used to add/remove — only the master can
@@ -1244,12 +1244,12 @@ async function loadZones() {
       <div class="manage-card">
         <div class="mc-left">
           <div class="mc-name">${s.name}</div>
-          <div class="mc-meta">${s.host}${memberIPs.has(s.host)?' · In zone':''}</div>
+          <div class="mc-meta">${s.host}${memberIPs.has(s.host)?' · In group':''}</div>
         </div>
         <div class="mc-actions">
           ${memberIPs.has(s.host)
-            ? `<button class="mc-btn danger" onclick="removeFromZone('${s.host}')">Remove</button>`
-            : `<button class="mc-btn primary" onclick="addToZone('${s.host}')">Add</button>`}
+            ? `<button class="mc-btn danger" onclick="removeFromGroup('${s.host}')">Remove</button>`
+            : `<button class="mc-btn primary" onclick="addToGroup('${s.host}')">Add</button>`}
         </div>
       </div>`).join('')}
     <button class="mc-btn primary" onclick="groupAll()"
@@ -1258,41 +1258,41 @@ async function loadZones() {
     </button>`;
 }
 
-async function addToZone(slaveHost) {
+async function addToGroup(slaveHost) {
   if (!activeHost) return;
   let zone;
-  try { zone = await (await fetch('/api/zone?host='+activeHost)).json(); } catch(e){ return; }
+  try { zone = await (await fetch('/api/group?host='+activeHost)).json(); } catch(e){ return; }
   const existing = (zone.members||[]).map(m=>m.ip).filter(ip=>ip!==activeHost);
   if (!existing.includes(slaveHost)) existing.push(slaveHost);
-  await fetch(`/api/zone/create?master=${activeHost}&slaves=${existing.join(',')}`);
-  toast('Zone updated'); setTimeout(loadZones, 700);
+  await fetch(`/api/group/create?master=${activeHost}&slaves=${existing.join(',')}`);
+  toast('Group updated'); setTimeout(loadGroups, 700);
 }
 
-async function removeFromZone(slaveHost) {
+async function removeFromGroup(slaveHost) {
   if (!activeHost) return;
   let zone;
-  try { zone = await (await fetch('/api/zone?host='+activeHost)).json(); } catch(e){ return; }
+  try { zone = await (await fetch('/api/group?host='+activeHost)).json(); } catch(e){ return; }
   const remaining = (zone.members||[]).map(m=>m.ip).filter(ip=>ip!==activeHost && ip!==slaveHost);
   if (remaining.length) {
-    await fetch(`/api/zone/create?master=${activeHost}&slaves=${remaining.join(',')}`);
+    await fetch(`/api/group/create?master=${activeHost}&slaves=${remaining.join(',')}`);
   } else {
-    await fetch('/api/zone/remove?host='+activeHost);
+    await fetch('/api/group/remove?host='+activeHost);
   }
-  toast('Zone updated'); setTimeout(loadZones, 700);
+  toast('Group updated'); setTimeout(loadGroups, 700);
 }
 
-async function dissolveZone() {
-  if (!confirm('Dissolve this zone? All speakers will play independently.')) return;
-  await fetch('/api/zone/remove?host='+activeHost);
-  toast('Zone dissolved'); setTimeout(loadZones, 700);
+async function dissolveGroup() {
+  if (!confirm('Dissolve this group? All speakers will play independently.')) return;
+  await fetch('/api/group/remove?host='+activeHost);
+  toast('Group dissolved'); setTimeout(loadGroups, 700);
 }
 
 async function groupAll() {
   if (!activeHost) return;
   const slaves = speakers.filter(s=>s.host!==activeHost).map(s=>s.host).join(',');
   if (!slaves) { toast('No other speakers to group'); return; }
-  await fetch(`/api/zone/create?master=${activeHost}&slaves=${slaves}`);
-  toast('All speakers grouped'); setTimeout(loadZones, 700);
+  await fetch(`/api/group/create?master=${activeHost}&slaves=${slaves}`);
+  toast('All speakers grouped'); setTimeout(loadGroups, 700);
 }
 
 
@@ -1438,13 +1438,13 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"ok":False})
 
-        # ── zone / multi-room ─────────────────────────────────────────────────
-        elif path == "/api/zone":
+        # ── group / multi-room ─────────────────────────────────────────────────
+        elif path == "/api/group":
             host = qs.get("host",[None])[0]
             dev  = self.server_state.get_device(host)
             self._json(dev.get_zone() if dev else {"error":"no_device"})
 
-        elif path == "/api/zone/create":
+        elif path == "/api/group/create":
             master_host = qs.get("master",[None])[0]
             raw_slaves  = qs.get("slaves",[""])[0]
             slave_hosts = [h for h in raw_slaves.split(",") if h]
@@ -1458,7 +1458,7 @@ class Handler(BaseHTTPRequestHandler):
                 master_dev.set_zone(slave_devs)
                 self._json({"ok":True})
 
-        elif path == "/api/zone/remove":
+        elif path == "/api/group/remove":
             host = qs.get("host",[None])[0]
             dev  = self.server_state.get_device(host)
             if dev:
@@ -1466,10 +1466,10 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"ok":False,"error":"no_device"})
 
-        # ── zone helpers for Matter / Alexa ───────────────────────────────────
+        # ── group helpers for Matter / Alexa ───────────────────────────────────
 
-        elif path == "/api/zone/party":
-            # Join ALL speakers into one zone. The currently-playing speaker
+        elif path == "/api/group/party":
+            # Join ALL speakers into one group. The currently-playing speaker
             # becomes master; if none is playing, use the first speaker.
             devices = list(self.server_state.devices)
             if len(devices) < 2:
@@ -1487,13 +1487,13 @@ class Handler(BaseHTTPRequestHandler):
                     master = devices[0]
                 slaves = [d for d in devices if d is not master]
                 master.set_zone(slaves)
-                log.info(f"[ZONE] Party mode — master={master.host} "
+                log.info(f"[GROUP] Party mode — master={master.host} "
                          f"slaves={[d.host for d in slaves]}")
                 self._json({"ok": True, "master": master.host,
                             "slaves": [d.host for d in slaves]})
 
-        elif path == "/api/zone/dissolve-all":
-            # Dissolve every active zone across all speakers.
+        elif path == "/api/group/dissolve-all":
+            # Dissolve every active group across all speakers.
             devices = list(self.server_state.devices)
             dissolved = []
             for d in devices:
@@ -1504,11 +1504,11 @@ class Handler(BaseHTTPRequestHandler):
                         dissolved.append(d.host)
                 except Exception:
                     pass
-            log.info(f"[ZONE] Dissolved zones on: {dissolved}")
+            log.info(f"[GROUP] Dissolved groups on: {dissolved}")
             self._json({"ok": True, "dissolved": dissolved})
 
-        elif path == "/api/zone/join":
-            # Add a specific speaker to the current zone. If no zone exists,
+        elif path == "/api/group/join":
+            # Add a specific speaker to the current group. If no zone exists,
             # the currently-playing speaker becomes master with host as slave.
             host    = qs.get("host", [None])[0]
             target  = self.server_state.get_device(host)
@@ -1516,7 +1516,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "no_device"}); return
 
             devices = list(self.server_state.devices)
-            # Find existing zone master
+            # Find existing group master
             master = None
             existing_slaves = []
             for d in devices:
@@ -1535,7 +1535,7 @@ class Handler(BaseHTTPRequestHandler):
                     pass
 
             if master is None:
-                # No existing zone — find a playing speaker to be master
+                # No existing group — find a playing speaker to be master
                 for d in devices:
                     if d is target:
                         continue
@@ -1560,7 +1560,7 @@ class Handler(BaseHTTPRequestHandler):
                 if target.host not in slave_hosts:
                     existing_slaves.append(target)
                 master.set_zone(existing_slaves)
-                log.info(f"[ZONE] Join — master={master.host} "
+                log.info(f"[GROUP] Join — master={master.host} "
                          f"slaves={[d.host for d in existing_slaves]}")
                 self._json({"ok": True, "master": master.host,
                             "slaves": [d.host for d in existing_slaves]})
