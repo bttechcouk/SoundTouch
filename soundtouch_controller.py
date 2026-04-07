@@ -712,18 +712,6 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.2}
 #track-artist{font-size:13px;color:var(--fg2);margin-top:2px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#source-badge{font-size:10px;font-weight:700;letter-spacing:.06em;
-  color:var(--blue-light);background:var(--surface);border:1px solid var(--border);
-  padding:3px 8px;border-radius:10px;white-space:nowrap;align-self:center;flex-shrink:0}
-
-/* Sources */
-#sources-row{display:flex;flex-wrap:wrap;gap:5px;padding:8px 0 2px;min-height:28px}
-.src-chip{font-size:11px;padding:3px 11px;border-radius:12px;cursor:pointer;
-  border:1px solid var(--border);background:var(--surface);color:var(--fg2);
-  transition:all .15s;white-space:nowrap}
-.src-chip.active{border-color:var(--blue);color:var(--blue-light);background:rgba(34,119,238,.1)}
-.src-chip.unavail{opacity:.3;cursor:default;pointer-events:none}
-.src-chip:not(.unavail):not(.active):hover{background:var(--surface2)}
 
 /* Bass */
 #bass-row{padding:6px 4px 0;display:flex;align-items:center;gap:10px}
@@ -813,12 +801,6 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 .preset.has-name .preset-name{color:var(--fg)}
 #presets-backdrop{display:none;position:fixed;inset:0;z-index:49}
 #presets-backdrop.open{display:block}
-
-/* Cloud source warning */
-#cloud-warning{margin:10px 4px 0;background:rgba(245,158,11,.08);
-  border:1px solid var(--amber-dim);border-radius:8px;
-  padding:8px 12px;font-size:11px;color:var(--amber);line-height:1.5;display:none}
-#cloud-warning strong{color:var(--amber)}
 
 /* Power / Mute */
 #power-row{display:flex;justify-content:center;gap:10px;padding:10px 20px 18px}
@@ -954,16 +936,7 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
         <div id="track-name">—</div>
         <div id="track-artist"></div>
       </div>
-      <div id="source-badge" style="display:none"></div>
     </div>
-
-    <div id="cloud-warning">
-      ⚠ <strong id="cloud-source-name"></strong> requires Bose cloud —
-      will stop working when the cloud shuts down on 6 May 2026.
-      Use a Custom Station or local backup instead.
-    </div>
-
-    <div id="sources-row"></div>
 
     <div id="vol-row">
       <span class="vol-icon vol-btn" onclick="nudgeVol(-1)">&#128264;</span>
@@ -1195,7 +1168,6 @@ function renderRooms() {
 }
 function setActive(h) {
   activeHost=h; clearTimeout(pollTimer); renderRooms(); pollNow();
-  loadSources();
   const tab = document.querySelector('.tab.active')?.dataset?.tab;
   if (tab === 'manage')   loadBackupInfo();
   if (tab === 'groups')   loadGroups();
@@ -1246,8 +1218,6 @@ function applyState(d) {
   if (!d) return; lastState = d;
   const track = d.track||(d.source||'—'), artist = d.artist||d.album||'';
   setText('track-name',track); setText('track-artist',artist);
-  const badge=document.getElementById('source-badge');
-  badge.textContent=d.source||''; badge.style.display=d.source?'':'none';
   // art
   const artEl=document.getElementById('art'), ph=document.getElementById('art-placeholder');
   if (d.art && d.art!==lastArt) {
@@ -1256,14 +1226,6 @@ function applyState(d) {
     tmp.onerror=()=>{artEl.classList.add('hidden');ph.style.display=''};
     tmp.src=d.art;
   } else if (!d.art) { artEl.classList.add('hidden'); ph.style.display=''; }
-  // cloud-source warning
-  const CLOUD_SOURCES=['AMAZON','DEEZER','SIRIUSXM','IHEART','PANDORA','TUNEIN'];
-  const srcUp=(d.source||'').toUpperCase();
-  const warnEl=document.getElementById('cloud-warning');
-  const warnSrc=document.getElementById('cloud-source-name');
-  const isCloud=CLOUD_SOURCES.some(s=>srcUp.includes(s));
-  warnEl.style.display=isCloud?'':'none';
-  if(isCloud) warnSrc.textContent=d.source;
   // play icon
   document.getElementById('ico-play').style.display=d.playing?'none':'';
   document.getElementById('ico-pause').style.display=d.playing?'':'none';
@@ -1280,11 +1242,6 @@ function applyState(d) {
   // chip
   const chip=document.getElementById('chip-'+activeHost.replace(/\./g,'_'));
   if (chip) { chip.classList.toggle('playing',d.playing); chip.classList.add('active'); }
-  // source chips — re-highlight active source
-  document.querySelectorAll('.src-chip').forEach(el => {
-    const src = el.getAttribute('onclick')?.match(/'([^']+)'/)?.[1]||'';
-    el.classList.toggle('active', src === d.source);
-  });
   // presets — populate dropdown grid
   const g=document.getElementById('presets-grid');
   const presets = d.presets || [];
@@ -1568,31 +1525,6 @@ async function groupAll() {
   toast('All speakers grouped'); setTimeout(loadGroups, 700);
 }
 
-
-// ── Sources ───────────────────────────────────────────────────────────────────
-const SOURCE_NAMES = {AUX:'AUX IN',BLUETOOTH:'Bluetooth',TUNEIN:'TuneIn',
-  SPOTIFY:'Spotify',AMAZON:'Amazon Music',LOCAL_INTERNET_RADIO:'Internet Radio',
-  STORED_MUSIC:'My Music',ALEXA:'Alexa'};
-let currentSources = [];
-async function loadSources() {
-  const row = document.getElementById('sources-row');
-  if (!row || !activeHost) { if(row) row.innerHTML=''; return; }
-  try {
-    currentSources = await (await fetch('/api/sources?host='+activeHost)).json();
-    const active = (lastState?.source||'').toUpperCase();
-    row.innerHTML = currentSources.map(s => {
-      const label = SOURCE_NAMES[s.source] || s.name || s.source;
-      const isActive = s.source === active || s.sourceAccount === lastState?.source;
-      const cls = ['src-chip', isActive?'active':'', s.status!=='READY'?'unavail':''].filter(Boolean).join(' ');
-      return `<span class="${cls}" onclick="selectSource('${s.source}','${s.sourceAccount}')">${label}</span>`;
-    }).join('');
-  } catch(e) { if(row) row.innerHTML=''; }
-}
-function selectSource(source, account) {
-  if (!activeHost) return;
-  fetch(`/api/select?host=${activeHost}&source=${encodeURIComponent(source)}&account=${encodeURIComponent(account)}`);
-  setTimeout(pollNow, 800);
-}
 
 // ── Bass ──────────────────────────────────────────────────────────────────────
 let bassTooltipTimer=null;
