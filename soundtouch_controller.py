@@ -174,6 +174,53 @@ class SoundTouchDevice:
                 break
         return result
 
+    def get_bass_capabilities(self):
+        xml = self._get("/bassCapabilities")
+        if xml is None:
+            return {"available": False, "min": -9, "max": 0, "default": 0}
+        return {
+            "available": (xml.findtext("bassAvailable") or "false").lower() == "true",
+            "min":     int(xml.findtext("bassMin")     or "-9"),
+            "max":     int(xml.findtext("bassMax")     or "0"),
+            "default": int(xml.findtext("bassDefault") or "0"),
+        }
+
+    def get_bass(self):
+        xml = self._get("/bass")
+        if xml is None: return 0
+        return int(xml.findtext("actualbass") or "0")
+
+    def set_bass(self, value):
+        self._post("/bass", f"<bass>{max(-9, min(9, int(value)))}</bass>")
+
+    def get_sources(self):
+        xml = self._get("/sources")
+        if xml is None: return []
+        SKIP_ACCOUNTS = {"qplay1username","qplay2username","storedmusicusername",
+                         "upnpusername","spotifyconnectusername","spotifyalexausername"}
+        SKIP_SOURCES  = {"NOTIFICATION","STORED_MUSIC_MEDIA_RENDERER"}
+        out = []
+        for item in xml.findall("sourceItem"):
+            src  = item.get("source","")
+            acct = item.get("sourceAccount","")
+            if src in SKIP_SOURCES or acct.lower() in SKIP_ACCOUNTS:
+                continue
+            out.append({
+                "source":        src,
+                "sourceAccount": acct,
+                "status":        item.get("status",""),
+                "name":          (item.text or src).strip(),
+                "isLocal":       item.get("isLocal","false") == "true",
+            })
+        return out
+
+    def select_source(self, source, account=""):
+        body = f'<ContentItem source="{source}" sourceAccount="{account}"></ContentItem>'
+        self._post("/select", body)
+
+    def set_name(self, new_name):
+        self._post("/name", f"<name>{new_name}</name>")
+
     # ── state snapshot ────────────────────────────────────────────────────────
     def state(self):
         d = dict(host=self.host, name=self.name, model=self.model,
@@ -669,6 +716,37 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   color:var(--blue-light);background:var(--surface);border:1px solid var(--border);
   padding:3px 8px;border-radius:10px;white-space:nowrap;align-self:center;flex-shrink:0}
 
+/* Sources */
+#sources-row{display:flex;flex-wrap:wrap;gap:5px;padding:8px 0 2px;min-height:28px}
+.src-chip{font-size:11px;padding:3px 11px;border-radius:12px;cursor:pointer;
+  border:1px solid var(--border);background:var(--surface);color:var(--fg2);
+  transition:all .15s;white-space:nowrap}
+.src-chip.active{border-color:var(--blue);color:var(--blue-light);background:rgba(34,119,238,.1)}
+.src-chip.unavail{opacity:.3;cursor:default;pointer-events:none}
+.src-chip:not(.unavail):not(.active):hover{background:var(--surface2)}
+
+/* Bass */
+#bass-row{padding:6px 4px 0;display:flex;align-items:center;gap:10px}
+#bass-track{flex:1;position:relative;padding-top:22px}
+#bass-tooltip{position:absolute;top:0;transform:translateX(-50%);
+  background:var(--amber);color:#000;font-size:11px;font-weight:700;
+  padding:2px 7px;border-radius:10px;pointer-events:none;
+  opacity:0;transition:opacity .2s}
+#bass-tooltip.visible{opacity:1}
+#bass-slider{width:100%;height:4px;-webkit-appearance:none;appearance:none;
+  border-radius:2px;outline:none;cursor:pointer;
+  background:linear-gradient(to right,var(--amber) var(--pct,100%),var(--surface2) var(--pct,100%))}
+#bass-slider::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;
+  border-radius:50%;background:var(--silver);cursor:pointer;
+  box-shadow:0 0 6px rgba(245,158,11,.5)}
+#bass-slider::-moz-range-thumb{width:16px;height:16px;border-radius:50%;
+  background:var(--silver);cursor:pointer;border:none}
+.bass-label{font-size:10px;color:var(--fg3);flex-shrink:0;text-transform:uppercase;
+  letter-spacing:.06em}
+
+/* Chip backup warning */
+.chip-warn{font-size:9px;color:var(--amber);flex-shrink:0;margin-left:1px}
+
 /* Volume */
 #vol-row{padding:12px 4px 0;display:flex;align-items:center;gap:10px}
 .vol-icon{color:var(--fg3);font-size:15px;flex-shrink:0}
@@ -885,6 +963,8 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
       Use a Custom Station or local backup instead.
     </div>
 
+    <div id="sources-row"></div>
+
     <div id="vol-row">
       <span class="vol-icon vol-btn" onclick="nudgeVol(-1)">&#128264;</span>
       <div id="vol-track">
@@ -893,6 +973,16 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
                oninput="onVolInput(this.value)" onchange="sendVol(this.value)">
       </div>
       <span class="vol-icon vol-btn" onclick="nudgeVol(1)">&#128266;</span>
+    </div>
+
+    <div id="bass-row" style="display:none">
+      <span class="bass-label">Bass</span>
+      <div id="bass-track">
+        <div id="bass-tooltip">0</div>
+        <input type="range" id="bass-slider" min="-9" max="0" value="0"
+               oninput="onBassInput(this.value)" onchange="sendBass(this.value)">
+      </div>
+      <span class="bass-label">+</span>
     </div>
 
     <div id="transport">
@@ -962,6 +1052,14 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
       <div id="speaker-info">
         <p style="font-size:12px;color:var(--fg3)">Select a speaker to view its details.</p>
       </div>
+
+      <h2 style="margin-top:22px">Preset Backup</h2>
+      <p style="font-size:12px;color:var(--fg3);margin-bottom:10px">
+        Back up all speakers in one click. Speakers with no backup show ⚠ on their chip.
+        Critical before the Bose cloud shuts down on 6 May 2026.
+      </p>
+      <button class="mc-btn primary" onclick="backupAll()">Backup All Speakers</button>
+      <span id="backup-all-status" style="font-size:12px;color:var(--fg3);margin-left:10px"></span>
 
       <h2 style="margin-top:22px">Discover Speakers</h2>
       <p style="font-size:12px;color:var(--fg3);margin-bottom:10px">
@@ -1103,10 +1201,11 @@ function renderRooms() {
     <div class="room-chip${s.host===activeHost?' active':''}"
          id="chip-${s.host.replace(/\./g,'_')}"
          onclick="setActive('${s.host}')">
-      <span class="dot"></span><span class="name">${s.name}</span></div>`).join('');
+      <span class="dot"></span><span class="name">${s.name}</span>${s.has_backup===false?'<span class="chip-warn" title="No preset backup">⚠</span>':''}</div>`).join('');
 }
 function setActive(h) {
   activeHost=h; clearTimeout(pollTimer); renderRooms(); pollNow();
+  loadSources(); loadBass();
   const tab = document.querySelector('.tab.active')?.dataset?.tab;
   if (tab === 'manage')   loadBackupInfo();
   if (tab === 'groups')   loadGroups();
@@ -1191,6 +1290,11 @@ function applyState(d) {
   // chip
   const chip=document.getElementById('chip-'+activeHost.replace(/\./g,'_'));
   if (chip) { chip.classList.toggle('playing',d.playing); chip.classList.add('active'); }
+  // source chips — re-highlight active source
+  document.querySelectorAll('.src-chip').forEach(el => {
+    const src = el.getAttribute('onclick')?.match(/'([^']+)'/)?.[1]||'';
+    el.classList.toggle('active', src === d.source);
+  });
   // presets — populate dropdown grid
   const g=document.getElementById('presets-grid');
   const presets = d.presets || [];
@@ -1475,6 +1579,100 @@ async function groupAll() {
 }
 
 
+// ── Sources ───────────────────────────────────────────────────────────────────
+const SOURCE_NAMES = {AUX:'AUX IN',BLUETOOTH:'Bluetooth',TUNEIN:'TuneIn',
+  SPOTIFY:'Spotify',AMAZON:'Amazon Music',LOCAL_INTERNET_RADIO:'Internet Radio',
+  STORED_MUSIC:'My Music',ALEXA:'Alexa'};
+let currentSources = [];
+async function loadSources() {
+  const row = document.getElementById('sources-row');
+  if (!row || !activeHost) { if(row) row.innerHTML=''; return; }
+  try {
+    currentSources = await (await fetch('/api/sources?host='+activeHost)).json();
+    const active = (lastState?.source||'').toUpperCase();
+    row.innerHTML = currentSources.map(s => {
+      const label = SOURCE_NAMES[s.source] || s.name || s.source;
+      const isActive = s.source === active || s.sourceAccount === lastState?.source;
+      const cls = ['src-chip', isActive?'active':'', s.status!=='READY'?'unavail':''].filter(Boolean).join(' ');
+      return `<span class="${cls}" onclick="selectSource('${s.source}','${s.sourceAccount}')">${label}</span>`;
+    }).join('');
+  } catch(e) { if(row) row.innerHTML=''; }
+}
+function selectSource(source, account) {
+  if (!activeHost) return;
+  fetch(`/api/select?host=${activeHost}&source=${encodeURIComponent(source)}&account=${encodeURIComponent(account)}`);
+  setTimeout(pollNow, 800);
+}
+
+// ── Bass ──────────────────────────────────────────────────────────────────────
+let bassTooltipTimer=null;
+async function loadBass() {
+  const row = document.getElementById('bass-row');
+  if (!row || !activeHost) { if(row) row.style.display='none'; return; }
+  try {
+    const d = await (await fetch('/api/bass?host='+activeHost)).json();
+    if (d.available) {
+      document.getElementById('bass-slider').min = d.min;
+      document.getElementById('bass-slider').max = d.max;
+      document.getElementById('bass-slider').value = d.current;
+      updateBass(d.current, d.min, d.max);
+      row.style.display = 'flex';
+    } else {
+      row.style.display = 'none';
+    }
+  } catch(e) { row.style.display='none'; }
+}
+function onBassInput(v) {
+  const sl = document.getElementById('bass-slider');
+  updateBass(v, parseInt(sl.min), parseInt(sl.max));
+  const tip = document.getElementById('bass-tooltip');
+  tip.textContent = v; tip.classList.add('visible');
+  clearTimeout(bassTooltipTimer);
+  bassTooltipTimer = setTimeout(()=>tip.classList.remove('visible'), 1200);
+}
+function updateBass(v, min=-9, max=0) {
+  const pct = ((parseInt(v)-min)/(max-min)*100)+'%';
+  const track = document.getElementById('bass-track');
+  const slider = document.getElementById('bass-slider');
+  if(track) { track.style.setProperty('--pct',pct); document.getElementById('bass-tooltip').style.left=pct; }
+  if(slider) slider.style.setProperty('--pct',pct);
+}
+let bassD=null;
+function sendBass(v) { clearTimeout(bassD); bassD=setTimeout(()=>{
+  if (activeHost) fetch(`/api/cmd?host=${activeHost}&action=bass&value=${v}`);
+}, 200); }
+
+// ── Backup All ────────────────────────────────────────────────────────────────
+async function backupAll() {
+  const st = document.getElementById('backup-all-status');
+  if(st) st.textContent = 'Backing up…';
+  try {
+    const d = await (await fetch('/api/presets/backup-all')).json();
+    const ok = d.results.filter(r=>r.ok).length;
+    const fail = d.results.filter(r=>!r.ok).length;
+    if(st) st.textContent = `✓ ${ok} backed up${fail?' — '+fail+' failed':''}`;
+    // Refresh speaker list so warning badges update
+    await fetchSpeakers(false);
+  } catch(e) { if(st) st.textContent='Backup failed'; }
+}
+
+// ── Rename ────────────────────────────────────────────────────────────────────
+async function renameSpeaker() {
+  const input = document.getElementById('rename-input');
+  if (!input || !activeHost) return;
+  const name = input.value.trim();
+  if (!name) return;
+  try {
+    const d = await (await fetch(`/api/rename?host=${activeHost}&name=${encodeURIComponent(name)}`)).json();
+    if (d.ok) {
+      const sp = speakers.find(s=>s.host===activeHost);
+      if (sp) sp.name = d.name;
+      renderRooms();
+      toast('Speaker renamed');
+    }
+  } catch(e) { toast('Rename failed'); }
+}
+
 // ── Settings — Speaker info ───────────────────────────────────────────────────
 async function loadSpeakerInfo() {
   const el = document.getElementById('speaker-info');
@@ -1494,7 +1692,13 @@ async function loadSpeakerInfo() {
       <tr><td>Serial Number</td><td>${d.serial||'—'}</td></tr>
       <tr><td>Device ID</td><td>${d.device_id||'—'}</td></tr>
       <tr><td>Country</td><td>${d.country||'—'}</td></tr>
-    </table>`;
+    </table>
+    <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
+      <input id="rename-input" style="flex:1;background:var(--surface2);border:1px solid var(--border);
+        color:var(--fg1);border-radius:8px;padding:6px 10px;font-size:13px"
+        value="${d.name||''}" placeholder="Speaker name">
+      <button class="mc-btn primary" onclick="renameSpeaker()">Rename</button>
+    </div>`;
   } catch(e) {
     el.innerHTML = '<p style="font-size:12px;color:var(--fg3)">Could not load device info.</p>';
   }
@@ -1574,7 +1778,9 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── speaker list / scan ───────────────────────────────────────────────
         elif path == "/api/speakers":
-            self._json([{"host":d.host,"name":d.name,"model":d.model}
+            store = self.server_state.store
+            self._json([{"host":d.host,"name":d.name,"model":d.model,
+                         "has_backup": store.load_backup(d.host) is not None}
                         for d in self.server_state.devices])
 
         elif path == "/api/scan":
@@ -1601,6 +1807,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif action=="power":            dev.power();      ok=True
                 elif action=="mute":             dev.mute();       ok=True
                 elif action=="volume" and value: dev.set_volume(value); ok=True
+                elif action=="bass"   and value: dev.set_bass(value);   ok=True
                 elif action.startswith("preset"):
                     dev.preset(int(action.replace("preset",""))); ok=True
             self._json({"ok":ok})
@@ -1811,6 +2018,53 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "no_device"})
             else:
                 self._json(dev.detail_info())
+
+        # ── bass ─────────────────────────────────────────────────────────────
+        elif path == "/api/bass":
+            host = qs.get("host",[None])[0]
+            dev  = self.server_state.get_device(host)
+            if not dev: self._json({"error":"no_device"})
+            else:
+                caps = dev.get_bass_capabilities()
+                caps["current"] = dev.get_bass()
+                self._json(caps)
+
+        # ── sources ───────────────────────────────────────────────────────────
+        elif path == "/api/sources":
+            host = qs.get("host",[None])[0]
+            dev  = self.server_state.get_device(host)
+            self._json(dev.get_sources() if dev else [])
+
+        elif path == "/api/select":
+            host    = qs.get("host",   [None])[0]
+            source  = qs.get("source", [""])[0]
+            account = qs.get("account",[""])[0]
+            dev     = self.server_state.get_device(host)
+            if dev and source: dev.select_source(source, account); self._json({"ok":True})
+            else:              self._json({"ok":False})
+
+        # ── rename ────────────────────────────────────────────────────────────
+        elif path == "/api/rename":
+            host = qs.get("host",[None])[0]
+            name = qs.get("name",[""])[0].strip()
+            dev  = self.server_state.get_device(host)
+            if dev and name:
+                dev.set_name(name); dev.name = name
+                self._json({"ok":True,"name":name})
+            else:
+                self._json({"ok":False})
+
+        # ── backup all speakers ───────────────────────────────────────────────
+        elif path == "/api/presets/backup-all":
+            results = []
+            for dev in list(self.server_state.devices):
+                try:
+                    presets = dev.get_presets_detail()
+                    data    = self.server_state.store.backup_presets(dev.host, presets)
+                    results.append({"host":dev.host,"name":dev.name,"ok":True,"count":len(presets)})
+                except Exception as e:
+                    results.append({"host":dev.host,"name":dev.name,"ok":False,"error":str(e)})
+            self._json({"results":results})
 
         # ── Matter bridge QR code ─────────────────────────────────────────────
         elif path == "/api/matter/qr":
