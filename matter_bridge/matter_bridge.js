@@ -338,7 +338,13 @@ async function main() {
         res.setHeader("Access-Control-Allow-Origin", "*");
         if (req.url === "/qr") {
             res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ qrPairingCode, manualPairingCode, commissioned, qrText }));
+            // Check commissioned state dynamically so it reflects post-startup commissioning
+            res.end(JSON.stringify({
+                qrPairingCode,
+                manualPairingCode,
+                commissioned: commissioningServer.isCommissioned(),
+                qrText,
+            }));
         } else {
             res.writeHead(404);
             res.end("Not found");

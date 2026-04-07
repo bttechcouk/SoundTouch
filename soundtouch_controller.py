@@ -144,6 +144,36 @@ class SoundTouchDevice:
             self.name = self.host
         return True
 
+    def detail_info(self):
+        """Return network/firmware details for the Settings tab."""
+        xml = self._get("/info")
+        if xml is None:
+            return {"name": self.name, "model": self.model, "ip": self.host}
+        result = {
+            "name":      xml.findtext("name") or self.name,
+            "model":     xml.findtext("type") or self.model,
+            "device_id": xml.get("deviceID", ""),
+            "firmware":  "",
+            "serial":    "",
+            "ip":        self.host,
+            "mac":       "",
+            "country":   xml.findtext("countryCode") or "",
+        }
+        for comp in xml.findall("components/component"):
+            cat = comp.findtext("componentCategory", "")
+            if cat == "SCM":
+                fw = comp.findtext("softwareVersion", "")
+                result["firmware"] = fw.split()[0] if fw else ""
+                result["serial"]   = comp.findtext("serialNumber", "")
+            elif cat == "PackagedProduct" and not result["serial"]:
+                result["serial"] = comp.findtext("serialNumber", "")
+        for ni in xml.findall("networkInfo"):
+            if ni.get("type") == "SCM":
+                result["ip"]  = ni.findtext("ipAddress") or self.host
+                result["mac"] = ni.findtext("macAddress") or ""
+                break
+        return result
+
     # ── state snapshot ────────────────────────────────────────────────────────
     def state(self):
         d = dict(host=self.host, name=self.name, model=self.model,
@@ -565,6 +595,25 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 #scan-btn.spinning::after{content:" ↻";display:inline-block;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 
+.speaker-info-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+.speaker-info-table tr{border-bottom:1px solid var(--border)}
+.speaker-info-table td{padding:7px 4px}
+.speaker-info-table td:first-child{color:var(--fg3);width:38%}
+.speaker-info-table td:last-child{color:var(--fg1);font-family:monospace;font-size:11px;word-break:break-all}
+
+.qr-collapse-hdr{display:flex;align-items:center;gap:10px;cursor:pointer;
+  padding:11px 14px;user-select:none;background:var(--surface1);
+  border-radius:var(--radius);border:1px solid var(--border);margin-top:4px}
+.qr-collapse-hdr:hover{background:var(--surface2)}
+.qr-collapse-hdr span.title{font-size:13px;font-weight:600;color:var(--fg1);flex:1}
+.qr-collapse-badge{font-size:11px;padding:2px 8px;border-radius:10px;
+  background:var(--surface2);border:1px solid var(--border)}
+.qr-collapse-badge.ok{color:#4caf50;border-color:#4caf5055;background:rgba(76,175,80,.08)}
+.qr-collapse-badge.warn{color:var(--fg3);border-color:var(--border)}
+.qr-chevron{font-size:10px;color:var(--fg3);transition:transform .2s;flex-shrink:0}
+.qr-chevron.open{transform:rotate(180deg)}
+.qr-body{padding:14px 4px 4px}
+
 /* ── Tabs ────────────────────────────────────────────────── */
 #tabs{display:flex;border-bottom:1px solid var(--border);margin:12px 20px 0;gap:0}
 .tab{flex:1;text-align:center;padding:9px 0;font-size:12px;font-weight:600;
@@ -797,16 +846,15 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
       <button id="preset-toggle" onclick="togglePresets()">
         Presets <span class="arrow">▼</span>
       </button>
-      <button id="scan-btn" onclick="rescan()">Scan</button>
     </div>
   </header>
 
   <!-- Tabs -->
   <div id="tabs">
-    <div class="tab active" data-tab="player" onclick="switchTab('player')">Player</div>
-    <div class="tab"        data-tab="manage" onclick="switchTab('manage')">Presets</div>
-    <div class="tab"        data-tab="groups"  onclick="switchTab('groups')">Groups</div>
-    <div class="tab"        data-tab="alexa"  onclick="switchTab('alexa')">Alexa</div>
+    <div class="tab active" data-tab="player"   onclick="switchTab('player')">Player</div>
+    <div class="tab"        data-tab="manage"   onclick="switchTab('manage')">Presets</div>
+    <div class="tab"        data-tab="groups"   onclick="switchTab('groups')">Groups</div>
+    <div class="tab"        data-tab="settings" onclick="switchTab('settings')">Settings</div>
   </div>
 
   <!-- Speaker chips -->
@@ -906,32 +954,51 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
     </div>
   </div>
 
-  <!-- ═══ PAGE: Alexa ═══ -->
-  <div id="page-alexa" class="page">
+  <!-- ═══ PAGE: Settings ═══ -->
+  <div id="page-settings" class="page">
     <div class="manage-section">
-      <h2>Alexa Integration</h2>
 
+      <h2>Speaker Details</h2>
+      <div id="speaker-info">
+        <p style="font-size:12px;color:var(--fg3)">Select a speaker to view its details.</p>
+      </div>
+
+      <h2 style="margin-top:22px">Discover Speakers</h2>
+      <p style="font-size:12px;color:var(--fg3);margin-bottom:10px">
+        Scan the local network to find all SoundTouch speakers.
+      </p>
+      <button id="scan-btn" onclick="rescan()">Scan for Speakers</button>
+
+      <h2 style="margin-top:22px">Alexa Integration</h2>
       <div class="alexa-hint">
         <strong>How it works:</strong> A separate Matter bridge process runs alongside
         this app, exposing each speaker preset and power toggle as a Matter On/Off
         device — <strong>no cloud, no account linking.</strong><br><br>
-        <strong>Step 1 —</strong> Scan for speakers (tap Scan in the header)<br>
+        <strong>Step 1 —</strong> Scan for speakers above<br>
         <strong>Step 2 —</strong> Commission the Matter bridge once in the Alexa app:<br>
-        &nbsp;&nbsp;Add Device → Other → Matter → scan QR code below<br>
+        &nbsp;&nbsp;Add Device → Other → Matter → expand panel below and scan QR<br>
         <strong>Step 3 —</strong> Use phrases like:<br>
         &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on KISSTORY in Kitchen Bose</span><br>
-        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on Kitchen Bose power</span><br><br>
+        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on Kitchen Bose power</span><br>
+        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, set Kitchen Bose volume to 40%</span><br><br>
         <strong>Bridge logs:</strong>
         <span class="alexa-phrase">journalctl --user -u soundtouch-matter -f</span>
       </div>
 
-      <div class="qr-section">
-        <h3>Commission Matter Bridge</h3>
-        <div id="qr-box" class="qr-box">Loading…</div>
-        <div id="qr-manual" class="qr-manual"></div>
-        <div id="qr-status" class="qr-status"></div>
-        <br><button class="qr-refresh" onclick="loadAlexaQR()">Refresh</button>
+      <div class="qr-section" style="margin-top:12px">
+        <div class="qr-collapse-hdr" onclick="toggleQR()">
+          <span class="title">Commission Matter Bridge</span>
+          <span id="qr-status-badge" class="qr-collapse-badge warn">checking…</span>
+          <span id="qr-chevron" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="qr-body" class="qr-body" style="display:none">
+          <div id="qr-box" class="qr-box">Loading…</div>
+          <div id="qr-manual" class="qr-manual"></div>
+          <div id="qr-status" class="qr-status" style="margin-top:8px"></div>
+          <button class="qr-refresh" onclick="loadAlexaQR()">Refresh</button>
+        </div>
       </div>
+
     </div>
   </div>
 
@@ -1003,9 +1070,9 @@ function switchTab(name) {
     t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.page').forEach(p =>
     p.classList.toggle('visible', p.id === 'page-' + name));
-  if (name === 'manage') { loadStations(); loadBackupInfo(); }
-  if (name === 'groups')  { loadGroups(); }
-  if (name === 'alexa')   { loadAlexaQR(); }
+  if (name === 'manage')   { loadStations(); loadBackupInfo(); }
+  if (name === 'groups')   { loadGroups(); }
+  if (name === 'settings') { loadSpeakerInfo(); loadAlexaQR(); }
   localStorage.setItem('activeTab', name);
 }
 
@@ -1041,8 +1108,9 @@ function renderRooms() {
 function setActive(h) {
   activeHost=h; clearTimeout(pollTimer); renderRooms(); pollNow();
   const tab = document.querySelector('.tab.active')?.dataset?.tab;
-  if (tab === 'manage') loadBackupInfo();
-  if (tab === 'groups') loadGroups();
+  if (tab === 'manage')   loadBackupInfo();
+  if (tab === 'groups')   loadGroups();
+  if (tab === 'settings') loadSpeakerInfo();
 }
 
 // ── Polling ──────────────────────────────────────────────────────────────────
@@ -1407,34 +1475,63 @@ async function groupAll() {
 }
 
 
-// ── Alexa / Matter QR ────────────────────────────────────────────────────────
+// ── Settings — Speaker info ───────────────────────────────────────────────────
+async function loadSpeakerInfo() {
+  const el = document.getElementById('speaker-info');
+  if (!el) return;
+  if (!activeHost) {
+    el.innerHTML = '<p style="font-size:12px;color:var(--fg3)">Select a speaker to view its details.</p>';
+    return;
+  }
+  el.innerHTML = '<p style="font-size:12px;color:var(--fg3)">Loading…</p>';
+  try {
+    const d = await (await fetch('/api/device-info?host='+activeHost)).json();
+    el.innerHTML = `<table class="speaker-info-table">
+      <tr><td>Model</td><td>${d.model||'—'}</td></tr>
+      <tr><td>Firmware</td><td>${d.firmware||'—'}</td></tr>
+      <tr><td>IP Address</td><td>${d.ip||activeHost}</td></tr>
+      <tr><td>MAC Address</td><td>${d.mac||'—'}</td></tr>
+      <tr><td>Serial Number</td><td>${d.serial||'—'}</td></tr>
+      <tr><td>Device ID</td><td>${d.device_id||'—'}</td></tr>
+      <tr><td>Country</td><td>${d.country||'—'}</td></tr>
+    </table>`;
+  } catch(e) {
+    el.innerHTML = '<p style="font-size:12px;color:var(--fg3)">Could not load device info.</p>';
+  }
+}
+
+// ── Settings — Alexa / Matter QR ─────────────────────────────────────────────
 async function loadAlexaQR() {
   const box    = document.getElementById('qr-box');
   const manual = document.getElementById('qr-manual');
   const status = document.getElementById('qr-status');
-  box.textContent = 'Loading…';
-  manual.textContent = '';
-  status.textContent = '';
+  const badge  = document.getElementById('qr-status-badge');
+  if (box) box.textContent = 'Loading…';
   try {
     const d = await (await fetch('/api/matter/qr')).json();
-    if (d.qrText) {
-      box.textContent = d.qrText;
-    } else {
-      box.textContent = '(QR not available)';
-    }
-    manual.textContent = d.manualPairingCode ? 'Manual code: ' + d.manualPairingCode : '';
-    if (d.commissioned) {
-      status.textContent = '✓ Already commissioned with Alexa';
-      status.style.color = 'var(--green)';
-    } else {
-      status.textContent = 'Not yet commissioned — scan QR in Alexa app: Add Device → Other → Matter';
-      status.style.color = 'var(--fg2)';
-    }
+    if (box) box.textContent = d.qrText || '(QR not available)';
+    if (manual) manual.textContent = d.manualPairingCode ? 'Manual code: ' + d.manualPairingCode : '';
+    const ok = d.commissioned;
+    if (badge) { badge.textContent = ok ? '✓ Commissioned' : 'Not commissioned';
+                 badge.className = 'qr-collapse-badge ' + (ok ? 'ok' : 'warn'); }
+    if (status) { status.textContent = ok
+        ? '✓ Commissioned with Alexa — devices are available'
+        : 'Not yet commissioned — Add Device → Other → Matter in the Alexa app';
+      status.style.color = ok ? '#4caf50' : 'var(--fg2)'; }
   } catch(e) {
-    box.textContent = 'Bridge not running';
-    status.textContent = 'Start the Matter bridge: systemctl --user start soundtouch-matter';
-    status.style.color = 'var(--fg3)';
+    if (box)   box.textContent = 'Bridge not running';
+    if (badge) { badge.textContent = 'offline'; badge.className = 'qr-collapse-badge warn'; }
+    if (status){ status.textContent = 'systemctl --user start soundtouch-matter';
+                 status.style.color = 'var(--fg3)'; }
   }
+}
+function toggleQR() {
+  const body    = document.getElementById('qr-body');
+  const chevron = document.getElementById('qr-chevron');
+  const opening = body.style.display === 'none';
+  body.style.display = opening ? 'block' : 'none';
+  chevron.classList.toggle('open', opening);
+  if (opening) loadAlexaQR();
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -1705,6 +1802,15 @@ class Handler(BaseHTTPRequestHandler):
                          f"slaves={[d.host for d in existing_slaves]}")
                 self._json({"ok": True, "master": master.host,
                             "slaves": [d.host for d in existing_slaves]})
+
+        # ── device detail info ────────────────────────────────────────────────
+        elif path == "/api/device-info":
+            host = qs.get("host",[None])[0]
+            dev  = self.server_state.get_device(host)
+            if not dev:
+                self._json({"error": "no_device"})
+            else:
+                self._json(dev.detail_info())
 
         # ── Matter bridge QR code ─────────────────────────────────────────────
         elif path == "/api/matter/qr":
