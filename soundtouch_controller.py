@@ -728,6 +728,20 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   border:1px solid var(--border);border-radius:6px;padding:2px 8px;
   font-family:monospace;font-size:12px;color:var(--silver);margin:1px 0}
 
+.qr-section{margin-top:18px;padding:16px;background:var(--surface1);
+  border:1px solid var(--border);border-radius:var(--radius)}
+.qr-section h3{margin:0 0 12px;font-size:13px;color:var(--fg1)}
+.qr-box{background:#fff;color:#000;font-family:monospace;font-size:13px;
+  line-height:1;padding:14px;border-radius:6px;display:inline-block;
+  border:2px solid #ccc;white-space:pre}
+.qr-manual{font-family:monospace;font-size:15px;letter-spacing:2px;
+  color:var(--fg1);margin-top:10px}
+.qr-status{font-size:11px;color:var(--fg2);margin-top:6px}
+.qr-refresh{margin-top:10px;padding:5px 14px;font-size:12px;
+  background:var(--surface2);border:1px solid var(--border);
+  border-radius:6px;color:var(--fg1);cursor:pointer}
+.qr-refresh:hover{background:var(--surface3)}
+
 /* ── Toast ───────────────────────────────────────────────── */
 #toast{position:fixed;bottom:32px;left:50%;transform:translateX(-50%);
   background:rgba(19,21,29,.96);color:var(--blue-light);border:1px solid var(--blue-dim);
@@ -877,14 +891,20 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
         device — <strong>no cloud, no account linking.</strong><br><br>
         <strong>Step 1 —</strong> Scan for speakers (tap Scan in the header)<br>
         <strong>Step 2 —</strong> Commission the Matter bridge once in the Alexa app:<br>
-        &nbsp;&nbsp;Add Device → Other → Matter → scan QR code from bridge logs<br>
+        &nbsp;&nbsp;Add Device → Other → Matter → scan QR code below<br>
         <strong>Step 3 —</strong> Use phrases like:<br>
-        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on Dining Room KISSTORY</span><br>
-        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on Kitchen Power</span><br><br>
+        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on KISSTORY in Kitchen Bose</span><br>
+        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on Kitchen Bose power</span><br><br>
         <strong>Bridge logs:</strong>
-        <span class="alexa-phrase">journalctl --user -u soundtouch-matter -f</span><br>
-        <strong>QR / pairing code:</strong>
-        <span class="alexa-phrase">journalctl --user -u soundtouch-matter | grep -A2 "pairing code"</span>
+        <span class="alexa-phrase">journalctl --user -u soundtouch-matter -f</span>
+      </div>
+
+      <div class="qr-section">
+        <h3>Commission Matter Bridge</h3>
+        <div id="qr-box" class="qr-box">Loading…</div>
+        <div id="qr-manual" class="qr-manual"></div>
+        <div id="qr-status" class="qr-status"></div>
+        <br><button class="qr-refresh" onclick="loadAlexaQR()">Refresh</button>
       </div>
     </div>
   </div>
@@ -957,6 +977,7 @@ function switchTab(name) {
     p.classList.toggle('visible', p.id === 'page-' + name));
   if (name === 'manage') { loadStations(); loadBackupInfo(); }
   if (name === 'groups')  { loadGroups(); }
+  if (name === 'alexa')   { loadAlexaQR(); }
 }
 
 // ── Speakers ─────────────────────────────────────────────────────────────────
@@ -1296,6 +1317,36 @@ async function groupAll() {
 }
 
 
+// ── Alexa / Matter QR ────────────────────────────────────────────────────────
+async function loadAlexaQR() {
+  const box    = document.getElementById('qr-box');
+  const manual = document.getElementById('qr-manual');
+  const status = document.getElementById('qr-status');
+  box.textContent = 'Loading…';
+  manual.textContent = '';
+  status.textContent = '';
+  try {
+    const d = await (await fetch('/api/matter/qr')).json();
+    if (d.qrText) {
+      box.textContent = d.qrText;
+    } else {
+      box.textContent = '(QR not available)';
+    }
+    manual.textContent = d.manualPairingCode ? 'Manual code: ' + d.manualPairingCode : '';
+    if (d.commissioned) {
+      status.textContent = '✓ Already commissioned with Alexa';
+      status.style.color = 'var(--green)';
+    } else {
+      status.textContent = 'Not yet commissioned — scan QR in Alexa app: Add Device → Other → Matter';
+      status.style.color = 'var(--fg2)';
+    }
+  } catch(e) {
+    box.textContent = 'Bridge not running';
+    status.textContent = 'Start the Matter bridge: systemctl --user start soundtouch-matter';
+    status.style.color = 'var(--fg3)';
+  }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function setText(id,v) { const e=document.getElementById(id); if(e) e.textContent=v; }
 let toastT;
@@ -1564,6 +1615,15 @@ class Handler(BaseHTTPRequestHandler):
                          f"slaves={[d.host for d in existing_slaves]}")
                 self._json({"ok": True, "master": master.host,
                             "slaves": [d.host for d in existing_slaves]})
+
+        # ── Matter bridge QR code ─────────────────────────────────────────────
+        elif path == "/api/matter/qr":
+            try:
+                r = requests.get("http://localhost:8889/qr", timeout=3)
+                self._respond(200, "application/json", r.content)
+            except Exception as e:
+                self._json({"error": str(e), "qrPairingCode": None,
+                            "manualPairingCode": None, "commissioned": False, "qrText": None})
 
         # ── station descriptor (fetched by the speaker itself) ────────────────
         elif path.startswith("/api/station-desc/"):

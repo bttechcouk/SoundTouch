@@ -32,6 +32,7 @@ const BASE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(BASE_DIR, "data", "matter");
 const LOG_FILE = path.join(BASE_DIR, "matter_bridge.log");
 const MATTER_PORT = 5540;
+const BRIDGE_API_PORT = 8889; // local HTTP API (QR code for web UI)
 const VENDOR_ID = 0xfff1; // test vendor (use during dev/commissioning)
 const PRODUCT_ID = 0x8001;
 const DEVICE_NAME = "SoundTouch Bridge";
@@ -42,8 +43,8 @@ const DEVICE_NAME = "SoundTouch Bridge";
 //   "{preset} in {room}"  →  "Alexa, turn on KISS in Bedroom"
 //   "{room} {preset}"     →  "Alexa, turn on Bedroom KISS"
 //   "{room} - {preset}"   →  "Alexa, turn on Bedroom - KISS"  (original)
-const LABEL_FORMAT = "{preset} in {room}";
-const POWER_FORMAT = "{room} power";
+const LABEL_FORMAT = "{preset} in {room} Bose";
+const POWER_FORMAT = "{room} Bose power";
 const PASSCODE = 20202021;
 const DISCRIMINATOR = 3840;
 
@@ -271,15 +272,31 @@ async function main() {
     logger.info("");
 
     // Render QR code to console
+    let qrText = null;
     try {
-        const qr = QrCode.get(qrPairingCode);
+        qrText = QrCode.get(qrPairingCode);
         logger.info("Scan this QR code in the Alexa app (Add Device → Other → Matter):");
-        console.log(qr);
+        console.log(qrText);
     } catch {
         // QrCode rendering not available — manual code is enough
     }
 
     logger.info("=".repeat(60));
+
+    // Local HTTP API — serves pairing info to the web UI on localhost
+    const bridgeApiServer = http.createServer((req, res) => {
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        if (req.url === "/qr") {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ qrPairingCode, manualPairingCode, commissioned, qrText }));
+        } else {
+            res.writeHead(404);
+            res.end("Not found");
+        }
+    });
+    bridgeApiServer.listen(BRIDGE_API_PORT, "127.0.0.1", () => {
+        logger.info(`Bridge API listening on localhost:${BRIDGE_API_PORT}`);
+    });
 
     // Graceful shutdown
     process.on("SIGINT", async () => {
