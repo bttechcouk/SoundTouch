@@ -956,8 +956,8 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
         <div id="track-name">—</div>
         <div id="track-artist"></div>
       </div>
-      <div id="source-badge" style="display:none"></div>
       <div id="group-badge" style="display:none"></div>
+      <div id="source-badge" style="display:none"></div>
     </div>
 
     <div id="vol-row">
