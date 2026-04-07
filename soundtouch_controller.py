@@ -250,6 +250,19 @@ class SoundTouchDevice:
                     d[key] = el.text
         # presets
         d["presets"] = self.get_presets_detail()
+        # zone / group role
+        try:
+            z = self.get_zone()
+            if z["is_master"]:
+                d["group_role"] = "master"
+                d["group_members"] = len(z["members"])
+            elif z["is_slave"]:
+                d["group_role"] = "member"
+                d["group_master_ip"] = z["master_ip"]
+            else:
+                d["group_role"] = ""
+        except Exception:
+            d["group_role"] = ""
         return d
 
     def get_presets_detail(self):
@@ -712,18 +725,6 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.2}
 #track-artist{font-size:13px;color:var(--fg2);margin-top:2px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#source-badge{font-size:10px;font-weight:700;letter-spacing:.06em;
-  color:var(--blue-light);background:var(--surface);border:1px solid var(--border);
-  padding:3px 8px;border-radius:10px;white-space:nowrap;align-self:center;flex-shrink:0}
-
-/* Sources */
-#sources-row{display:flex;flex-wrap:wrap;gap:5px;padding:8px 0 2px;min-height:28px}
-.src-chip{font-size:11px;padding:3px 11px;border-radius:12px;cursor:pointer;
-  border:1px solid var(--border);background:var(--surface);color:var(--fg2);
-  transition:all .15s;white-space:nowrap}
-.src-chip.active{border-color:var(--blue);color:var(--blue-light);background:rgba(34,119,238,.1)}
-.src-chip.unavail{opacity:.3;cursor:default;pointer-events:none}
-.src-chip:not(.unavail):not(.active):hover{background:var(--surface2)}
 
 /* Bass */
 #bass-row{padding:6px 4px 0;display:flex;align-items:center;gap:10px}
@@ -814,11 +815,12 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 #presets-backdrop{display:none;position:fixed;inset:0;z-index:49}
 #presets-backdrop.open{display:block}
 
-/* Cloud source warning */
-#cloud-warning{margin:10px 4px 0;background:rgba(245,158,11,.08);
-  border:1px solid var(--amber-dim);border-radius:8px;
-  padding:8px 12px;font-size:11px;color:var(--amber);line-height:1.5;display:none}
-#cloud-warning strong{color:var(--amber)}
+#source-badge{font-size:10px;font-weight:700;letter-spacing:.06em;
+  color:var(--blue-light);background:var(--surface);border:1px solid var(--border);
+  padding:3px 8px;border-radius:10px;white-space:nowrap;align-self:center;flex-shrink:0}
+#group-badge{font-size:10px;font-weight:700;letter-spacing:.06em;
+  color:var(--amber);background:var(--surface);border:1px solid var(--amber-dim);
+  padding:3px 8px;border-radius:10px;white-space:nowrap;align-self:center;flex-shrink:0}
 
 /* Power / Mute */
 #power-row{display:flex;justify-content:center;gap:10px;padding:10px 20px 18px}
@@ -954,16 +956,9 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
         <div id="track-name">—</div>
         <div id="track-artist"></div>
       </div>
+      <div id="group-badge" style="display:none"></div>
       <div id="source-badge" style="display:none"></div>
     </div>
-
-    <div id="cloud-warning">
-      ⚠ <strong id="cloud-source-name"></strong> requires Bose cloud —
-      will stop working when the cloud shuts down on 6 May 2026.
-      Use a Custom Station or local backup instead.
-    </div>
-
-    <div id="sources-row"></div>
 
     <div id="vol-row">
       <span class="vol-icon vol-btn" onclick="nudgeVol(-1)">&#128264;</span>
@@ -1038,52 +1033,84 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   <div id="page-settings" class="page">
     <div class="manage-section">
 
-      <h2>Speaker Details</h2>
-      <div id="speaker-info">
-        <p style="font-size:12px;color:var(--fg3)">Select a speaker to view its details.</p>
-      </div>
-
-      <h2 style="margin-top:22px">Preset Backup</h2>
-      <p style="font-size:12px;color:var(--fg3);margin-bottom:10px">
-        Back up all speakers in one click. Speakers with no backup show ⚠ on their chip.
-        Critical before the Bose cloud shuts down on 6 May 2026.
-      </p>
-      <button class="mc-btn primary" onclick="backupAll()">Backup All Speakers</button>
-      <span id="backup-all-status" style="font-size:12px;color:var(--fg3);margin-left:10px"></span>
-
-      <h2 style="margin-top:22px">Discover Speakers</h2>
-      <p style="font-size:12px;color:var(--fg3);margin-bottom:10px">
-        Scan the local network to find all SoundTouch speakers.
-      </p>
-      <button id="scan-btn" onclick="rescan()">Scan for Speakers</button>
-
-      <h2 style="margin-top:22px">Alexa Integration</h2>
-      <div class="alexa-hint">
-        <strong>How it works:</strong> A separate Matter bridge process runs alongside
-        this app, exposing each speaker preset and power toggle as a Matter On/Off
-        device — <strong>no cloud, no account linking.</strong><br><br>
-        <strong>Step 1 —</strong> Scan for speakers above<br>
-        <strong>Step 2 —</strong> Commission the Matter bridge once in the Alexa app:<br>
-        &nbsp;&nbsp;Add Device → Other → Matter → expand panel below and scan QR<br>
-        <strong>Step 3 —</strong> Use phrases like:<br>
-        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on KISSTORY in Kitchen Bose</span><br>
-        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on Kitchen Bose power</span><br>
-        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, set Kitchen Bose volume to 40%</span><br><br>
-        <strong>Bridge logs:</strong>
-        <span class="alexa-phrase">journalctl --user -u soundtouch-matter -f</span>
-      </div>
-
-      <div class="qr-section" style="margin-top:12px">
-        <div class="qr-collapse-hdr" onclick="toggleQR()">
-          <span class="title">Commission Matter Bridge</span>
-          <span id="qr-status-badge" class="qr-collapse-badge warn">checking…</span>
-          <span id="qr-chevron" class="qr-chevron">&#9660;</span>
+      <!-- Discover Speakers -->
+      <div class="qr-section" style="margin-top:0">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-discover','chev-discover')">
+          <span class="title">Discover Speakers</span>
+          <span id="chev-discover" class="qr-chevron">&#9660;</span>
         </div>
-        <div id="qr-body" class="qr-body" style="display:none">
-          <div id="qr-box" class="qr-box">Loading…</div>
-          <div id="qr-manual" class="qr-manual"></div>
-          <div id="qr-status" class="qr-status" style="margin-top:8px"></div>
-          <button class="qr-refresh" onclick="loadAlexaQR()">Refresh</button>
+        <div id="sec-discover" class="qr-body" style="display:none">
+          <p style="font-size:12px;color:var(--fg3);margin-bottom:10px">
+            Scan the local network to find all SoundTouch speakers.
+          </p>
+          <button id="scan-btn" onclick="rescan()">Scan for Speakers</button>
+        </div>
+      </div>
+
+      <!-- Speaker Details -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-speaker','chev-speaker')">
+          <span class="title">Speaker Details</span>
+          <span id="chev-speaker" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-speaker" class="qr-body" style="display:none">
+          <div id="speaker-info">
+            <p style="font-size:12px;color:var(--fg3)">Select a speaker to view its details.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Preset Backup -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-backup','chev-backup')">
+          <span class="title">Preset Backup</span>
+          <span id="chev-backup" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-backup" class="qr-body" style="display:none">
+          <p style="font-size:12px;color:var(--fg3);margin-bottom:10px">
+            Back up all speakers in one click. Speakers with no backup show ⚠ on their chip.
+            Critical before the Bose cloud shuts down on 6 May 2026.
+          </p>
+          <button class="mc-btn primary" onclick="backupAll()">Backup All Speakers</button>
+          <span id="backup-all-status" style="font-size:12px;color:var(--fg3);margin-left:10px"></span>
+        </div>
+      </div>
+
+      <!-- Alexa Integration -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-alexa','chev-alexa')">
+          <span class="title">Alexa Integration</span>
+          <span id="chev-alexa" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-alexa" class="qr-body" style="display:none">
+          <div class="alexa-hint">
+            <strong>How it works:</strong> A separate Matter bridge process runs alongside
+            this app, exposing each speaker preset and power toggle as a Matter On/Off
+            device — <strong>no cloud, no account linking.</strong><br><br>
+            <strong>Step 1 —</strong> Scan for speakers above<br>
+            <strong>Step 2 —</strong> Commission the Matter bridge once in the Alexa app:<br>
+            &nbsp;&nbsp;Add Device → Other → Matter → expand panel below and scan QR<br>
+            <strong>Step 3 —</strong> Use phrases like:<br>
+            &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on KISSTORY in Kitchen Bose</span><br>
+            &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on Kitchen Bose power</span><br>
+            &nbsp;&nbsp;<span class="alexa-phrase">Alexa, set Kitchen Bose volume to 40%</span><br><br>
+            <strong>Bridge logs:</strong>
+            <span class="alexa-phrase">journalctl --user -u soundtouch-matter -f</span>
+          </div>
+
+          <div class="qr-section" style="margin-top:12px">
+            <div class="qr-collapse-hdr" onclick="toggleQR()">
+              <span class="title">Commission Matter Bridge</span>
+              <span id="qr-status-badge" class="qr-collapse-badge warn">checking…</span>
+              <span id="qr-chevron" class="qr-chevron">&#9660;</span>
+            </div>
+            <div id="qr-body" class="qr-body" style="display:none">
+              <div id="qr-box" class="qr-box">Loading…</div>
+              <div id="qr-manual" class="qr-manual"></div>
+              <div id="qr-status" class="qr-status" style="margin-top:8px"></div>
+              <button class="qr-refresh" onclick="loadAlexaQR()">Refresh</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1160,7 +1187,7 @@ function switchTab(name) {
     p.classList.toggle('visible', p.id === 'page-' + name));
   if (name === 'manage')   { loadStations(); loadBackupInfo(); }
   if (name === 'groups')   { loadGroups(); }
-  if (name === 'settings') { loadSpeakerInfo(); loadAlexaQR(); }
+  if (name === 'settings') { /* sections load on expand */ }
   localStorage.setItem('activeTab', name);
 }
 
@@ -1195,11 +1222,13 @@ function renderRooms() {
 }
 function setActive(h) {
   activeHost=h; clearTimeout(pollTimer); renderRooms(); pollNow();
-  loadSources();
   const tab = document.querySelector('.tab.active')?.dataset?.tab;
   if (tab === 'manage')   loadBackupInfo();
   if (tab === 'groups')   loadGroups();
-  if (tab === 'settings') loadSpeakerInfo();
+  if (tab === 'settings') {
+    const sec = document.getElementById('sec-speaker');
+    if (sec && sec.style.display !== 'none') loadSpeakerInfo();
+  }
 }
 
 // ── Polling ──────────────────────────────────────────────────────────────────
@@ -1248,6 +1277,14 @@ function applyState(d) {
   setText('track-name',track); setText('track-artist',artist);
   const badge=document.getElementById('source-badge');
   badge.textContent=d.source||''; badge.style.display=d.source?'':'none';
+  const gbadge=document.getElementById('group-badge');
+  if (d.group_role==='master') {
+    gbadge.textContent=`GROUP MASTER (${d.group_members||0})`; gbadge.style.display='';
+  } else if (d.group_role==='member') {
+    gbadge.textContent='GROUP MEMBER'; gbadge.style.display='';
+  } else {
+    gbadge.style.display='none';
+  }
   // art
   const artEl=document.getElementById('art'), ph=document.getElementById('art-placeholder');
   if (d.art && d.art!==lastArt) {
@@ -1256,14 +1293,6 @@ function applyState(d) {
     tmp.onerror=()=>{artEl.classList.add('hidden');ph.style.display=''};
     tmp.src=d.art;
   } else if (!d.art) { artEl.classList.add('hidden'); ph.style.display=''; }
-  // cloud-source warning
-  const CLOUD_SOURCES=['AMAZON','DEEZER','SIRIUSXM','IHEART','PANDORA','TUNEIN'];
-  const srcUp=(d.source||'').toUpperCase();
-  const warnEl=document.getElementById('cloud-warning');
-  const warnSrc=document.getElementById('cloud-source-name');
-  const isCloud=CLOUD_SOURCES.some(s=>srcUp.includes(s));
-  warnEl.style.display=isCloud?'':'none';
-  if(isCloud) warnSrc.textContent=d.source;
   // play icon
   document.getElementById('ico-play').style.display=d.playing?'none':'';
   document.getElementById('ico-pause').style.display=d.playing?'':'none';
@@ -1280,11 +1309,6 @@ function applyState(d) {
   // chip
   const chip=document.getElementById('chip-'+activeHost.replace(/\./g,'_'));
   if (chip) { chip.classList.toggle('playing',d.playing); chip.classList.add('active'); }
-  // source chips — re-highlight active source
-  document.querySelectorAll('.src-chip').forEach(el => {
-    const src = el.getAttribute('onclick')?.match(/'([^']+)'/)?.[1]||'';
-    el.classList.toggle('active', src === d.source);
-  });
   // presets — populate dropdown grid
   const g=document.getElementById('presets-grid');
   const presets = d.presets || [];
@@ -1569,31 +1593,6 @@ async function groupAll() {
 }
 
 
-// ── Sources ───────────────────────────────────────────────────────────────────
-const SOURCE_NAMES = {AUX:'AUX IN',BLUETOOTH:'Bluetooth',TUNEIN:'TuneIn',
-  SPOTIFY:'Spotify',AMAZON:'Amazon Music',LOCAL_INTERNET_RADIO:'Internet Radio',
-  STORED_MUSIC:'My Music',ALEXA:'Alexa'};
-let currentSources = [];
-async function loadSources() {
-  const row = document.getElementById('sources-row');
-  if (!row || !activeHost) { if(row) row.innerHTML=''; return; }
-  try {
-    currentSources = await (await fetch('/api/sources?host='+activeHost)).json();
-    const active = (lastState?.source||'').toUpperCase();
-    row.innerHTML = currentSources.map(s => {
-      const label = SOURCE_NAMES[s.source] || s.name || s.source;
-      const isActive = s.source === active || s.sourceAccount === lastState?.source;
-      const cls = ['src-chip', isActive?'active':'', s.status!=='READY'?'unavail':''].filter(Boolean).join(' ');
-      return `<span class="${cls}" onclick="selectSource('${s.source}','${s.sourceAccount}')">${label}</span>`;
-    }).join('');
-  } catch(e) { if(row) row.innerHTML=''; }
-}
-function selectSource(source, account) {
-  if (!activeHost) return;
-  fetch(`/api/select?host=${activeHost}&source=${encodeURIComponent(source)}&account=${encodeURIComponent(account)}`);
-  setTimeout(pollNow, 800);
-}
-
 // ── Bass ──────────────────────────────────────────────────────────────────────
 let bassTooltipTimer=null;
 async function loadBass() {
@@ -1731,6 +1730,15 @@ async function loadAlexaQR() {
     if (status){ status.textContent = 'systemctl --user start soundtouch-matter';
                  status.style.color = 'var(--fg3)'; }
   }
+}
+function toggleSection(bodyId, chevronId) {
+  const body    = document.getElementById(bodyId);
+  const chevron = document.getElementById(chevronId);
+  const opening = body.style.display === 'none';
+  body.style.display = opening ? 'block' : 'none';
+  if (chevron) chevron.classList.toggle('open', opening);
+  if (opening && bodyId === 'sec-speaker') loadSpeakerInfo();
+  if (opening && bodyId === 'sec-alexa')   loadAlexaQR();
 }
 function toggleQR() {
   const body    = document.getElementById('qr-body');
