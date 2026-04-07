@@ -34,6 +34,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
 from urllib.parse import parse_qs, urlparse
 
+import queue as _queue
+
+try:
+    import websocket as _websocket
+    HAS_WEBSOCKET = True
+except ImportError:
+    HAS_WEBSOCKET = False
+
 try:
     import requests
 except ImportError:
@@ -716,15 +724,6 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   color:var(--blue-light);background:var(--surface);border:1px solid var(--border);
   padding:3px 8px;border-radius:10px;white-space:nowrap;align-self:center;flex-shrink:0}
 
-/* Sources */
-#sources-row{display:flex;flex-wrap:wrap;gap:5px;padding:8px 0 2px;min-height:28px}
-.src-chip{font-size:11px;padding:3px 11px;border-radius:12px;cursor:pointer;
-  border:1px solid var(--border);background:var(--surface);color:var(--fg2);
-  transition:all .15s;white-space:nowrap}
-.src-chip.active{border-color:var(--blue);color:var(--blue-light);background:rgba(34,119,238,.1)}
-.src-chip.unavail{opacity:.3;cursor:default;pointer-events:none}
-.src-chip:not(.unavail):not(.active):hover{background:var(--surface2)}
-
 /* Bass */
 #bass-row{padding:6px 4px 0;display:flex;align-items:center;gap:10px}
 #bass-track{flex:1;position:relative;padding-top:22px}
@@ -963,8 +962,6 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
       Use a Custom Station or local backup instead.
     </div>
 
-    <div id="sources-row"></div>
-
     <div id="vol-row">
       <span class="vol-icon vol-btn" onclick="nudgeVol(-1)">&#128264;</span>
       <div id="vol-track">
@@ -1160,7 +1157,28 @@ window.addEventListener('DOMContentLoaded', () => {
   fetchSpeakers(false); schedPoll(); loadStations();
   const savedTab = localStorage.getItem('activeTab');
   if (savedTab) switchTab(savedTab);
+  startSSE();
 });
+
+// ── SSE — real-time push from speaker WebSocket events ───────────────────────
+function startSSE() {
+  const es = new EventSource('/api/events');
+  es.onmessage = (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      if (!d.host) return;
+      // Keep non-active chip playing dots accurate
+      const chip = document.getElementById('chip-'+d.host.replace(/\./g,'_'));
+      if (chip && d.playing !== undefined) chip.classList.toggle('playing', d.playing);
+      if (d.host !== activeHost) return;
+      // Preset change — trigger a full poll
+      if (d._refresh) { pollNow(); return; }
+      // Merge partial update into lastState and apply immediately
+      if (lastState) { Object.assign(lastState, d); applyState(lastState); }
+    } catch(err) {}
+  };
+  es.onerror = () => {}; // browser auto-reconnects
+}
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
 function switchTab(name) {
@@ -1205,7 +1223,7 @@ function renderRooms() {
 }
 function setActive(h) {
   activeHost=h; clearTimeout(pollTimer); renderRooms(); pollNow();
-  loadSources(); loadBass();
+  loadBass();
   const tab = document.querySelector('.tab.active')?.dataset?.tab;
   if (tab === 'manage')   loadBackupInfo();
   if (tab === 'groups')   loadGroups();
@@ -1290,11 +1308,6 @@ function applyState(d) {
   // chip
   const chip=document.getElementById('chip-'+activeHost.replace(/\./g,'_'));
   if (chip) { chip.classList.toggle('playing',d.playing); chip.classList.add('active'); }
-  // source chips — re-highlight active source
-  document.querySelectorAll('.src-chip').forEach(el => {
-    const src = el.getAttribute('onclick')?.match(/'([^']+)'/)?.[1]||'';
-    el.classList.toggle('active', src === d.source);
-  });
   // presets — populate dropdown grid
   const g=document.getElementById('presets-grid');
   const presets = d.presets || [];
@@ -1578,31 +1591,6 @@ async function groupAll() {
   toast('All speakers grouped'); setTimeout(loadGroups, 700);
 }
 
-
-// ── Sources ───────────────────────────────────────────────────────────────────
-const SOURCE_NAMES = {AUX:'AUX IN',BLUETOOTH:'Bluetooth',TUNEIN:'TuneIn',
-  SPOTIFY:'Spotify',AMAZON:'Amazon Music',LOCAL_INTERNET_RADIO:'Internet Radio',
-  STORED_MUSIC:'My Music',ALEXA:'Alexa'};
-let currentSources = [];
-async function loadSources() {
-  const row = document.getElementById('sources-row');
-  if (!row || !activeHost) { if(row) row.innerHTML=''; return; }
-  try {
-    currentSources = await (await fetch('/api/sources?host='+activeHost)).json();
-    const active = (lastState?.source||'').toUpperCase();
-    row.innerHTML = currentSources.map(s => {
-      const label = SOURCE_NAMES[s.source] || s.name || s.source;
-      const isActive = s.source === active || s.sourceAccount === lastState?.source;
-      const cls = ['src-chip', isActive?'active':'', s.status!=='READY'?'unavail':''].filter(Boolean).join(' ');
-      return `<span class="${cls}" onclick="selectSource('${s.source}','${s.sourceAccount}')">${label}</span>`;
-    }).join('');
-  } catch(e) { if(row) row.innerHTML=''; }
-}
-function selectSource(source, account) {
-  if (!activeHost) return;
-  fetch(`/api/select?host=${activeHost}&source=${encodeURIComponent(source)}&account=${encodeURIComponent(account)}`);
-  setTimeout(pollNow, 800);
-}
 
 // ── Bass ──────────────────────────────────────────────────────────────────────
 let bassTooltipTimer=null;
@@ -2075,6 +2063,34 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": str(e), "qrPairingCode": None,
                             "manualPairingCode": None, "commissioned": False, "qrText": None})
 
+        # ── SSE real-time event stream ────────────────────────────────────────
+        elif path == "/api/events":
+            q = _queue.Queue(maxsize=50)
+            with _sse_clients_lock:
+                _sse_clients.append(q)
+            self.send_response(200)
+            self.send_header("Content-Type",  "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            log.debug(f"[SSE] client connected {self.client_address}")
+            try:
+                while True:
+                    try:
+                        data = q.get(timeout=20)
+                        self.wfile.write(f"data: {data}\n\n".encode())
+                        self.wfile.flush()
+                    except _queue.Empty:
+                        self.wfile.write(b": heartbeat\n\n")
+                        self.wfile.flush()
+            except Exception:
+                pass
+            finally:
+                with _sse_clients_lock:
+                    try: _sse_clients.remove(q)
+                    except ValueError: pass
+            return
+
         # ── station descriptor (fetched by the speaker itself) ────────────────
         elif path.startswith("/api/station-desc/"):
             sid = path.split("/")[-1]
@@ -2141,18 +2157,130 @@ class Handler(BaseHTTPRequestHandler):
 # App state
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# ── SSE broadcast ──────────────────────────────────────────────────────────────
+_sse_clients      = []
+_sse_clients_lock = threading.Lock()
+
+def sse_push(event_dict):
+    data = json.dumps(event_dict)
+    with _sse_clients_lock:
+        dead = []
+        for q in _sse_clients:
+            try:   q.put_nowait(data)
+            except _queue.Full: dead.append(q)
+        for q in dead:
+            try: _sse_clients.remove(q)
+            except ValueError: pass
+
+# ── WebSocket listener — one per speaker ──────────────────────────────────────
+class SoundTouchWsListener:
+    """Connects to a speaker's WebSocket (port 8080) and pushes events via SSE."""
+
+    def __init__(self, device):
+        self.device   = device
+        self._app     = None
+        self._thread  = None
+        self._running = False
+
+    def start(self):
+        if not HAS_WEBSOCKET:
+            log.warning("[WS] websocket-client not available — real-time events disabled")
+            return
+        self._running = True
+        self._thread  = threading.Thread(
+            target=self._run, name=f"ws-{self.device.host}", daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._running = False
+        if self._app:
+            try: self._app.close()
+            except Exception: pass
+
+    # ── internal ──────────────────────────────────────────────────────────────
+    def _run(self):
+        url = f"ws://{self.device.host}:8080"
+        while self._running:
+            try:
+                self._app = _websocket.WebSocketApp(
+                    url,
+                    on_open    = lambda ws:       log.info(f"[WS {self.device.host}] connected"),
+                    on_message = lambda ws, msg:  self._on_message(msg),
+                    on_error   = lambda ws, err:  log.debug(f"[WS {self.device.host}] {err}"),
+                    on_close   = lambda ws, c, m: log.debug(f"[WS {self.device.host}] closed"),
+                )
+                self._app.run_forever(ping_interval=25, ping_timeout=10)
+            except Exception as e:
+                log.debug(f"[WS {self.device.host}] run error: {e}")
+            if self._running:
+                time.sleep(5)   # wait before reconnect
+
+    def _on_message(self, raw):
+        try:
+            xml  = ET.fromstring(raw)
+            push = {"host": self.device.host}
+
+            for child in xml:
+                tag = child.tag
+
+                if tag == "volumeUpdated":
+                    vol = child.find("volume")
+                    if vol is not None:
+                        av = vol.find("actualvolume")
+                        me = vol.find("muteenabled")
+                        if av is not None: push["volume"] = int(av.text)
+                        if me is not None: push["muted"]  = me.text.lower() == "true"
+
+                elif tag == "nowPlayingUpdated":
+                    np = child.find("nowPlaying")
+                    if np is not None:
+                        push["source"] = np.get("source", "")
+                        ps = np.get("playStatus") or np.findtext("playStatus") or ""
+                        push["playing"]    = ps in ("PLAY_STATE", "BUFFERING_STATE")
+                        push["playStatus"] = ps
+                        for xml_tag, key in [("track","track"),("artist","artist"),
+                                             ("album","album"),("stationName","track"),
+                                             ("art","art")]:
+                            el = np.find(xml_tag)
+                            if el is not None and el.text:
+                                push[key] = el.text
+
+                elif tag == "presetsUpdated":
+                    push["_refresh"] = True
+
+                elif tag in ("connectionStateUpdated","networkProxyUpdated",
+                             "LowPowerStandbyUpdated","recentsUpdated"):
+                    return   # not useful for UI
+
+            if len(push) > 1:
+                log.debug(f"[WS {self.device.host}] → {list(push.keys())}")
+                sse_push(push)
+
+        except Exception as e:
+            log.debug(f"[WS {self.device.host}] parse error: {e}")
+
+
 class AppState:
     def __init__(self, web_port=WEB_PORT):
-        self.devices  = []
-        self._lock    = threading.Lock()
-        self.store    = PresetStore()
-        self.web_port = web_port
+        self.devices      = []
+        self._lock        = threading.Lock()
+        self.store        = PresetStore()
+        self.web_port     = web_port
+        self._ws_listeners = {}   # host → SoundTouchWsListener
+
+    def _start_ws(self, dev):
+        if dev.host not in self._ws_listeners:
+            listener = SoundTouchWsListener(dev)
+            listener.start()
+            self._ws_listeners[dev.host] = listener
 
     def scan(self):
         log.info("Scanning network…")
         found = discover_all(timeout=3)
         with self._lock:
             self.devices = found
+        for dev in found:
+            self._start_ws(dev)
         log.info(f"Scan complete — {len(self.devices)} speaker(s).")
 
     def add_device(self, host, port=8090):
@@ -2161,6 +2289,7 @@ class AppState:
             with self._lock:
                 if not any(d.host == host for d in self.devices):
                     self.devices.append(dev)
+            self._start_ws(dev)
             return dev
         return None
 

@@ -30,7 +30,7 @@ fi
 echo "→  Installing Python packages…"
 
 pip_install() {
-  PKGS_APT=(python3-requests python3-zeroconf python3-pil)
+  PKGS_APT=(python3-requests python3-zeroconf python3-pil python3-websocket)
   MISSING_APT=()
   for pkg in "${PKGS_APT[@]}"; do
     dpkg -s "$pkg" &>/dev/null || MISSING_APT+=("$pkg")
@@ -41,10 +41,11 @@ pip_install() {
   fi
 
   MISSING_PIP=()
-  for pkg in requests zeroconf; do
+  for pkg in requests zeroconf websocket; do
     python3 -c "import $pkg" &>/dev/null 2>&1 || MISSING_PIP+=("$pkg")
   done
   python3 -c "import PIL" &>/dev/null 2>&1 || MISSING_PIP+=(Pillow)
+  python3 -c "import websocket" &>/dev/null 2>&1 || MISSING_PIP+=(websocket-client)
 
   if [ ${#MISSING_PIP[@]} -gt 0 ]; then
     echo "  → pip: ${MISSING_PIP[*]}"
