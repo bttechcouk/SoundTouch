@@ -7,6 +7,7 @@
  * Each speaker contributes:
  *   - Up to 6 preset slots (named after stored preset, e.g. "Living Room - BBC Radio 4")
  *   - 1 power toggle (e.g. "Living Room - Power")
+ *   - 1 dimmable volume device (e.g. "Living Room - Volume", level 0-254 → volume 0-100)
  */
 
 import "@project-chip/matter-node.js"; // registers Node.js crypto/net/time
@@ -14,7 +15,7 @@ import "@project-chip/matter-node.js"; // registers Node.js crypto/net/time
 import { MatterServer, CommissioningServer } from "@project-chip/matter-node.js";
 import { StorageManager, StorageBackendJsonFile } from "@project-chip/matter-node.js/storage";
 import { Logger, Level, Format } from "@project-chip/matter-node.js/log";
-import { Aggregator, OnOffPluginUnitDevice } from "@project-chip/matter.js/device";
+import { Aggregator, OnOffPluginUnitDevice, DimmablePluginUnitDevice } from "@project-chip/matter.js/device";
 import { QrCode, QrPairingCodeCodec, ManualPairingCodeCodec } from "@project-chip/matter.js/schema";
 import { VendorId } from "@project-chip/matter.js/datatype";
 
@@ -43,8 +44,9 @@ const DEVICE_NAME = "SoundTouch Bridge";
 //   "{preset} in {room}"  →  "Alexa, turn on KISS in Bedroom"
 //   "{room} {preset}"     →  "Alexa, turn on Bedroom KISS"
 //   "{room} - {preset}"   →  "Alexa, turn on Bedroom - KISS"  (original)
-const LABEL_FORMAT = "{preset} in {room} Bose";
-const POWER_FORMAT = "{room} Bose power";
+const LABEL_FORMAT  = "{preset} in {room} Bose";
+const POWER_FORMAT  = "{room} Bose power";
+const VOLUME_FORMAT = "{room} Bose volume";
 const PASSCODE = 20202021;
 const DISCRIMINATOR = 3840;
 
@@ -151,6 +153,13 @@ async function discoverDevices() {
             action: () => apiGet(`/api/cmd?host=${encodeURIComponent(host)}&action=power`),
         });
 
+        // Volume device — DimmablePluginUnit, level 0-254 maps to volume 0-100
+        const initialVolume = state.volume ?? 0;
+        devices.push({
+            label: VOLUME_FORMAT.replace("{room}", speakerName),
+            buildDevice: () => buildVolumeDevice(speakerName, host, initialVolume),
+        });
+
         // Zone join device — adds this speaker to the current group
         devices.push({
             label: `Join Group ${speakerName}`,
@@ -199,6 +208,47 @@ function buildMatterDevice(label, action, endpointIndex) {
     return device;
 }
 
+function buildVolumeDevice(speakerName, host, initialVolume) {
+    const initialLevel = Math.round(initialVolume / 100 * 254);
+    const device = new DimmablePluginUnitDevice(
+        { onOff: true },
+        { currentLevel: initialLevel, minLevel: 0, maxLevel: 254 },
+    );
+
+    let syncing = false;
+
+    device.addCurrentLevelListener(async (newLevel, oldLevel) => {
+        if (syncing || newLevel === null || newLevel === oldLevel) return;
+        const volume = Math.round(newLevel / 254 * 100);
+        logger.info(`[${speakerName} volume] → ${volume}% (level ${newLevel})`);
+        try {
+            await apiGet(`/api/cmd?host=${encodeURIComponent(host)}&action=volume&value=${volume}`);
+            logger.info(`[${speakerName} volume] ✓ volume set to ${volume}`);
+        } catch (err) {
+            logger.error(`[${speakerName} volume] ✗ command failed: ${err.message}`);
+        }
+    });
+
+    // Keep level in sync when volume is changed from the web UI
+    const SYNC_INTERVAL_MS = 10_000;
+    const syncTimer = setInterval(async () => {
+        try {
+            const state = await apiGet(`/api/state?host=${encodeURIComponent(host)}`);
+            const level = Math.round((state.volume ?? 0) / 100 * 254);
+            if (level !== device.getCurrentLevel()) {
+                syncing = true;
+                device.setCurrentLevel(level);
+                setTimeout(() => { syncing = false; }, 200);
+            }
+        } catch { /* ignore — speaker may be offline */ }
+    }, SYNC_INTERVAL_MS);
+
+    // Clean up timer on process exit
+    process.on("exit", () => clearInterval(syncTimer));
+
+    return device;
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -222,8 +272,8 @@ async function main() {
     const aggregator = new Aggregator();
 
     for (let i = 0; i < logicalDevices.length; i++) {
-        const { label, action } = logicalDevices[i];
-        const matterDevice = buildMatterDevice(label, action, i);
+        const { label, action, buildDevice } = logicalDevices[i];
+        const matterDevice = buildDevice ? buildDevice() : buildMatterDevice(label, action, i);
         const shortLabel = label.length > 32 ? label.slice(0, 32) : label;
         aggregator.addBridgedDevice(matterDevice, {
             nodeLabel: shortLabel,
