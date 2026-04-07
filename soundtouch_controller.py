@@ -975,16 +975,6 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
       <span class="vol-icon vol-btn" onclick="nudgeVol(1)">&#128266;</span>
     </div>
 
-    <div id="bass-row" style="display:none">
-      <span class="bass-label">Bass</span>
-      <div id="bass-track">
-        <div id="bass-tooltip">0</div>
-        <input type="range" id="bass-slider" min="-9" max="0" value="0"
-               oninput="onBassInput(this.value)" onchange="sendBass(this.value)">
-      </div>
-      <span class="bass-label">+</span>
-    </div>
-
     <div id="transport">
       <button class="t-btn t-btn-sm" onclick="cmd('prev')" title="Previous">
         <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
@@ -1205,7 +1195,7 @@ function renderRooms() {
 }
 function setActive(h) {
   activeHost=h; clearTimeout(pollTimer); renderRooms(); pollNow();
-  loadSources(); loadBass();
+  loadSources();
   const tab = document.querySelector('.tab.active')?.dataset?.tab;
   if (tab === 'manage')   loadBackupInfo();
   if (tab === 'groups')   loadGroups();
@@ -1616,7 +1606,7 @@ async function loadBass() {
       document.getElementById('bass-slider').max = d.max;
       document.getElementById('bass-slider').value = d.current;
       updateBass(d.current, d.min, d.max);
-      row.style.display = 'flex';
+      row.style.display = 'block';
     } else {
       row.style.display = 'none';
     }
@@ -1698,7 +1688,20 @@ async function loadSpeakerInfo() {
         color:var(--fg1);border-radius:8px;padding:6px 10px;font-size:13px"
         value="${d.name||''}" placeholder="Speaker name">
       <button class="mc-btn primary" onclick="renameSpeaker()">Rename</button>
+    </div>
+    <div id="bass-row" style="display:none;margin-top:16px">
+      <div style="font-size:12px;color:var(--fg3);font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">Bass</div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="bass-label">−</span>
+        <div id="bass-track" style="flex:1;position:relative;padding-top:22px">
+          <div id="bass-tooltip">0</div>
+          <input type="range" id="bass-slider" min="-9" max="0" value="0"
+                 oninput="onBassInput(this.value)" onchange="sendBass(this.value)">
+        </div>
+        <span class="bass-label">+</span>
+      </div>
     </div>`;
+    loadBass();
   } catch(e) {
     el.innerHTML = '<p style="font-size:12px;color:var(--fg3)">Could not load device info.</p>';
   }
