@@ -697,7 +697,7 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   color:var(--fg2);border-radius:20px;padding:8px 22px;font-size:13px;
   cursor:pointer;display:flex;align-items:center;gap:7px;transition:all .18s}
 #btn-power:active,#btn-mute:active{background:var(--surface2);color:var(--silver);border-color:var(--silver-dim)}
-#btn-mute.muted{background:rgba(34,119,238,.12);border-color:var(--blue);color:var(--blue-light)}
+#btn-mute.muted,#btn-power.playing{background:rgba(34,119,238,.12);border-color:var(--blue);color:var(--blue-light)}
 
 /* ── Page: Manage Presets ────────────────────────────────── */
 .manage-section{padding:14px 20px}
@@ -1108,6 +1108,8 @@ function applyState(d) {
   // play icon
   document.getElementById('ico-play').style.display=d.playing?'none':'';
   document.getElementById('ico-pause').style.display=d.playing?'':'none';
+  // power button — highlight while playing
+  document.getElementById('btn-power').classList.toggle('playing', d.playing);
   // mute button
   const muteBtn=document.getElementById('btn-mute');
   muteBtn.classList.toggle('muted', !!d.muted);
