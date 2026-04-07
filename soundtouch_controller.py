@@ -250,6 +250,19 @@ class SoundTouchDevice:
                     d[key] = el.text
         # presets
         d["presets"] = self.get_presets_detail()
+        # zone / group role
+        try:
+            z = self.get_zone()
+            if z["is_master"]:
+                d["group_role"] = "master"
+                d["group_members"] = len(z["members"])
+            elif z["is_slave"]:
+                d["group_role"] = "member"
+                d["group_master_ip"] = z["master_ip"]
+            else:
+                d["group_role"] = ""
+        except Exception:
+            d["group_role"] = ""
         return d
 
     def get_presets_detail(self):
@@ -805,6 +818,9 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 #source-badge{font-size:10px;font-weight:700;letter-spacing:.06em;
   color:var(--blue-light);background:var(--surface);border:1px solid var(--border);
   padding:3px 8px;border-radius:10px;white-space:nowrap;align-self:center;flex-shrink:0}
+#group-badge{font-size:10px;font-weight:700;letter-spacing:.06em;
+  color:var(--amber);background:var(--surface);border:1px solid var(--amber-dim);
+  padding:3px 8px;border-radius:10px;white-space:nowrap;align-self:center;flex-shrink:0}
 
 /* Power / Mute */
 #power-row{display:flex;justify-content:center;gap:10px;padding:10px 20px 18px}
@@ -941,6 +957,7 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
         <div id="track-artist"></div>
       </div>
       <div id="source-badge" style="display:none"></div>
+      <div id="group-badge" style="display:none"></div>
     </div>
 
     <div id="vol-row">
@@ -1260,6 +1277,14 @@ function applyState(d) {
   setText('track-name',track); setText('track-artist',artist);
   const badge=document.getElementById('source-badge');
   badge.textContent=d.source||''; badge.style.display=d.source?'':'none';
+  const gbadge=document.getElementById('group-badge');
+  if (d.group_role==='master') {
+    gbadge.textContent=`GROUP MASTER (${d.group_members||0})`; gbadge.style.display='';
+  } else if (d.group_role==='member') {
+    gbadge.textContent='GROUP MEMBER'; gbadge.style.display='';
+  } else {
+    gbadge.style.display='none';
+  }
   // art
   const artEl=document.getElementById('art'), ph=document.getElementById('art-placeholder');
   if (d.art && d.art!==lastArt) {
