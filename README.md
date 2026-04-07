@@ -2,38 +2,50 @@
 
 A lightweight web-based controller for **Bose SoundTouch** speakers on your local Wi-Fi network. Runs a local HTTP server so you can control your speakers from any device with a browser — desktop, iPhone, Android, or tablet — with no cloud dependency.
 
-A companion **Matter bridge** exposes every speaker preset and power toggle as a Matter On/Off device, enabling full Alexa voice control with no account linking and no cloud.
+A companion **Matter bridge** exposes every speaker preset, power toggle, and volume control as Matter devices, enabling full Alexa voice control with no account linking and no cloud.
+
+> **Note:** Bose is shutting down the SoundTouch cloud service on **6 May 2026**. This project gives your speakers a local-only future — no Bose account needed, no internet required.
 
 ---
 
 ## Features
 
-**Playback & Controls**
-- Play / Pause / Next / Previous
-- Volume slider
-- Power toggle
+**Player Tab**
+- Play / Pause / Next / Previous transport controls
+- Volume slider with nudge buttons and floating level tooltip
+- Mute toggle with icon state
+- Power toggle — highlights blue when speaker is playing
 - Now-playing display with album art
-- 6 Preset buttons with names loaded directly from the speaker
+- 6 Preset buttons with names loaded from the speaker
+- Source badge showing the active input (e.g. BLUETOOTH, SPOTIFY)
+- Group role badge — shows GROUP MASTER (N) or GROUP MEMBER when in a multi-room zone
 
-**Speaker Discovery**
+**Speaker Management**
 - Auto-discovers SoundTouch speakers via mDNS and subnet scan
-- Supports multiple speakers simultaneously
+- Supports multiple speakers simultaneously with per-speaker chip selector
+- Speaker chips show a playing indicator when audio is active
+- Offline speakers shown with dashed border and reduced opacity
 - Manual IP entry fallback if auto-discovery fails
 
-**Preset Backup & Custom Stations**
-- Backs up presets locally as JSON — survives a Bose cloud shutdown
-- Restore backed-up presets back to the speaker at any time
+**Settings Tab** (collapsible sections)
+- *Discover Speakers* — trigger a network scan
+- *Speaker Details* — model, firmware, IP, MAC, serial, device ID; rename the speaker; bass level control (where supported)
+- *Preset Backup* — back up all speaker presets to local JSON in one click; chips show ⚠ for speakers with no backup
+- *Alexa Integration* — setup guide and collapsible Matter commissioning QR panel with live status
+
+**Presets Tab**
+- Back up and restore individual speaker presets
 - Add custom internet radio streams via the web UI or `LOCAL_INTERNET_RADIO` in the source
 
-**Multi-Room Zones**
+**Groups Tab**
 - Group speakers together to play the same audio in sync
 - Set and dissolve zones from the web UI
 
 **Alexa Integration (Matter)**
-- Companion Matter bridge exposes each preset slot and power toggle as a Matter On/Off smart home device
+- Companion Matter bridge exposes each preset slot, power toggle, and volume as Matter smart home devices
 - Discovered and controlled locally — no cloud, no account linking
 - Supports Amazon Echo (5th gen Dot and later with Matter firmware)
-- Say `"Alexa, turn on KISS in Bedroom"` or use Alexa Routines for fully custom phrases like `"Alexa, play KISS in the bedroom"`
+- Say `"Alexa, turn on KISS in Bedroom Bose"` or `"Alexa, set Kitchen Bose volume to 40%"`
 
 **Service Mode**
 - Systemd user services for both the controller and the Matter bridge
@@ -164,31 +176,28 @@ The `matter_bridge/` directory contains a Node.js process that:
 
 1. On startup, queries the web controller's `/api/speakers` endpoint to get the current speaker list
 2. For each speaker, fetches `/api/state` to read preset names
-3. Registers each preset slot (1–6) and a power toggle per speaker as a **Matter On/Off device** inside a Matter Aggregator (bridge)
+3. Registers each preset slot (1–6) and a power toggle per speaker as a **Matter On/Off device**, and a volume control as a **Matter Dimmable device**, inside a Matter Aggregator (bridge)
 4. Announces itself via mDNS on UDP port 5540 so Alexa can discover it
 
-When Alexa sends an on command, the bridge calls the web controller's `/api/cmd` endpoint to trigger the preset or power toggle on the speaker.
+When Alexa sends an on command, the bridge calls the web controller's `/api/cmd` endpoint to trigger the preset or power toggle. Volume commands map Alexa's 0–100% to the speaker's volume range.
 
 ### First-time setup
 
 1. Make sure the web controller is running and has discovered your speakers.
-2. Start the Matter bridge — it prints a QR code and manual pairing code to the log:
-
-   ```bash
-   journalctl --user -u soundtouch-matter --no-pager | grep -A 15 "pairing code"
-   ```
-
-3. In the Alexa app: **Devices → + → Add Device → Other → Matter** and scan the QR code.
-4. Alexa will discover all devices (up to 28 for 4 speakers).
+2. Start the Matter bridge.
+3. In the Alexa app: **Devices → + → Add Device → Other → Matter**
+4. In the web UI, go to **Settings → Alexa Integration → Commission Matter Bridge** and scan the QR code.
+5. Alexa will discover all devices.
 
 ### Voice commands
 
-Devices are named `"<Preset> in <Room>"` and `"<Room> power"`, so you can say:
+Devices are named `"<Preset> in <Room> Bose"` and `"<Room> Bose power"`, so you can say:
 
 ```
-"Alexa, turn on KISS in Bedroom"
-"Alexa, turn on BBC Radio 1 in Kitchen"
-"Alexa, turn on Dining Room power"
+"Alexa, turn on KISS in Bedroom Bose"
+"Alexa, turn on BBC Radio 1 in Kitchen Bose"
+"Alexa, turn on Dining Room Bose power"
+"Alexa, set Kitchen Bose volume to 40%"
 ```
 
 ### Custom phrases with Alexa Routines
@@ -204,8 +213,9 @@ To use fully custom trigger phrases (e.g. `"Alexa, play KISS in the bedroom"`):
 The naming template is configurable at the top of `matter_bridge/matter_bridge.js`:
 
 ```js
-const LABEL_FORMAT = "{preset} in {room}";   // preset devices
-const POWER_FORMAT = "{room} power";          // power toggle devices
+const LABEL_FORMAT = "{preset} in {room} Bose";  // preset devices
+const POWER_FORMAT = "{room} Bose power";         // power toggle devices
+const VOLUME_FORMAT = "{room} Bose volume";       // volume devices
 ```
 
 ### Recommissioning
@@ -218,6 +228,29 @@ rm matter_bridge/data/matter/bridge.json
 systemctl --user start soundtouch-matter
 # Then re-add the device in the Alexa app
 ```
+
+---
+
+## Preset Backup
+
+With the Bose cloud shutting down on **6 May 2026**, cloud-hosted presets (TuneIn, Amazon Music, etc.) will stop resolving. Back up your presets now:
+
+1. In the web UI, go to **Settings → Preset Backup → Backup All Speakers**
+2. Backups are saved to `data/presets/<ip>.json`
+3. Restore at any time from the **Presets** tab
+
+Speaker chips show a ⚠ badge if they have no backup on file.
+
+---
+
+## Custom Internet Radio
+
+Add your own always-on streams that don't depend on the Bose cloud:
+
+- **Via web UI:** Presets tab → Custom Radio Stations → Add Station
+- **Via source file:** Edit the `LOCAL_INTERNET_RADIO` list near the top of `soundtouch_controller.py`
+
+Custom stations are stored in `data/stations/` and served locally so the speaker can resolve them without internet.
 
 ---
 
@@ -245,7 +278,7 @@ Node.js packages: `@project-chip/matter-node.js` (installed via `npm install`)
 ## Troubleshooting
 
 **Speaker not found automatically**
-- Click Scan in the web UI header, or enter the IP manually.
+- Go to Settings → Discover Speakers → Scan, or enter the IP manually with `--ip`.
 - Find the IP via your router's device list or the Bose SoundTouch app → Settings → About.
 
 **Web UI not reachable from phone**
@@ -262,7 +295,7 @@ Node.js packages: `@project-chip/matter-node.js` (installed via `npm install`)
 - Ensure the Echo and server are on the same subnet.
 
 **Matter bridge starts with no devices**
-- The bridge queries the web controller on startup. Make sure the controller has finished its network scan before the bridge starts (the bridge retries for up to 2 minutes automatically).
+- The bridge queries the web controller on startup. Make sure the controller has finished its network scan first (the bridge retries for up to 2 minutes automatically).
 
 **Logs**
 - Controller: `soundtouch.log` (rotates at 1 MB, keeps 5 files)
