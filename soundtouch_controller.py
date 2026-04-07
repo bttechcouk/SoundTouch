@@ -622,7 +622,13 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 .vol-btn{cursor:pointer;user-select:none;transition:color .15s}
 .vol-btn:hover{color:var(--fg1)}
 .vol-btn:active{color:var(--blue-light)}
-#vol-slider{flex:1;height:4px;-webkit-appearance:none;appearance:none;
+#vol-track{flex:1;position:relative;padding-top:22px}
+#vol-tooltip{position:absolute;top:0;transform:translateX(-50%);
+  background:var(--blue);color:#fff;font-size:11px;font-weight:700;
+  padding:2px 7px;border-radius:10px;pointer-events:none;white-space:nowrap;
+  opacity:0;transition:opacity .2s;left:var(--pct,20%)}
+#vol-tooltip.visible{opacity:1}
+#vol-slider{width:100%;height:4px;-webkit-appearance:none;appearance:none;
   border-radius:2px;outline:none;cursor:pointer;
   background:linear-gradient(to right,var(--blue) var(--pct,20%),var(--surface2) var(--pct,20%))}
 #vol-slider::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;
@@ -630,7 +636,6 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   box-shadow:0 0 8px var(--blue-glow)}
 #vol-slider::-moz-range-thumb{width:18px;height:18px;border-radius:50%;
   background:var(--silver);cursor:pointer;border:none}
-#vol-value{width:28px;text-align:right;font-size:12px;color:var(--fg3);flex-shrink:0}
 
 /* Transport */
 #transport{padding:14px 4px 6px;display:flex;align-items:center;justify-content:center;gap:20px}
@@ -829,9 +834,11 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 
     <div id="vol-row">
       <span class="vol-icon vol-btn" onclick="nudgeVol(-1)">&#128264;</span>
-      <input type="range" id="vol-slider" min="0" max="100" value="20"
-             oninput="onVolInput(this.value)" onchange="sendVol(this.value)">
-      <span id="vol-value">20</span>
+      <div id="vol-track">
+        <div id="vol-tooltip">20</div>
+        <input type="range" id="vol-slider" min="0" max="100" value="20"
+               oninput="onVolInput(this.value)" onchange="sendVol(this.value)">
+      </div>
       <span class="vol-icon vol-btn" onclick="nudgeVol(1)">&#128266;</span>
     </div>
 
@@ -970,6 +977,8 @@ let speakers=[], activeHost=null, pollTimer=null, lastArt="", lastState=null;
 // ── Boot ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   fetchSpeakers(false); schedPoll(); loadStations();
+  const savedTab = localStorage.getItem('activeTab');
+  if (savedTab) switchTab(savedTab);
 });
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
@@ -981,6 +990,7 @@ function switchTab(name) {
   if (name === 'manage') { loadStations(); loadBackupInfo(); }
   if (name === 'groups')  { loadGroups(); }
   if (name === 'alexa')   { loadAlexaQR(); }
+  localStorage.setItem('activeTab', name);
 }
 
 // ── Speakers ─────────────────────────────────────────────────────────────────
@@ -1054,7 +1064,7 @@ function applyState(d) {
   document.getElementById('ico-pause').style.display=d.playing?'':'none';
   // volume
   const sl=document.getElementById('vol-slider');
-  if (!sl.matches(':active')) { sl.value=d.volume; updateVol(d.volume); setText('vol-value',d.volume); }
+  if (!sl.matches(':active')) { sl.value=d.volume; updateVol(d.volume); }
   // chip
   const chip=document.getElementById('chip-'+activeHost.replace(/\./g,'_'));
   if (chip) { chip.classList.toggle('playing',d.playing); chip.classList.add('active'); }
@@ -1082,8 +1092,20 @@ function applyState(d) {
 }
 
 // ── Volume ───────────────────────────────────────────────────────────────────
-function onVolInput(v) { updateVol(v); setText('vol-value',v); }
-function updateVol(v) { document.getElementById('vol-slider').style.setProperty('--pct',v+'%'); }
+let volTooltipTimer=null;
+function onVolInput(v) {
+  updateVol(v);
+  const tip=document.getElementById('vol-tooltip');
+  tip.textContent=v; tip.classList.add('visible');
+  clearTimeout(volTooltipTimer);
+  volTooltipTimer=setTimeout(()=>tip.classList.remove('visible'), 1200);
+}
+function updateVol(v) {
+  const pct=v+'%';
+  document.getElementById('vol-track').style.setProperty('--pct',pct);
+  document.getElementById('vol-slider').style.setProperty('--pct',pct);
+  document.getElementById('vol-tooltip').style.left=pct;
+}
 let volD=null;
 function sendVol(v) { clearTimeout(volD); volD=setTimeout(()=>{
   if (activeHost) fetch(`/api/cmd?host=${activeHost}&action=volume&value=${v}`);
