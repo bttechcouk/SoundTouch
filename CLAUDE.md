@@ -50,7 +50,7 @@ journalctl --user -u soundtouch-matter -f                # bridge live logs
 
 Two processes, both must run together for Alexa integration to work.
 
-### `soundtouch_controller.py` (~1683 lines)
+### `soundtouch_controller.py` (~1782 lines)
 
 Single-file Python app. All classes in one file.
 
@@ -58,19 +58,19 @@ Single-file Python app. All classes in one file.
 
 **`PresetStore` (line 291)** — Reads/writes preset backups as JSON to `data/presets/<ip>.json` and custom station definitions to `data/stations/<id>.json`. The station server in `Handler` serves `station_descriptor()` JSON so the speaker can resolve a custom stream URL.
 
-**Discovery (line 388)** — `discover_mdns()` uses zeroconf to find `_soundtouch._tcp.local.` services. `discover_subnet_scan()` concurrently probes all 254 hosts on the local /24. Both run in parallel via `discover_all()`.
+**Discovery (line 401)** — `discover_mdns()` uses zeroconf to find `_soundtouch._tcp.local.` services. `discover_subnet_scan()` concurrently probes all 254 hosts on the local /24. Both run in parallel via `discover_all()`.
 
-**`Handler` (line 1320)** — `BaseHTTPRequestHandler` serving the single-page web UI (the `HTML` string embedded at line ~507) and a REST API under `/api/`. Endpoints: `/api/state`, `/api/cmd`, `/api/scan`, `/api/speakers`, `/api/presets/*`, `/api/stations/*`, `/api/zones/*`, `/api/station-desc/*`.
+**`Handler` (line 1320)** — `BaseHTTPRequestHandler` serving the single-page web UI (the `HTML` string embedded at line ~507) and a REST API under `/api/`. Endpoints: `/api/state`, `/api/cmd`, `/api/scan`, `/api/speakers`, `/api/presets/*`, `/api/stations/*`, `/api/group`, `/api/group/create`, `/api/group/remove`, `/api/group/party`, `/api/group/dissolve-all`, `/api/group/join`, `/api/station-desc/*`.
 
-**`AppState` (line 1535)** — Singleton holding the discovered device list and the `PresetStore`. Passed to `Handler` via `Handler.server_state`.
+**`AppState` (line 1634)** — Singleton holding the discovered device list and the `PresetStore`. Passed to `Handler` via `Handler.server_state`.
 
-**`main()` (line 1606)** — Parses `--port`, `--ip`, `--daemon`. Runs a network diagnostic (`_check_network()`), starts `AppState.scan()`, then launches `ThreadingHTTPServer`.
+**`main()` (line 1705)** — Parses `--port`, `--ip`, `--daemon`. Runs a network diagnostic (`_check_network()`), starts `AppState.scan()`, then launches `ThreadingHTTPServer`.
 
 ### `matter_bridge/matter_bridge.js`
 
 Node.js process using `@project-chip/matter-node.js` v0.7.5.
 
-On startup it calls `GET /api/speakers` (retrying for up to 120 s until the Python controller is ready), then `GET /api/state?host=<ip>` for each speaker to read preset names. It registers each preset slot (1–6) and a power toggle per speaker as a `OnOffPluginUnitDevice` inside a Matter `Aggregator` (bridge device type). When Alexa sends an on command, it calls `GET /api/cmd?host=<ip>&action=preset<n>` or `action=power`.
+On startup it calls `GET /api/speakers` (retrying for up to 120 s until the Python controller is ready), then `GET /api/state?host=<ip>` for each speaker to read preset names. It registers each preset slot (1–6) and a power toggle per speaker as a `OnOffPluginUnitDevice` inside a Matter `Aggregator` (bridge device type). When Alexa sends an on command, it calls `GET /api/cmd?host=<ip>&action=preset<n>` or `action=power`. Group helpers (`/api/group/party`, `/api/group/dissolve-all`, `/api/group/join`) are also used for multi-room Alexa commands.
 
 Key config constants at the top of `matter_bridge.js`:
 - `LABEL_FORMAT` / `POWER_FORMAT` — device name templates (`{preset}`, `{room}` tokens)

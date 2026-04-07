@@ -236,7 +236,7 @@ class SoundTouchDevice:
         )
         return self._post("/select", xml)
 
-    # ── zone / multi-room ─────────────────────────────────────────────────────
+    # ── group / multi-room ─────────────────────────────────────────────────────
     def get_zone(self):
         """Return zone membership info for this speaker."""
         zx = self._get("/getZone")
@@ -619,6 +619,9 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 /* Volume */
 #vol-row{padding:12px 4px 0;display:flex;align-items:center;gap:10px}
 .vol-icon{color:var(--fg3);font-size:15px;flex-shrink:0}
+.vol-btn{cursor:pointer;user-select:none;transition:color .15s}
+.vol-btn:hover{color:var(--fg1)}
+.vol-btn:active{color:var(--blue-light)}
 #vol-slider{flex:1;height:4px;-webkit-appearance:none;appearance:none;
   border-radius:2px;outline:none;cursor:pointer;
   background:linear-gradient(to right,var(--blue) var(--pct,20%),var(--surface2) var(--pct,20%))}
@@ -728,6 +731,20 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   border:1px solid var(--border);border-radius:6px;padding:2px 8px;
   font-family:monospace;font-size:12px;color:var(--silver);margin:1px 0}
 
+.qr-section{margin-top:18px;padding:16px;background:var(--surface1);
+  border:1px solid var(--border);border-radius:var(--radius)}
+.qr-section h3{margin:0 0 12px;font-size:13px;color:var(--fg1)}
+.qr-box{background:#fff;color:#000;font-family:monospace;font-size:13px;
+  line-height:1;padding:14px;border-radius:6px;display:inline-block;
+  border:2px solid #ccc;white-space:pre}
+.qr-manual{font-family:monospace;font-size:15px;letter-spacing:2px;
+  color:var(--fg1);margin-top:10px}
+.qr-status{font-size:11px;color:var(--fg2);margin-top:6px}
+.qr-refresh{margin-top:10px;padding:5px 14px;font-size:12px;
+  background:var(--surface2);border:1px solid var(--border);
+  border-radius:6px;color:var(--fg1);cursor:pointer}
+.qr-refresh:hover{background:var(--surface3)}
+
 /* ── Toast ───────────────────────────────────────────────── */
 #toast{position:fixed;bottom:32px;left:50%;transform:translateX(-50%);
   background:rgba(19,21,29,.96);color:var(--blue-light);border:1px solid var(--blue-dim);
@@ -778,7 +795,7 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   <div id="tabs">
     <div class="tab active" data-tab="player" onclick="switchTab('player')">Player</div>
     <div class="tab"        data-tab="manage" onclick="switchTab('manage')">Presets</div>
-    <div class="tab"        data-tab="zones"  onclick="switchTab('zones')">Zones</div>
+    <div class="tab"        data-tab="groups"  onclick="switchTab('groups')">Groups</div>
     <div class="tab"        data-tab="alexa"  onclick="switchTab('alexa')">Alexa</div>
   </div>
 
@@ -811,11 +828,11 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
     </div>
 
     <div id="vol-row">
-      <span class="vol-icon">&#128264;</span>
+      <span class="vol-icon vol-btn" onclick="nudgeVol(-1)">&#128264;</span>
       <input type="range" id="vol-slider" min="0" max="100" value="20"
              oninput="onVolInput(this.value)" onchange="sendVol(this.value)">
       <span id="vol-value">20</span>
-      <span class="vol-icon">&#128266;</span>
+      <span class="vol-icon vol-btn" onclick="nudgeVol(1)">&#128266;</span>
     </div>
 
     <div id="transport">
@@ -853,16 +870,16 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
     </div>
   </div>
 
-  <!-- ═══ PAGE: Zones ═══ -->
-  <div id="page-zones" class="page">
+  <!-- ═══ PAGE: Groups ═══ -->
+  <div id="page-groups" class="page">
     <div class="manage-section">
-      <h2>Multi-Room Zones</h2>
+      <h2>Multi-Room Groups</h2>
       <p style="font-size:12px;color:var(--fg3);margin-bottom:14px">
         Group speakers together so they all play the same audio in sync.
-        The active speaker becomes the zone master.
+        The active speaker becomes the group master.
       </p>
-      <div id="zone-status"></div>
-      <div id="zone-builder"></div>
+      <div id="group-status"></div>
+      <div id="group-builder"></div>
     </div>
   </div>
 
@@ -877,14 +894,20 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
         device — <strong>no cloud, no account linking.</strong><br><br>
         <strong>Step 1 —</strong> Scan for speakers (tap Scan in the header)<br>
         <strong>Step 2 —</strong> Commission the Matter bridge once in the Alexa app:<br>
-        &nbsp;&nbsp;Add Device → Other → Matter → scan QR code from bridge logs<br>
+        &nbsp;&nbsp;Add Device → Other → Matter → scan QR code below<br>
         <strong>Step 3 —</strong> Use phrases like:<br>
-        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on Dining Room KISSTORY</span><br>
-        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on Kitchen Power</span><br><br>
+        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on KISSTORY in Kitchen Bose</span><br>
+        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on Kitchen Bose power</span><br><br>
         <strong>Bridge logs:</strong>
-        <span class="alexa-phrase">journalctl --user -u soundtouch-matter -f</span><br>
-        <strong>QR / pairing code:</strong>
-        <span class="alexa-phrase">journalctl --user -u soundtouch-matter | grep -A2 "pairing code"</span>
+        <span class="alexa-phrase">journalctl --user -u soundtouch-matter -f</span>
+      </div>
+
+      <div class="qr-section">
+        <h3>Commission Matter Bridge</h3>
+        <div id="qr-box" class="qr-box">Loading…</div>
+        <div id="qr-manual" class="qr-manual"></div>
+        <div id="qr-status" class="qr-status"></div>
+        <br><button class="qr-refresh" onclick="loadAlexaQR()">Refresh</button>
       </div>
     </div>
   </div>
@@ -956,7 +979,8 @@ function switchTab(name) {
   document.querySelectorAll('.page').forEach(p =>
     p.classList.toggle('visible', p.id === 'page-' + name));
   if (name === 'manage') { loadStations(); loadBackupInfo(); }
-  if (name === 'zones')  { loadZones(); }
+  if (name === 'groups')  { loadGroups(); }
+  if (name === 'alexa')   { loadAlexaQR(); }
 }
 
 // ── Speakers ─────────────────────────────────────────────────────────────────
@@ -1059,6 +1083,11 @@ let volD=null;
 function sendVol(v) { clearTimeout(volD); volD=setTimeout(()=>{
   if (activeHost) fetch(`/api/cmd?host=${activeHost}&action=volume&value=${v}`);
 }, 200); }
+function nudgeVol(delta) {
+  const s = document.getElementById('vol-slider');
+  const v = Math.min(100, Math.max(0, parseInt(s.value) + delta));
+  s.value = v; onVolInput(v); sendVol(v);
+}
 
 // ── Commands ─────────────────────────────────────────────────────────────────
 async function cmd(a) {
@@ -1190,41 +1219,41 @@ function closePresets() {
   document.getElementById('preset-toggle').classList.remove('open');
 }
 
-// ── Zones ────────────────────────────────────────────────────────────────────
-async function loadZones() {
+// ── Groups ────────────────────────────────────────────────────────────────────
+async function loadGroups() {
   if (!activeHost) {
-    document.getElementById('zone-status').innerHTML =
+    document.getElementById('group-status').innerHTML =
       '<p style="font-size:12px;color:var(--fg3)">Select a speaker first.</p>';
-    document.getElementById('zone-builder').innerHTML = '';
+    document.getElementById('group-builder').innerHTML = '';
     return;
   }
   let zone;
-  try { zone = await (await fetch('/api/zone?host='+activeHost)).json(); }
+  try { zone = await (await fetch('/api/group?host='+activeHost)).json(); }
   catch(e){ return; }
 
-  const statusEl  = document.getElementById('zone-status');
-  const builderEl = document.getElementById('zone-builder');
+  const statusEl  = document.getElementById('group-status');
+  const builderEl = document.getElementById('group-builder');
 
   // ─ Status card ─────────────────────────────────────────────────────────────
   if (zone.is_master) {
     const count = (zone.members||[]).length;
     statusEl.innerHTML = `<div class="manage-card">
       <div class="mc-left">
-        <div class="mc-name">🔊 Zone Master</div>
+        <div class="mc-name">🔊 Group Master</div>
         <div class="mc-meta">${count} speaker${count!==1?'s':''} grouped</div>
       </div>
       <div class="mc-actions">
-        <button class="mc-btn danger" onclick="dissolveZone()">Dissolve</button>
+        <button class="mc-btn danger" onclick="dissolveGroup()">Dissolve</button>
       </div></div>`;
   } else if (zone.is_slave) {
     statusEl.innerHTML = `<div class="manage-card">
       <div class="mc-left">
-        <div class="mc-name">🔉 Zone Member</div>
+        <div class="mc-name">🔉 Group Member</div>
         <div class="mc-meta">Following master at ${zone.master_ip||'unknown'}</div>
       </div></div>`;
   } else {
     statusEl.innerHTML =
-      '<p style="font-size:12px;color:var(--fg3);margin-bottom:12px">Not in a zone. Add speakers below to create one.</p>';
+      '<p style="font-size:12px;color:var(--fg3);margin-bottom:12px">Not in a group. Add speakers below to create one.</p>';
   }
 
   // Slaves can't be used to add/remove — only the master can
@@ -1244,12 +1273,12 @@ async function loadZones() {
       <div class="manage-card">
         <div class="mc-left">
           <div class="mc-name">${s.name}</div>
-          <div class="mc-meta">${s.host}${memberIPs.has(s.host)?' · In zone':''}</div>
+          <div class="mc-meta">${s.host}${memberIPs.has(s.host)?' · In group':''}</div>
         </div>
         <div class="mc-actions">
           ${memberIPs.has(s.host)
-            ? `<button class="mc-btn danger" onclick="removeFromZone('${s.host}')">Remove</button>`
-            : `<button class="mc-btn primary" onclick="addToZone('${s.host}')">Add</button>`}
+            ? `<button class="mc-btn danger" onclick="removeFromGroup('${s.host}')">Remove</button>`
+            : `<button class="mc-btn primary" onclick="addToGroup('${s.host}')">Add</button>`}
         </div>
       </div>`).join('')}
     <button class="mc-btn primary" onclick="groupAll()"
@@ -1258,43 +1287,73 @@ async function loadZones() {
     </button>`;
 }
 
-async function addToZone(slaveHost) {
+async function addToGroup(slaveHost) {
   if (!activeHost) return;
   let zone;
-  try { zone = await (await fetch('/api/zone?host='+activeHost)).json(); } catch(e){ return; }
+  try { zone = await (await fetch('/api/group?host='+activeHost)).json(); } catch(e){ return; }
   const existing = (zone.members||[]).map(m=>m.ip).filter(ip=>ip!==activeHost);
   if (!existing.includes(slaveHost)) existing.push(slaveHost);
-  await fetch(`/api/zone/create?master=${activeHost}&slaves=${existing.join(',')}`);
-  toast('Zone updated'); setTimeout(loadZones, 700);
+  await fetch(`/api/group/create?master=${activeHost}&slaves=${existing.join(',')}`);
+  toast('Group updated'); setTimeout(loadGroups, 700);
 }
 
-async function removeFromZone(slaveHost) {
+async function removeFromGroup(slaveHost) {
   if (!activeHost) return;
   let zone;
-  try { zone = await (await fetch('/api/zone?host='+activeHost)).json(); } catch(e){ return; }
+  try { zone = await (await fetch('/api/group?host='+activeHost)).json(); } catch(e){ return; }
   const remaining = (zone.members||[]).map(m=>m.ip).filter(ip=>ip!==activeHost && ip!==slaveHost);
   if (remaining.length) {
-    await fetch(`/api/zone/create?master=${activeHost}&slaves=${remaining.join(',')}`);
+    await fetch(`/api/group/create?master=${activeHost}&slaves=${remaining.join(',')}`);
   } else {
-    await fetch('/api/zone/remove?host='+activeHost);
+    await fetch('/api/group/remove?host='+activeHost);
   }
-  toast('Zone updated'); setTimeout(loadZones, 700);
+  toast('Group updated'); setTimeout(loadGroups, 700);
 }
 
-async function dissolveZone() {
-  if (!confirm('Dissolve this zone? All speakers will play independently.')) return;
-  await fetch('/api/zone/remove?host='+activeHost);
-  toast('Zone dissolved'); setTimeout(loadZones, 700);
+async function dissolveGroup() {
+  if (!confirm('Dissolve this group? All speakers will play independently.')) return;
+  await fetch('/api/group/remove?host='+activeHost);
+  toast('Group dissolved'); setTimeout(loadGroups, 700);
 }
 
 async function groupAll() {
   if (!activeHost) return;
   const slaves = speakers.filter(s=>s.host!==activeHost).map(s=>s.host).join(',');
   if (!slaves) { toast('No other speakers to group'); return; }
-  await fetch(`/api/zone/create?master=${activeHost}&slaves=${slaves}`);
-  toast('All speakers grouped'); setTimeout(loadZones, 700);
+  await fetch(`/api/group/create?master=${activeHost}&slaves=${slaves}`);
+  toast('All speakers grouped'); setTimeout(loadGroups, 700);
 }
 
+
+// ── Alexa / Matter QR ────────────────────────────────────────────────────────
+async function loadAlexaQR() {
+  const box    = document.getElementById('qr-box');
+  const manual = document.getElementById('qr-manual');
+  const status = document.getElementById('qr-status');
+  box.textContent = 'Loading…';
+  manual.textContent = '';
+  status.textContent = '';
+  try {
+    const d = await (await fetch('/api/matter/qr')).json();
+    if (d.qrText) {
+      box.textContent = d.qrText;
+    } else {
+      box.textContent = '(QR not available)';
+    }
+    manual.textContent = d.manualPairingCode ? 'Manual code: ' + d.manualPairingCode : '';
+    if (d.commissioned) {
+      status.textContent = '✓ Already commissioned with Alexa';
+      status.style.color = 'var(--green)';
+    } else {
+      status.textContent = 'Not yet commissioned — scan QR in Alexa app: Add Device → Other → Matter';
+      status.style.color = 'var(--fg2)';
+    }
+  } catch(e) {
+    box.textContent = 'Bridge not running';
+    status.textContent = 'Start the Matter bridge: systemctl --user start soundtouch-matter';
+    status.style.color = 'var(--fg3)';
+  }
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function setText(id,v) { const e=document.getElementById(id); if(e) e.textContent=v; }
@@ -1438,13 +1497,13 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"ok":False})
 
-        # ── zone / multi-room ─────────────────────────────────────────────────
-        elif path == "/api/zone":
+        # ── group / multi-room ─────────────────────────────────────────────────
+        elif path == "/api/group":
             host = qs.get("host",[None])[0]
             dev  = self.server_state.get_device(host)
             self._json(dev.get_zone() if dev else {"error":"no_device"})
 
-        elif path == "/api/zone/create":
+        elif path == "/api/group/create":
             master_host = qs.get("master",[None])[0]
             raw_slaves  = qs.get("slaves",[""])[0]
             slave_hosts = [h for h in raw_slaves.split(",") if h]
@@ -1458,13 +1517,121 @@ class Handler(BaseHTTPRequestHandler):
                 master_dev.set_zone(slave_devs)
                 self._json({"ok":True})
 
-        elif path == "/api/zone/remove":
+        elif path == "/api/group/remove":
             host = qs.get("host",[None])[0]
             dev  = self.server_state.get_device(host)
             if dev:
                 dev.remove_zone(); self._json({"ok":True})
             else:
                 self._json({"ok":False,"error":"no_device"})
+
+        # ── group helpers for Matter / Alexa ───────────────────────────────────
+
+        elif path == "/api/group/party":
+            # Join ALL speakers into one group. The currently-playing speaker
+            # becomes master; if none is playing, use the first speaker.
+            devices = list(self.server_state.devices)
+            if len(devices) < 2:
+                self._json({"ok": False, "error": "need_two_speakers"})
+            else:
+                master = None
+                for d in devices:
+                    try:
+                        st = d.state()
+                        if st.get("playStatus") not in ("STOP_STATE", None, ""):
+                            master = d; break
+                    except Exception:
+                        pass
+                if master is None:
+                    master = devices[0]
+                slaves = [d for d in devices if d is not master]
+                master.set_zone(slaves)
+                log.info(f"[GROUP] Party mode — master={master.host} "
+                         f"slaves={[d.host for d in slaves]}")
+                self._json({"ok": True, "master": master.host,
+                            "slaves": [d.host for d in slaves]})
+
+        elif path == "/api/group/dissolve-all":
+            # Dissolve every active group across all speakers.
+            devices = list(self.server_state.devices)
+            dissolved = []
+            for d in devices:
+                try:
+                    zinfo = d.get_zone()
+                    if zinfo.get("is_master"):
+                        d.remove_zone()
+                        dissolved.append(d.host)
+                except Exception:
+                    pass
+            log.info(f"[GROUP] Dissolved groups on: {dissolved}")
+            self._json({"ok": True, "dissolved": dissolved})
+
+        elif path == "/api/group/join":
+            # Add a specific speaker to the current group. If no zone exists,
+            # the currently-playing speaker becomes master with host as slave.
+            host    = qs.get("host", [None])[0]
+            target  = self.server_state.get_device(host)
+            if not target:
+                self._json({"ok": False, "error": "no_device"}); return
+
+            devices = list(self.server_state.devices)
+            # Find existing group master
+            master = None
+            existing_slaves = []
+            for d in devices:
+                try:
+                    zinfo = d.get_zone()
+                    if zinfo.get("is_master"):
+                        master = d
+                        existing_slaves = [
+                            self.server_state.get_device(m["ip"])
+                            for m in zinfo.get("members", [])
+                            if m["ip"] != d.host
+                        ]
+                        existing_slaves = [s for s in existing_slaves if s]
+                        break
+                except Exception:
+                    pass
+
+            if master is None:
+                # No existing group — find a playing speaker to be master
+                for d in devices:
+                    if d is target:
+                        continue
+                    try:
+                        st = d.state()
+                        if st.get("playStatus") not in ("STOP_STATE", None, ""):
+                            master = d; break
+                    except Exception:
+                        pass
+                if master is None:
+                    # Fall back to first speaker that isn't the target
+                    others = [d for d in devices if d is not target]
+                    master = others[0] if others else None
+
+            if master is None:
+                self._json({"ok": False, "error": "no_master_found"})
+            elif target.host == master.host:
+                self._json({"ok": False, "error": "target_is_master"})
+            else:
+                # Add target to slaves if not already present
+                slave_hosts = {d.host for d in existing_slaves}
+                if target.host not in slave_hosts:
+                    existing_slaves.append(target)
+                master.set_zone(existing_slaves)
+                log.info(f"[GROUP] Join — master={master.host} "
+                         f"slaves={[d.host for d in existing_slaves]}")
+                self._json({"ok": True, "master": master.host,
+                            "slaves": [d.host for d in existing_slaves]})
+
+        # ── Matter bridge QR code ─────────────────────────────────────────────
+        elif path == "/api/matter/qr":
+            try:
+                r = requests.get("http://localhost:8889/qr", timeout=3)
+                self._respond(200, "application/json", r.content)
+            except Exception as e:
+                self._json({"error": str(e), "qrPairingCode": None,
+                            "manualPairingCode": None, "commissioned": False, "qrText": None})
 
         # ── station descriptor (fetched by the speaker itself) ────────────────
         elif path.startswith("/api/station-desc/"):
