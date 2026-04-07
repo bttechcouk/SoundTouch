@@ -144,6 +144,83 @@ class SoundTouchDevice:
             self.name = self.host
         return True
 
+    def detail_info(self):
+        """Return network/firmware details for the Settings tab."""
+        xml = self._get("/info")
+        if xml is None:
+            return {"name": self.name, "model": self.model, "ip": self.host}
+        result = {
+            "name":      xml.findtext("name") or self.name,
+            "model":     xml.findtext("type") or self.model,
+            "device_id": xml.get("deviceID", ""),
+            "firmware":  "",
+            "serial":    "",
+            "ip":        self.host,
+            "mac":       "",
+            "country":   xml.findtext("countryCode") or "",
+        }
+        for comp in xml.findall("components/component"):
+            cat = comp.findtext("componentCategory", "")
+            if cat == "SCM":
+                fw = comp.findtext("softwareVersion", "")
+                result["firmware"] = fw.split()[0] if fw else ""
+                result["serial"]   = comp.findtext("serialNumber", "")
+            elif cat == "PackagedProduct" and not result["serial"]:
+                result["serial"] = comp.findtext("serialNumber", "")
+        for ni in xml.findall("networkInfo"):
+            if ni.get("type") == "SCM":
+                result["ip"]  = ni.findtext("ipAddress") or self.host
+                result["mac"] = ni.findtext("macAddress") or ""
+                break
+        return result
+
+    def get_bass_capabilities(self):
+        xml = self._get("/bassCapabilities")
+        if xml is None:
+            return {"available": False, "min": -9, "max": 0, "default": 0}
+        return {
+            "available": (xml.findtext("bassAvailable") or "false").lower() == "true",
+            "min":     int(xml.findtext("bassMin")     or "-9"),
+            "max":     int(xml.findtext("bassMax")     or "0"),
+            "default": int(xml.findtext("bassDefault") or "0"),
+        }
+
+    def get_bass(self):
+        xml = self._get("/bass")
+        if xml is None: return 0
+        return int(xml.findtext("actualbass") or "0")
+
+    def set_bass(self, value):
+        self._post("/bass", f"<bass>{max(-9, min(9, int(value)))}</bass>")
+
+    def get_sources(self):
+        xml = self._get("/sources")
+        if xml is None: return []
+        SKIP_ACCOUNTS = {"qplay1username","qplay2username","storedmusicusername",
+                         "upnpusername","spotifyconnectusername","spotifyalexausername"}
+        SKIP_SOURCES  = {"NOTIFICATION","STORED_MUSIC_MEDIA_RENDERER"}
+        out = []
+        for item in xml.findall("sourceItem"):
+            src  = item.get("source","")
+            acct = item.get("sourceAccount","")
+            if src in SKIP_SOURCES or acct.lower() in SKIP_ACCOUNTS:
+                continue
+            out.append({
+                "source":        src,
+                "sourceAccount": acct,
+                "status":        item.get("status",""),
+                "name":          (item.text or src).strip(),
+                "isLocal":       item.get("isLocal","false") == "true",
+            })
+        return out
+
+    def select_source(self, source, account=""):
+        body = f'<ContentItem source="{source}" sourceAccount="{account}"></ContentItem>'
+        self._post("/select", body)
+
+    def set_name(self, new_name):
+        self._post("/name", f"<name>{new_name}</name>")
+
     # ── state snapshot ────────────────────────────────────────────────────────
     def state(self):
         d = dict(host=self.host, name=self.name, model=self.model,
@@ -162,8 +239,10 @@ class SoundTouchDevice:
         # now playing
         np = self._get("/now_playing")
         if np is not None:
-            d["source"]  = np.get("source","")
-            d["playing"] = np.get("playStatus","") == "PLAY_STATE"
+            d["source"]     = np.get("source","")
+            play_status     = np.get("playStatus") or np.findtext("playStatus") or ""
+            d["playing"]    = play_status in ("PLAY_STATE", "BUFFERING_STATE")
+            d["playStatus"] = play_status
             for tag, key in [("track","track"),("artist","artist"),
                               ("album","album"),("stationName","track"),("art","art")]:
                 el = np.find(tag)
@@ -563,6 +642,25 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 #scan-btn.spinning::after{content:" ↻";display:inline-block;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 
+.speaker-info-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+.speaker-info-table tr{border-bottom:1px solid var(--border)}
+.speaker-info-table td{padding:7px 4px}
+.speaker-info-table td:first-child{color:var(--fg3);width:38%}
+.speaker-info-table td:last-child{color:var(--fg1);font-family:monospace;font-size:11px;word-break:break-all}
+
+.qr-collapse-hdr{display:flex;align-items:center;gap:10px;cursor:pointer;
+  padding:11px 14px;user-select:none;background:var(--surface1);
+  border-radius:var(--radius);border:1px solid var(--border);margin-top:4px}
+.qr-collapse-hdr:hover{background:var(--surface2)}
+.qr-collapse-hdr span.title{font-size:13px;font-weight:600;color:var(--fg1);flex:1}
+.qr-collapse-badge{font-size:11px;padding:2px 8px;border-radius:10px;
+  background:var(--surface2);border:1px solid var(--border)}
+.qr-collapse-badge.ok{color:#4caf50;border-color:#4caf5055;background:rgba(76,175,80,.08)}
+.qr-collapse-badge.warn{color:var(--fg3);border-color:var(--border)}
+.qr-chevron{font-size:10px;color:var(--fg3);transition:transform .2s;flex-shrink:0}
+.qr-chevron.open{transform:rotate(180deg)}
+.qr-body{padding:14px 4px 4px}
+
 /* ── Tabs ────────────────────────────────────────────────── */
 #tabs{display:flex;border-bottom:1px solid var(--border);margin:12px 20px 0;gap:0}
 .tab{flex:1;text-align:center;padding:9px 0;font-size:12px;font-weight:600;
@@ -586,6 +684,8 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 .room-chip.active .dot{background:var(--blue-light);box-shadow:0 0 6px var(--blue-glow)}
 .room-chip.playing .dot{background:var(--blue-light);
   box-shadow:0 0 8px var(--blue-glow);animation:pulse 2s infinite}
+.room-chip.offline{opacity:.4;border-style:dashed}
+.room-chip.offline .dot{background:var(--fg3);animation:none;box-shadow:none}
 @keyframes pulse{0%,100%{box-shadow:0 0 6px var(--blue-glow)}
                  50%{box-shadow:0 0 14px rgba(34,119,238,.1)}}
 #no-speakers{color:var(--fg3);font-size:13px;padding:4px 0}
@@ -616,13 +716,50 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   color:var(--blue-light);background:var(--surface);border:1px solid var(--border);
   padding:3px 8px;border-radius:10px;white-space:nowrap;align-self:center;flex-shrink:0}
 
+/* Sources */
+#sources-row{display:flex;flex-wrap:wrap;gap:5px;padding:8px 0 2px;min-height:28px}
+.src-chip{font-size:11px;padding:3px 11px;border-radius:12px;cursor:pointer;
+  border:1px solid var(--border);background:var(--surface);color:var(--fg2);
+  transition:all .15s;white-space:nowrap}
+.src-chip.active{border-color:var(--blue);color:var(--blue-light);background:rgba(34,119,238,.1)}
+.src-chip.unavail{opacity:.3;cursor:default;pointer-events:none}
+.src-chip:not(.unavail):not(.active):hover{background:var(--surface2)}
+
+/* Bass */
+#bass-row{padding:6px 4px 0;display:flex;align-items:center;gap:10px}
+#bass-track{flex:1;position:relative;padding-top:22px}
+#bass-tooltip{position:absolute;top:0;transform:translateX(-50%);
+  background:var(--amber);color:#000;font-size:11px;font-weight:700;
+  padding:2px 7px;border-radius:10px;pointer-events:none;
+  opacity:0;transition:opacity .2s}
+#bass-tooltip.visible{opacity:1}
+#bass-slider{width:100%;height:4px;-webkit-appearance:none;appearance:none;
+  border-radius:2px;outline:none;cursor:pointer;
+  background:linear-gradient(to right,var(--amber) var(--pct,100%),var(--surface2) var(--pct,100%))}
+#bass-slider::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;
+  border-radius:50%;background:var(--silver);cursor:pointer;
+  box-shadow:0 0 6px rgba(245,158,11,.5)}
+#bass-slider::-moz-range-thumb{width:16px;height:16px;border-radius:50%;
+  background:var(--silver);cursor:pointer;border:none}
+.bass-label{font-size:10px;color:var(--fg3);flex-shrink:0;text-transform:uppercase;
+  letter-spacing:.06em}
+
+/* Chip backup warning */
+.chip-warn{font-size:9px;color:var(--amber);flex-shrink:0;margin-left:1px}
+
 /* Volume */
 #vol-row{padding:12px 4px 0;display:flex;align-items:center;gap:10px}
 .vol-icon{color:var(--fg3);font-size:15px;flex-shrink:0}
 .vol-btn{cursor:pointer;user-select:none;transition:color .15s}
 .vol-btn:hover{color:var(--fg1)}
 .vol-btn:active{color:var(--blue-light)}
-#vol-slider{flex:1;height:4px;-webkit-appearance:none;appearance:none;
+#vol-track{flex:1;position:relative;padding-top:22px}
+#vol-tooltip{position:absolute;top:0;transform:translateX(-50%);
+  background:var(--blue);color:#fff;font-size:11px;font-weight:700;
+  padding:2px 7px;border-radius:10px;pointer-events:none;white-space:nowrap;
+  opacity:0;transition:opacity .2s;left:var(--pct,20%)}
+#vol-tooltip.visible{opacity:1}
+#vol-slider{width:100%;height:4px;-webkit-appearance:none;appearance:none;
   border-radius:2px;outline:none;cursor:pointer;
   background:linear-gradient(to right,var(--blue) var(--pct,20%),var(--surface2) var(--pct,20%))}
 #vol-slider::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;
@@ -630,7 +767,6 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   box-shadow:0 0 8px var(--blue-glow)}
 #vol-slider::-moz-range-thumb{width:18px;height:18px;border-radius:50%;
   background:var(--silver);cursor:pointer;border:none}
-#vol-value{width:28px;text-align:right;font-size:12px;color:var(--fg3);flex-shrink:0}
 
 /* Transport */
 #transport{padding:14px 4px 6px;display:flex;align-items:center;justify-content:center;gap:20px}
@@ -684,12 +820,13 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   padding:8px 12px;font-size:11px;color:var(--amber);line-height:1.5;display:none}
 #cloud-warning strong{color:var(--amber)}
 
-/* Power */
-#power-row{display:flex;justify-content:center;padding:10px 20px 18px}
-#btn-power{background:var(--surface);border:1px solid var(--border);
+/* Power / Mute */
+#power-row{display:flex;justify-content:center;gap:10px;padding:10px 20px 18px}
+#btn-power,#btn-mute{background:var(--surface);border:1px solid var(--border);
   color:var(--fg2);border-radius:20px;padding:8px 22px;font-size:13px;
   cursor:pointer;display:flex;align-items:center;gap:7px;transition:all .18s}
-#btn-power:active{background:var(--surface2);color:var(--silver);border-color:var(--silver-dim)}
+#btn-power:active,#btn-mute:active{background:var(--surface2);color:var(--silver);border-color:var(--silver-dim)}
+#btn-mute.muted,#btn-power.playing{background:rgba(34,119,238,.12);border-color:var(--blue);color:var(--blue-light)}
 
 /* ── Page: Manage Presets ────────────────────────────────── */
 .manage-section{padding:14px 20px}
@@ -787,16 +924,15 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
       <button id="preset-toggle" onclick="togglePresets()">
         Presets <span class="arrow">▼</span>
       </button>
-      <button id="scan-btn" onclick="rescan()">Scan</button>
     </div>
   </header>
 
   <!-- Tabs -->
   <div id="tabs">
-    <div class="tab active" data-tab="player" onclick="switchTab('player')">Player</div>
-    <div class="tab"        data-tab="manage" onclick="switchTab('manage')">Presets</div>
-    <div class="tab"        data-tab="groups"  onclick="switchTab('groups')">Groups</div>
-    <div class="tab"        data-tab="alexa"  onclick="switchTab('alexa')">Alexa</div>
+    <div class="tab active" data-tab="player"   onclick="switchTab('player')">Player</div>
+    <div class="tab"        data-tab="manage"   onclick="switchTab('manage')">Presets</div>
+    <div class="tab"        data-tab="groups"   onclick="switchTab('groups')">Groups</div>
+    <div class="tab"        data-tab="settings" onclick="switchTab('settings')">Settings</div>
   </div>
 
   <!-- Speaker chips -->
@@ -827,11 +963,15 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
       Use a Custom Station or local backup instead.
     </div>
 
+    <div id="sources-row"></div>
+
     <div id="vol-row">
       <span class="vol-icon vol-btn" onclick="nudgeVol(-1)">&#128264;</span>
-      <input type="range" id="vol-slider" min="0" max="100" value="20"
-             oninput="onVolInput(this.value)" onchange="sendVol(this.value)">
-      <span id="vol-value">20</span>
+      <div id="vol-track">
+        <div id="vol-tooltip">20</div>
+        <input type="range" id="vol-slider" min="0" max="100" value="20"
+               oninput="onVolInput(this.value)" onchange="sendVol(this.value)">
+      </div>
       <span class="vol-icon vol-btn" onclick="nudgeVol(1)">&#128266;</span>
     </div>
 
@@ -867,6 +1007,17 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
         </svg>
         Power
       </button>
+      <button id="btn-mute" onclick="cmd('mute')">
+        <svg width="15" height="15" viewBox="0 0 16 16">
+          <path d="M2 5.5h2.5L8 2v12l-3.5-3.5H2z" fill="currentColor"/>
+          <path id="ico-mute-lines" d="M10 6a3 3 0 0 1 0 4M11.5 4a5 5 0 0 1 0 8"
+                stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/>
+          <path id="ico-mute-cross" d="M10 6l3 4M13 6l-3 4"
+                stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+                fill="none" style="display:none"/>
+        </svg>
+        Mute
+      </button>
     </div>
   </div>
 
@@ -883,32 +1034,59 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
     </div>
   </div>
 
-  <!-- ═══ PAGE: Alexa ═══ -->
-  <div id="page-alexa" class="page">
+  <!-- ═══ PAGE: Settings ═══ -->
+  <div id="page-settings" class="page">
     <div class="manage-section">
-      <h2>Alexa Integration</h2>
 
+      <h2>Speaker Details</h2>
+      <div id="speaker-info">
+        <p style="font-size:12px;color:var(--fg3)">Select a speaker to view its details.</p>
+      </div>
+
+      <h2 style="margin-top:22px">Preset Backup</h2>
+      <p style="font-size:12px;color:var(--fg3);margin-bottom:10px">
+        Back up all speakers in one click. Speakers with no backup show ⚠ on their chip.
+        Critical before the Bose cloud shuts down on 6 May 2026.
+      </p>
+      <button class="mc-btn primary" onclick="backupAll()">Backup All Speakers</button>
+      <span id="backup-all-status" style="font-size:12px;color:var(--fg3);margin-left:10px"></span>
+
+      <h2 style="margin-top:22px">Discover Speakers</h2>
+      <p style="font-size:12px;color:var(--fg3);margin-bottom:10px">
+        Scan the local network to find all SoundTouch speakers.
+      </p>
+      <button id="scan-btn" onclick="rescan()">Scan for Speakers</button>
+
+      <h2 style="margin-top:22px">Alexa Integration</h2>
       <div class="alexa-hint">
         <strong>How it works:</strong> A separate Matter bridge process runs alongside
         this app, exposing each speaker preset and power toggle as a Matter On/Off
         device — <strong>no cloud, no account linking.</strong><br><br>
-        <strong>Step 1 —</strong> Scan for speakers (tap Scan in the header)<br>
+        <strong>Step 1 —</strong> Scan for speakers above<br>
         <strong>Step 2 —</strong> Commission the Matter bridge once in the Alexa app:<br>
-        &nbsp;&nbsp;Add Device → Other → Matter → scan QR code below<br>
+        &nbsp;&nbsp;Add Device → Other → Matter → expand panel below and scan QR<br>
         <strong>Step 3 —</strong> Use phrases like:<br>
         &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on KISSTORY in Kitchen Bose</span><br>
-        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on Kitchen Bose power</span><br><br>
+        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on Kitchen Bose power</span><br>
+        &nbsp;&nbsp;<span class="alexa-phrase">Alexa, set Kitchen Bose volume to 40%</span><br><br>
         <strong>Bridge logs:</strong>
         <span class="alexa-phrase">journalctl --user -u soundtouch-matter -f</span>
       </div>
 
-      <div class="qr-section">
-        <h3>Commission Matter Bridge</h3>
-        <div id="qr-box" class="qr-box">Loading…</div>
-        <div id="qr-manual" class="qr-manual"></div>
-        <div id="qr-status" class="qr-status"></div>
-        <br><button class="qr-refresh" onclick="loadAlexaQR()">Refresh</button>
+      <div class="qr-section" style="margin-top:12px">
+        <div class="qr-collapse-hdr" onclick="toggleQR()">
+          <span class="title">Commission Matter Bridge</span>
+          <span id="qr-status-badge" class="qr-collapse-badge warn">checking…</span>
+          <span id="qr-chevron" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="qr-body" class="qr-body" style="display:none">
+          <div id="qr-box" class="qr-box">Loading…</div>
+          <div id="qr-manual" class="qr-manual"></div>
+          <div id="qr-status" class="qr-status" style="margin-top:8px"></div>
+          <button class="qr-refresh" onclick="loadAlexaQR()">Refresh</button>
+        </div>
       </div>
+
     </div>
   </div>
 
@@ -970,6 +1148,8 @@ let speakers=[], activeHost=null, pollTimer=null, lastArt="", lastState=null;
 // ── Boot ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   fetchSpeakers(false); schedPoll(); loadStations();
+  const savedTab = localStorage.getItem('activeTab');
+  if (savedTab) switchTab(savedTab);
 });
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
@@ -978,9 +1158,10 @@ function switchTab(name) {
     t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.page').forEach(p =>
     p.classList.toggle('visible', p.id === 'page-' + name));
-  if (name === 'manage') { loadStations(); loadBackupInfo(); }
-  if (name === 'groups')  { loadGroups(); }
-  if (name === 'alexa')   { loadAlexaQR(); }
+  if (name === 'manage')   { loadStations(); loadBackupInfo(); }
+  if (name === 'groups')   { loadGroups(); }
+  if (name === 'settings') { loadSpeakerInfo(); loadAlexaQR(); }
+  localStorage.setItem('activeTab', name);
 }
 
 // ── Speakers ─────────────────────────────────────────────────────────────────
@@ -1010,18 +1191,57 @@ function renderRooms() {
     <div class="room-chip${s.host===activeHost?' active':''}"
          id="chip-${s.host.replace(/\./g,'_')}"
          onclick="setActive('${s.host}')">
-      <span class="dot"></span><span class="name">${s.name}</span></div>`).join('');
+      <span class="dot"></span><span class="name">${s.name}</span>${s.has_backup===false?'<span class="chip-warn" title="No preset backup">⚠</span>':''}</div>`).join('');
 }
-function setActive(h) { activeHost=h; clearTimeout(pollTimer); renderRooms(); pollNow(); }
+function setActive(h) {
+  activeHost=h; clearTimeout(pollTimer); renderRooms(); pollNow();
+  loadSources();
+  const tab = document.querySelector('.tab.active')?.dataset?.tab;
+  if (tab === 'manage')   loadBackupInfo();
+  if (tab === 'groups')   loadGroups();
+  if (tab === 'settings') loadSpeakerInfo();
+}
 
 // ── Polling ──────────────────────────────────────────────────────────────────
+const speakerErrors = {};
 function schedPoll() { pollTimer = setTimeout(pollNow, 3000); }
 async function pollNow() {
   clearTimeout(pollTimer);
   if (!activeHost) { schedPoll(); return; }
-  try { applyState(await (await fetch('/api/state?host='+activeHost)).json()); } catch(e){}
+  try {
+    applyState(await (await fetch('/api/state?host='+activeHost)).json());
+    speakerErrors[activeHost] = 0;
+    setChipOffline(activeHost, false);
+  } catch(e) {
+    speakerErrors[activeHost] = (speakerErrors[activeHost]||0) + 1;
+    if (speakerErrors[activeHost] >= 2) setChipOffline(activeHost, true);
+  }
   schedPoll();
 }
+function setChipOffline(host, offline) {
+  const chip = document.getElementById('chip-'+host.replace(/\./g,'_'));
+  if (chip) chip.classList.toggle('offline', offline);
+}
+
+// Background poll — updates playing/offline state for all non-active speakers
+let bgPollTimer = null;
+async function bgPollAll() {
+  for (const s of speakers) {
+    if (s.host === activeHost) continue;
+    try {
+      const st = await (await fetch('/api/state?host='+s.host)).json();
+      speakerErrors[s.host] = 0;
+      setChipOffline(s.host, false);
+      const chip = document.getElementById('chip-'+s.host.replace(/\./g,'_'));
+      if (chip) chip.classList.toggle('playing', st.playing);
+    } catch(e) {
+      speakerErrors[s.host] = (speakerErrors[s.host]||0) + 1;
+      if (speakerErrors[s.host] >= 2) setChipOffline(s.host, true);
+    }
+  }
+  bgPollTimer = setTimeout(bgPollAll, 12000);
+}
+setTimeout(bgPollAll, 5000); // stagger start so it doesn't clash with boot poll
 function applyState(d) {
   if (!d) return; lastState = d;
   const track = d.track||(d.source||'—'), artist = d.artist||d.album||'';
@@ -1047,12 +1267,24 @@ function applyState(d) {
   // play icon
   document.getElementById('ico-play').style.display=d.playing?'none':'';
   document.getElementById('ico-pause').style.display=d.playing?'':'none';
+  // power button — highlight while playing
+  document.getElementById('btn-power').classList.toggle('playing', d.playing);
+  // mute button
+  const muteBtn=document.getElementById('btn-mute');
+  muteBtn.classList.toggle('muted', !!d.muted);
+  document.getElementById('ico-mute-lines').style.display=d.muted?'none':'';
+  document.getElementById('ico-mute-cross').style.display=d.muted?'':'none';
   // volume
   const sl=document.getElementById('vol-slider');
-  if (!sl.matches(':active')) { sl.value=d.volume; updateVol(d.volume); setText('vol-value',d.volume); }
+  if (!sl.matches(':active')) { sl.value=d.volume; updateVol(d.volume); }
   // chip
   const chip=document.getElementById('chip-'+activeHost.replace(/\./g,'_'));
   if (chip) { chip.classList.toggle('playing',d.playing); chip.classList.add('active'); }
+  // source chips — re-highlight active source
+  document.querySelectorAll('.src-chip').forEach(el => {
+    const src = el.getAttribute('onclick')?.match(/'([^']+)'/)?.[1]||'';
+    el.classList.toggle('active', src === d.source);
+  });
   // presets — populate dropdown grid
   const g=document.getElementById('presets-grid');
   const presets = d.presets || [];
@@ -1077,8 +1309,20 @@ function applyState(d) {
 }
 
 // ── Volume ───────────────────────────────────────────────────────────────────
-function onVolInput(v) { updateVol(v); setText('vol-value',v); }
-function updateVol(v) { document.getElementById('vol-slider').style.setProperty('--pct',v+'%'); }
+let volTooltipTimer=null;
+function onVolInput(v) {
+  updateVol(v);
+  const tip=document.getElementById('vol-tooltip');
+  tip.textContent=v; tip.classList.add('visible');
+  clearTimeout(volTooltipTimer);
+  volTooltipTimer=setTimeout(()=>tip.classList.remove('visible'), 1200);
+}
+function updateVol(v) {
+  const pct=v+'%';
+  document.getElementById('vol-track').style.setProperty('--pct',pct);
+  document.getElementById('vol-slider').style.setProperty('--pct',pct);
+  document.getElementById('vol-tooltip').style.left=pct;
+}
 let volD=null;
 function sendVol(v) { clearTimeout(volD); volD=setTimeout(()=>{
   if (activeHost) fetch(`/api/cmd?host=${activeHost}&action=volume&value=${v}`);
@@ -1325,34 +1569,176 @@ async function groupAll() {
 }
 
 
-// ── Alexa / Matter QR ────────────────────────────────────────────────────────
+// ── Sources ───────────────────────────────────────────────────────────────────
+const SOURCE_NAMES = {AUX:'AUX IN',BLUETOOTH:'Bluetooth',TUNEIN:'TuneIn',
+  SPOTIFY:'Spotify',AMAZON:'Amazon Music',LOCAL_INTERNET_RADIO:'Internet Radio',
+  STORED_MUSIC:'My Music',ALEXA:'Alexa'};
+let currentSources = [];
+async function loadSources() {
+  const row = document.getElementById('sources-row');
+  if (!row || !activeHost) { if(row) row.innerHTML=''; return; }
+  try {
+    currentSources = await (await fetch('/api/sources?host='+activeHost)).json();
+    const active = (lastState?.source||'').toUpperCase();
+    row.innerHTML = currentSources.map(s => {
+      const label = SOURCE_NAMES[s.source] || s.name || s.source;
+      const isActive = s.source === active || s.sourceAccount === lastState?.source;
+      const cls = ['src-chip', isActive?'active':'', s.status!=='READY'?'unavail':''].filter(Boolean).join(' ');
+      return `<span class="${cls}" onclick="selectSource('${s.source}','${s.sourceAccount}')">${label}</span>`;
+    }).join('');
+  } catch(e) { if(row) row.innerHTML=''; }
+}
+function selectSource(source, account) {
+  if (!activeHost) return;
+  fetch(`/api/select?host=${activeHost}&source=${encodeURIComponent(source)}&account=${encodeURIComponent(account)}`);
+  setTimeout(pollNow, 800);
+}
+
+// ── Bass ──────────────────────────────────────────────────────────────────────
+let bassTooltipTimer=null;
+async function loadBass() {
+  const row = document.getElementById('bass-row');
+  if (!row || !activeHost) { if(row) row.style.display='none'; return; }
+  try {
+    const d = await (await fetch('/api/bass?host='+activeHost)).json();
+    if (d.available) {
+      document.getElementById('bass-slider').min = d.min;
+      document.getElementById('bass-slider').max = d.max;
+      document.getElementById('bass-slider').value = d.current;
+      updateBass(d.current, d.min, d.max);
+      row.style.display = 'block';
+    } else {
+      row.style.display = 'none';
+    }
+  } catch(e) { row.style.display='none'; }
+}
+function onBassInput(v) {
+  const sl = document.getElementById('bass-slider');
+  updateBass(v, parseInt(sl.min), parseInt(sl.max));
+  const tip = document.getElementById('bass-tooltip');
+  tip.textContent = v; tip.classList.add('visible');
+  clearTimeout(bassTooltipTimer);
+  bassTooltipTimer = setTimeout(()=>tip.classList.remove('visible'), 1200);
+}
+function updateBass(v, min=-9, max=0) {
+  const pct = ((parseInt(v)-min)/(max-min)*100)+'%';
+  const track = document.getElementById('bass-track');
+  const slider = document.getElementById('bass-slider');
+  if(track) { track.style.setProperty('--pct',pct); document.getElementById('bass-tooltip').style.left=pct; }
+  if(slider) slider.style.setProperty('--pct',pct);
+}
+let bassD=null;
+function sendBass(v) { clearTimeout(bassD); bassD=setTimeout(()=>{
+  if (activeHost) fetch(`/api/cmd?host=${activeHost}&action=bass&value=${v}`);
+}, 200); }
+
+// ── Backup All ────────────────────────────────────────────────────────────────
+async function backupAll() {
+  const st = document.getElementById('backup-all-status');
+  if(st) st.textContent = 'Backing up…';
+  try {
+    const d = await (await fetch('/api/presets/backup-all')).json();
+    const ok = d.results.filter(r=>r.ok).length;
+    const fail = d.results.filter(r=>!r.ok).length;
+    if(st) st.textContent = `✓ ${ok} backed up${fail?' — '+fail+' failed':''}`;
+    // Refresh speaker list so warning badges update
+    await fetchSpeakers(false);
+  } catch(e) { if(st) st.textContent='Backup failed'; }
+}
+
+// ── Rename ────────────────────────────────────────────────────────────────────
+async function renameSpeaker() {
+  const input = document.getElementById('rename-input');
+  if (!input || !activeHost) return;
+  const name = input.value.trim();
+  if (!name) return;
+  try {
+    const d = await (await fetch(`/api/rename?host=${activeHost}&name=${encodeURIComponent(name)}`)).json();
+    if (d.ok) {
+      const sp = speakers.find(s=>s.host===activeHost);
+      if (sp) sp.name = d.name;
+      renderRooms();
+      toast('Speaker renamed');
+    }
+  } catch(e) { toast('Rename failed'); }
+}
+
+// ── Settings — Speaker info ───────────────────────────────────────────────────
+async function loadSpeakerInfo() {
+  const el = document.getElementById('speaker-info');
+  if (!el) return;
+  if (!activeHost) {
+    el.innerHTML = '<p style="font-size:12px;color:var(--fg3)">Select a speaker to view its details.</p>';
+    return;
+  }
+  el.innerHTML = '<p style="font-size:12px;color:var(--fg3)">Loading…</p>';
+  try {
+    const d = await (await fetch('/api/device-info?host='+activeHost)).json();
+    el.innerHTML = `<table class="speaker-info-table">
+      <tr><td>Model</td><td>${d.model||'—'}</td></tr>
+      <tr><td>Firmware</td><td>${d.firmware||'—'}</td></tr>
+      <tr><td>IP Address</td><td>${d.ip||activeHost}</td></tr>
+      <tr><td>MAC Address</td><td>${d.mac||'—'}</td></tr>
+      <tr><td>Serial Number</td><td>${d.serial||'—'}</td></tr>
+      <tr><td>Device ID</td><td>${d.device_id||'—'}</td></tr>
+      <tr><td>Country</td><td>${d.country||'—'}</td></tr>
+    </table>
+    <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
+      <input id="rename-input" style="flex:1;background:var(--surface2);border:1px solid var(--border);
+        color:var(--fg1);border-radius:8px;padding:6px 10px;font-size:13px"
+        value="${d.name||''}" placeholder="Speaker name">
+      <button class="mc-btn primary" onclick="renameSpeaker()">Rename</button>
+    </div>
+    <div id="bass-row" style="display:none;margin-top:16px">
+      <div style="font-size:12px;color:var(--fg3);font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">Bass</div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="bass-label">−</span>
+        <div id="bass-track" style="flex:1;position:relative;padding-top:22px">
+          <div id="bass-tooltip">0</div>
+          <input type="range" id="bass-slider" min="-9" max="0" value="0"
+                 oninput="onBassInput(this.value)" onchange="sendBass(this.value)">
+        </div>
+        <span class="bass-label">+</span>
+      </div>
+    </div>`;
+    loadBass();
+  } catch(e) {
+    el.innerHTML = '<p style="font-size:12px;color:var(--fg3)">Could not load device info.</p>';
+  }
+}
+
+// ── Settings — Alexa / Matter QR ─────────────────────────────────────────────
 async function loadAlexaQR() {
   const box    = document.getElementById('qr-box');
   const manual = document.getElementById('qr-manual');
   const status = document.getElementById('qr-status');
-  box.textContent = 'Loading…';
-  manual.textContent = '';
-  status.textContent = '';
+  const badge  = document.getElementById('qr-status-badge');
+  if (box) box.textContent = 'Loading…';
   try {
     const d = await (await fetch('/api/matter/qr')).json();
-    if (d.qrText) {
-      box.textContent = d.qrText;
-    } else {
-      box.textContent = '(QR not available)';
-    }
-    manual.textContent = d.manualPairingCode ? 'Manual code: ' + d.manualPairingCode : '';
-    if (d.commissioned) {
-      status.textContent = '✓ Already commissioned with Alexa';
-      status.style.color = 'var(--green)';
-    } else {
-      status.textContent = 'Not yet commissioned — scan QR in Alexa app: Add Device → Other → Matter';
-      status.style.color = 'var(--fg2)';
-    }
+    if (box) box.textContent = d.qrText || '(QR not available)';
+    if (manual) manual.textContent = d.manualPairingCode ? 'Manual code: ' + d.manualPairingCode : '';
+    const ok = d.commissioned;
+    if (badge) { badge.textContent = ok ? '✓ Commissioned' : 'Not commissioned';
+                 badge.className = 'qr-collapse-badge ' + (ok ? 'ok' : 'warn'); }
+    if (status) { status.textContent = ok
+        ? '✓ Commissioned with Alexa — devices are available'
+        : 'Not yet commissioned — Add Device → Other → Matter in the Alexa app';
+      status.style.color = ok ? '#4caf50' : 'var(--fg2)'; }
   } catch(e) {
-    box.textContent = 'Bridge not running';
-    status.textContent = 'Start the Matter bridge: systemctl --user start soundtouch-matter';
-    status.style.color = 'var(--fg3)';
+    if (box)   box.textContent = 'Bridge not running';
+    if (badge) { badge.textContent = 'offline'; badge.className = 'qr-collapse-badge warn'; }
+    if (status){ status.textContent = 'systemctl --user start soundtouch-matter';
+                 status.style.color = 'var(--fg3)'; }
   }
+}
+function toggleQR() {
+  const body    = document.getElementById('qr-body');
+  const chevron = document.getElementById('qr-chevron');
+  const opening = body.style.display === 'none';
+  body.style.display = opening ? 'block' : 'none';
+  chevron.classList.toggle('open', opening);
+  if (opening) loadAlexaQR();
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -1395,7 +1781,9 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── speaker list / scan ───────────────────────────────────────────────
         elif path == "/api/speakers":
-            self._json([{"host":d.host,"name":d.name,"model":d.model}
+            store = self.server_state.store
+            self._json([{"host":d.host,"name":d.name,"model":d.model,
+                         "has_backup": store.load_backup(d.host) is not None}
                         for d in self.server_state.devices])
 
         elif path == "/api/scan":
@@ -1422,6 +1810,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif action=="power":            dev.power();      ok=True
                 elif action=="mute":             dev.mute();       ok=True
                 elif action=="volume" and value: dev.set_volume(value); ok=True
+                elif action=="bass"   and value: dev.set_bass(value);   ok=True
                 elif action.startswith("preset"):
                     dev.preset(int(action.replace("preset",""))); ok=True
             self._json({"ok":ok})
@@ -1623,6 +2012,62 @@ class Handler(BaseHTTPRequestHandler):
                          f"slaves={[d.host for d in existing_slaves]}")
                 self._json({"ok": True, "master": master.host,
                             "slaves": [d.host for d in existing_slaves]})
+
+        # ── device detail info ────────────────────────────────────────────────
+        elif path == "/api/device-info":
+            host = qs.get("host",[None])[0]
+            dev  = self.server_state.get_device(host)
+            if not dev:
+                self._json({"error": "no_device"})
+            else:
+                self._json(dev.detail_info())
+
+        # ── bass ─────────────────────────────────────────────────────────────
+        elif path == "/api/bass":
+            host = qs.get("host",[None])[0]
+            dev  = self.server_state.get_device(host)
+            if not dev: self._json({"error":"no_device"})
+            else:
+                caps = dev.get_bass_capabilities()
+                caps["current"] = dev.get_bass()
+                self._json(caps)
+
+        # ── sources ───────────────────────────────────────────────────────────
+        elif path == "/api/sources":
+            host = qs.get("host",[None])[0]
+            dev  = self.server_state.get_device(host)
+            self._json(dev.get_sources() if dev else [])
+
+        elif path == "/api/select":
+            host    = qs.get("host",   [None])[0]
+            source  = qs.get("source", [""])[0]
+            account = qs.get("account",[""])[0]
+            dev     = self.server_state.get_device(host)
+            if dev and source: dev.select_source(source, account); self._json({"ok":True})
+            else:              self._json({"ok":False})
+
+        # ── rename ────────────────────────────────────────────────────────────
+        elif path == "/api/rename":
+            host = qs.get("host",[None])[0]
+            name = qs.get("name",[""])[0].strip()
+            dev  = self.server_state.get_device(host)
+            if dev and name:
+                dev.set_name(name); dev.name = name
+                self._json({"ok":True,"name":name})
+            else:
+                self._json({"ok":False})
+
+        # ── backup all speakers ───────────────────────────────────────────────
+        elif path == "/api/presets/backup-all":
+            results = []
+            for dev in list(self.server_state.devices):
+                try:
+                    presets = dev.get_presets_detail()
+                    data    = self.server_state.store.backup_presets(dev.host, presets)
+                    results.append({"host":dev.host,"name":dev.name,"ok":True,"count":len(presets)})
+                except Exception as e:
+                    results.append({"host":dev.host,"name":dev.name,"ok":False,"error":str(e)})
+            self._json({"results":results})
 
         # ── Matter bridge QR code ─────────────────────────────────────────────
         elif path == "/api/matter/qr":
