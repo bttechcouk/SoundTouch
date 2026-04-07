@@ -586,6 +586,8 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 .room-chip.active .dot{background:var(--blue-light);box-shadow:0 0 6px var(--blue-glow)}
 .room-chip.playing .dot{background:var(--blue-light);
   box-shadow:0 0 8px var(--blue-glow);animation:pulse 2s infinite}
+.room-chip.offline{opacity:.4;border-style:dashed}
+.room-chip.offline .dot{background:var(--fg3);animation:none;box-shadow:none}
 @keyframes pulse{0%,100%{box-shadow:0 0 6px var(--blue-glow)}
                  50%{box-shadow:0 0 14px rgba(34,119,238,.1)}}
 #no-speakers{color:var(--fg3);font-size:13px;padding:4px 0}
@@ -689,12 +691,13 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   padding:8px 12px;font-size:11px;color:var(--amber);line-height:1.5;display:none}
 #cloud-warning strong{color:var(--amber)}
 
-/* Power */
-#power-row{display:flex;justify-content:center;padding:10px 20px 18px}
-#btn-power{background:var(--surface);border:1px solid var(--border);
+/* Power / Mute */
+#power-row{display:flex;justify-content:center;gap:10px;padding:10px 20px 18px}
+#btn-power,#btn-mute{background:var(--surface);border:1px solid var(--border);
   color:var(--fg2);border-radius:20px;padding:8px 22px;font-size:13px;
   cursor:pointer;display:flex;align-items:center;gap:7px;transition:all .18s}
-#btn-power:active{background:var(--surface2);color:var(--silver);border-color:var(--silver-dim)}
+#btn-power:active,#btn-mute:active{background:var(--surface2);color:var(--silver);border-color:var(--silver-dim)}
+#btn-mute.muted{background:rgba(34,119,238,.12);border-color:var(--blue);color:var(--blue-light)}
 
 /* ── Page: Manage Presets ────────────────────────────────── */
 .manage-section{padding:14px 20px}
@@ -874,6 +877,17 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
         </svg>
         Power
       </button>
+      <button id="btn-mute" onclick="cmd('mute')">
+        <svg width="15" height="15" viewBox="0 0 16 16">
+          <path d="M2 5.5h2.5L8 2v12l-3.5-3.5H2z" fill="currentColor"/>
+          <path id="ico-mute-lines" d="M10 6a3 3 0 0 1 0 4M11.5 4a5 5 0 0 1 0 8"
+                stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/>
+          <path id="ico-mute-cross" d="M10 6l3 4M13 6l-3 4"
+                stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+                fill="none" style="display:none"/>
+        </svg>
+        Mute
+      </button>
     </div>
   </div>
 
@@ -1030,13 +1044,45 @@ function setActive(h) {
 }
 
 // ── Polling ──────────────────────────────────────────────────────────────────
+const speakerErrors = {};
 function schedPoll() { pollTimer = setTimeout(pollNow, 3000); }
 async function pollNow() {
   clearTimeout(pollTimer);
   if (!activeHost) { schedPoll(); return; }
-  try { applyState(await (await fetch('/api/state?host='+activeHost)).json()); } catch(e){}
+  try {
+    applyState(await (await fetch('/api/state?host='+activeHost)).json());
+    speakerErrors[activeHost] = 0;
+    setChipOffline(activeHost, false);
+  } catch(e) {
+    speakerErrors[activeHost] = (speakerErrors[activeHost]||0) + 1;
+    if (speakerErrors[activeHost] >= 2) setChipOffline(activeHost, true);
+  }
   schedPoll();
 }
+function setChipOffline(host, offline) {
+  const chip = document.getElementById('chip-'+host.replace(/\./g,'_'));
+  if (chip) chip.classList.toggle('offline', offline);
+}
+
+// Background poll — updates playing/offline state for all non-active speakers
+let bgPollTimer = null;
+async function bgPollAll() {
+  for (const s of speakers) {
+    if (s.host === activeHost) continue;
+    try {
+      const st = await (await fetch('/api/state?host='+s.host)).json();
+      speakerErrors[s.host] = 0;
+      setChipOffline(s.host, false);
+      const chip = document.getElementById('chip-'+s.host.replace(/\./g,'_'));
+      if (chip) chip.classList.toggle('playing', st.playing);
+    } catch(e) {
+      speakerErrors[s.host] = (speakerErrors[s.host]||0) + 1;
+      if (speakerErrors[s.host] >= 2) setChipOffline(s.host, true);
+    }
+  }
+  bgPollTimer = setTimeout(bgPollAll, 12000);
+}
+setTimeout(bgPollAll, 5000); // stagger start so it doesn't clash with boot poll
 function applyState(d) {
   if (!d) return; lastState = d;
   const track = d.track||(d.source||'—'), artist = d.artist||d.album||'';
@@ -1062,6 +1108,11 @@ function applyState(d) {
   // play icon
   document.getElementById('ico-play').style.display=d.playing?'none':'';
   document.getElementById('ico-pause').style.display=d.playing?'':'none';
+  // mute button
+  const muteBtn=document.getElementById('btn-mute');
+  muteBtn.classList.toggle('muted', !!d.muted);
+  document.getElementById('ico-mute-lines').style.display=d.muted?'none':'';
+  document.getElementById('ico-mute-cross').style.display=d.muted?'':'none';
   // volume
   const sl=document.getElementById('vol-slider');
   if (!sl.matches(':active')) { sl.value=d.volume; updateVol(d.volume); }
