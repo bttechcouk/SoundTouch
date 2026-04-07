@@ -1012,7 +1012,12 @@ function renderRooms() {
          onclick="setActive('${s.host}')">
       <span class="dot"></span><span class="name">${s.name}</span></div>`).join('');
 }
-function setActive(h) { activeHost=h; clearTimeout(pollTimer); renderRooms(); pollNow(); }
+function setActive(h) {
+  activeHost=h; clearTimeout(pollTimer); renderRooms(); pollNow();
+  const tab = document.querySelector('.tab.active')?.dataset?.tab;
+  if (tab === 'manage') loadBackupInfo();
+  if (tab === 'groups') loadGroups();
+}
 
 // ── Polling ──────────────────────────────────────────────────────────────────
 function schedPoll() { pollTimer = setTimeout(pollNow, 3000); }
