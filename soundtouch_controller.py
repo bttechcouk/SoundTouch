@@ -802,6 +802,10 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 #presets-backdrop{display:none;position:fixed;inset:0;z-index:49}
 #presets-backdrop.open{display:block}
 
+#source-badge{font-size:10px;font-weight:700;letter-spacing:.06em;
+  color:var(--blue-light);background:var(--surface);border:1px solid var(--border);
+  padding:3px 8px;border-radius:10px;white-space:nowrap;align-self:center;flex-shrink:0}
+
 /* Power / Mute */
 #power-row{display:flex;justify-content:center;gap:10px;padding:10px 20px 18px}
 #btn-power,#btn-mute{background:var(--surface);border:1px solid var(--border);
@@ -936,6 +940,7 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
         <div id="track-name">—</div>
         <div id="track-artist"></div>
       </div>
+      <div id="source-badge" style="display:none"></div>
     </div>
 
     <div id="vol-row">
@@ -1218,6 +1223,8 @@ function applyState(d) {
   if (!d) return; lastState = d;
   const track = d.track||(d.source||'—'), artist = d.artist||d.album||'';
   setText('track-name',track); setText('track-artist',artist);
+  const badge=document.getElementById('source-badge');
+  badge.textContent=d.source||''; badge.style.display=d.source?'':'none';
   // art
   const artEl=document.getElementById('art'), ph=document.getElementById('art-placeholder');
   if (d.art && d.art!==lastArt) {
