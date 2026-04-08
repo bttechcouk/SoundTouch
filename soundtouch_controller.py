@@ -1119,42 +1119,104 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 
   <!-- ═══ PAGE: Manage Presets ═══ -->
   <div id="page-manage" class="page">
-
-    <!-- Backup section -->
     <div class="manage-section">
-      <h2>Preset Backup</h2>
-      <p id="backup-info" style="font-size:12px;color:var(--fg3);margin-bottom:12px">
-        Back up your current presets locally so they survive the Bose cloud shutdown.
-      </p>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="mc-btn primary" onclick="backupPresets()">Backup Now</button>
-        <button class="mc-btn" onclick="restorePresets()">Restore to Speaker</button>
-      </div>
-      <div id="backup-status" style="font-size:12px;color:var(--fg3);margin-top:10px"></div>
-      <div id="backup-list" style="margin-top:12px"></div>
-    </div>
 
-    <!-- Custom stations section -->
-    <div class="manage-section">
-      <h2>Custom Radio Stations</h2>
-      <p style="font-size:12px;color:var(--fg3);margin-bottom:12px">
-        Add your own internet radio streams. These use LOCAL_INTERNET_RADIO and don't need the Bose cloud.
-      </p>
-
-      <!-- Add station form -->
-      <div class="add-form" id="add-form">
-        <label>Station Name</label>
-        <input id="st-name" placeholder="e.g. BBC Radio 1">
-        <label>Stream URL (HTTP)</label>
-        <input id="st-url" placeholder="http://stream.live.vc.bbcmedia.co.uk/bbc_radio_one">
-        <label>Album Art URL (optional)</label>
-        <input id="st-art" placeholder="https://example.com/logo.png">
-        <div class="form-row">
-          <button class="mc-btn primary" onclick="addStation()">Add Station</button>
+      <!-- How to set a preset -->
+      <div class="qr-section" style="margin-top:0">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-preset-howto','chev-preset-howto')">
+          <span class="title">How to Set a Preset</span>
+          <span id="chev-preset-howto" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-preset-howto" class="qr-body" style="display:none">
+          <div class="alexa-hint">
+            Presets are saved directly on the speaker — each button (1–6) remembers
+            whatever was playing when you held it down.<br><br>
+            <strong>Step 1 —</strong> Start playing the station, playlist, or source you want to save.<br>
+            <strong>Step 2 —</strong> On the speaker itself, <strong>press and hold</strong> the preset
+            button (1–6) for about 3 seconds until you hear a chime.<br>
+            <strong>Step 3 —</strong> The button is now saved. Press it briefly at any time to play
+            that station again.<br><br>
+            <strong>Tip —</strong> If you use Custom Radio Stations (see below), play the station
+            from the Presets tab first so it is the active source, then hold the preset button on
+            the speaker to save it.<br><br>
+            <strong>After saving —</strong> Click <em>Backup Now</em> below to save a local copy
+            so your presets survive the Bose cloud shutdown on 6 May 2026.
+          </div>
         </div>
       </div>
 
-      <div id="stations-list"></div>
+      <!-- Preset Backup -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-manage-backup','chev-manage-backup')">
+          <span class="title">Preset Backup</span>
+          <span id="chev-manage-backup" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-manage-backup" class="qr-body" style="display:none">
+          <p id="backup-info" style="font-size:12px;color:var(--fg3);margin-bottom:12px">
+            Back up your current presets locally so they survive the Bose cloud shutdown.
+          </p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="mc-btn primary" onclick="backupPresets()">Backup Now</button>
+            <button class="mc-btn" onclick="restorePresets()">Restore to Speaker</button>
+          </div>
+          <div id="backup-status" style="font-size:12px;color:var(--fg3);margin-top:10px"></div>
+          <div id="backup-list" style="margin-top:12px"></div>
+        </div>
+      </div>
+
+      <!-- Custom Radio Stations -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-stations','chev-stations')">
+          <span class="title">Custom Radio Stations</span>
+          <span id="chev-stations" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-stations" class="qr-body" style="display:none">
+          <p style="font-size:12px;color:var(--fg3);margin-bottom:12px">
+            Add your own internet radio streams. These are served locally and don't need the Bose cloud.
+          </p>
+
+          <!-- How to add a custom station -->
+          <div class="qr-section" style="margin-top:0;margin-bottom:14px">
+            <div class="qr-collapse-hdr" onclick="toggleSection('sec-station-howto','chev-station-howto')">
+              <span class="title">How to add a Custom Station</span>
+              <span id="chev-station-howto" class="qr-chevron">&#9660;</span>
+            </div>
+            <div id="sec-station-howto" class="qr-body" style="display:none">
+              <div class="alexa-hint">
+                Custom stations let you play any internet radio stream that has a direct
+                HTTP audio URL — no Bose cloud required.<br><br>
+                <strong>Step 1 —</strong> Find a direct stream URL for the station.
+                Most public broadcasters publish these; search for
+                <em>"[station name] stream URL m3u"</em> to find one.<br>
+                <strong>Step 2 —</strong> Enter a name, paste the URL, and optionally
+                add an album art URL below, then click <em>Add Station</em>.<br>
+                <strong>Step 3 —</strong> The station will appear in the list. Click
+                <em>Play</em> to start it on the active speaker.<br>
+                <strong>Step 4 —</strong> While it's playing, hold a preset button
+                on the speaker to save it — see <em>How to Set a Preset</em> above.<br><br>
+                <strong>Note —</strong> Stream URLs must start with <code>http://</code>
+                (not https) as the SoundTouch firmware does not support TLS streams.
+              </div>
+            </div>
+          </div>
+
+          <!-- Add station form -->
+          <div class="add-form" id="add-form">
+            <label>Station Name</label>
+            <input id="st-name" placeholder="e.g. BBC Radio 1">
+            <label>Stream URL (HTTP)</label>
+            <input id="st-url" placeholder="http://stream.live.vc.bbcmedia.co.uk/bbc_radio_one">
+            <label>Album Art URL (optional)</label>
+            <input id="st-art" placeholder="https://example.com/logo.png">
+            <div class="form-row">
+              <button class="mc-btn primary" onclick="addStation()">Add Station</button>
+            </div>
+          </div>
+
+          <div id="stations-list"></div>
+        </div>
+      </div>
+
     </div>
   </div>
 
@@ -1185,7 +1247,7 @@ function switchTab(name) {
     t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.page').forEach(p =>
     p.classList.toggle('visible', p.id === 'page-' + name));
-  if (name === 'manage')   { loadStations(); loadBackupInfo(); }
+  if (name === 'manage')   { /* sections load on expand */ }
   if (name === 'groups')   { loadGroups(); }
   if (name === 'settings') { /* sections load on expand */ }
   localStorage.setItem('activeTab', name);
@@ -1223,7 +1285,10 @@ function renderRooms() {
 function setActive(h) {
   activeHost=h; clearTimeout(pollTimer); renderRooms(); pollNow();
   const tab = document.querySelector('.tab.active')?.dataset?.tab;
-  if (tab === 'manage')   loadBackupInfo();
+  if (tab === 'manage') {
+    const sec = document.getElementById('sec-manage-backup');
+    if (sec && sec.style.display !== 'none') loadBackupInfo();
+  }
   if (tab === 'groups')   loadGroups();
   if (tab === 'settings') {
     const sec = document.getElementById('sec-speaker');
@@ -1737,8 +1802,10 @@ function toggleSection(bodyId, chevronId) {
   const opening = body.style.display === 'none';
   body.style.display = opening ? 'block' : 'none';
   if (chevron) chevron.classList.toggle('open', opening);
-  if (opening && bodyId === 'sec-speaker') loadSpeakerInfo();
-  if (opening && bodyId === 'sec-alexa')   loadAlexaQR();
+  if (opening && bodyId === 'sec-speaker')      loadSpeakerInfo();
+  if (opening && bodyId === 'sec-alexa')        loadAlexaQR();
+  if (opening && bodyId === 'sec-manage-backup') loadBackupInfo();
+  if (opening && bodyId === 'sec-stations')     loadStations();
 }
 function toggleQR() {
   const body    = document.getElementById('qr-body');
