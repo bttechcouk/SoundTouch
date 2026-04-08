@@ -18,6 +18,7 @@ Usage:
 """
 
 import argparse
+import concurrent.futures
 import json
 import logging
 import os
@@ -86,6 +87,8 @@ log = _setup_logger()
 # SoundTouch device API
 # ═══════════════════════════════════════════════════════════════════════════════
 
+_PRESET_TTL = 30.0  # seconds before preset cache expires
+
 class SoundTouchDevice:
     def __init__(self, host, port=8090):
         self.host  = host
@@ -95,13 +98,17 @@ class SoundTouchDevice:
         self.model     = ""
         self.mac       = ""
         self.device_id = ""
+        self.has_backup = False          # cached by AppState; avoids disk reads on /api/speakers
+        self._session  = requests.Session()  # reuse TCP connections across requests
+        self._presets_cache = None       # cached preset list
+        self._presets_ts    = 0.0        # monotonic time of last preset fetch
 
     # ── low-level ─────────────────────────────────────────────────────────────
     def _get(self, path, timeout=4):
         url = f"{self.url}{path}"
         log.debug(f"[SPK GET ] {url}")
         try:
-            r = requests.get(url, timeout=timeout)
+            r = self._session.get(url, timeout=timeout)
             r.raise_for_status()
             snippet = r.text[:400].replace("\n", " ")
             log.debug(f"[SPK GET ] ← {r.status_code}  {snippet}")
@@ -114,9 +121,9 @@ class SoundTouchDevice:
         url = f"{self.url}{path}"
         log.debug(f"[SPK POST] {url}  body={body[:300]}")
         try:
-            r = requests.post(url, data=body,
-                              headers={"Content-Type": "application/xml"},
-                              timeout=timeout)
+            r = self._session.post(url, data=body,
+                                   headers={"Content-Type": "application/xml"},
+                                   timeout=timeout)
             log.debug(f"[SPK POST] ← {r.status_code}  {r.text[:200].replace(chr(10),' ')}")
             if r.status_code != 200:
                 log.warning(f"[SPK POST] {url} non-200 → {r.status_code}  {r.text[:300]}")
@@ -226,8 +233,16 @@ class SoundTouchDevice:
         d = dict(host=self.host, name=self.name, model=self.model,
                  volume=0, muted=False, source="", track="", artist="",
                  album="", art="", playing=False, presets=[])
+
+        # Fetch all four endpoints in parallel to minimise poll latency
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+            f_vol  = ex.submit(self._get, "/volume")
+            f_np   = ex.submit(self._get, "/now_playing")
+            f_pre  = ex.submit(self.get_presets_detail)
+            f_zone = ex.submit(self.get_zone)
+
         # volume
-        vx = self._get("/volume")
+        vx = f_vol.result()
         if vx is not None:
             for t in ("actualvolume","targetvolume"):
                 el = vx.find(t)
@@ -237,7 +252,7 @@ class SoundTouchDevice:
             if me is not None:
                 d["muted"] = me.text.lower() == "true"
         # now playing
-        np = self._get("/now_playing")
+        np = f_np.result()
         if np is not None:
             d["source"]     = np.get("source","")
             play_status     = np.get("playStatus") or np.findtext("playStatus") or ""
@@ -249,10 +264,10 @@ class SoundTouchDevice:
                 if el is not None and el.text:
                     d[key] = el.text
         # presets
-        d["presets"] = self.get_presets_detail()
+        d["presets"] = f_pre.result()
         # zone / group role
         try:
-            z = self.get_zone()
+            z = f_zone.result()
             if z["is_master"]:
                 d["group_role"] = "master"
                 d["group_members"] = len(z["members"])
@@ -265,8 +280,16 @@ class SoundTouchDevice:
             d["group_role"] = ""
         return d
 
+    def invalidate_preset_cache(self):
+        """Force the next get_presets_detail() call to re-fetch from the speaker."""
+        self._presets_ts = 0.0
+
     def get_presets_detail(self):
-        """Return list of dicts with full preset info for backup / display."""
+        """Return list of dicts with full preset info for backup / display.
+        Result is cached for _PRESET_TTL seconds to avoid fetching on every poll."""
+        now = time.monotonic()
+        if self._presets_cache is not None and (now - self._presets_ts) < _PRESET_TTL:
+            return self._presets_cache
         px = self._get("/presets")
         out = []
         if px is not None:
@@ -289,6 +312,8 @@ class SoundTouchDevice:
                     if nm is not None:
                         rec["name"] = nm.text or ""
                 out.append(rec)
+        self._presets_cache = out
+        self._presets_ts    = time.monotonic()
         return out
 
     # ── commands ──────────────────────────────────────────────────────────────
@@ -1236,9 +1261,20 @@ let speakers=[], activeHost=null, pollTimer=null, lastArt="", lastState=null;
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
-  fetchSpeakers(false); schedPoll(); loadStations();
+  fetchSpeakers(false); schedPoll();
   const savedTab = localStorage.getItem('activeTab');
   if (savedTab) switchTab(savedTab);
+});
+
+// ── Page Visibility — pause polls when tab is hidden ─────────────────────────
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearTimeout(pollTimer);
+    clearTimeout(bgPollTimer);
+  } else {
+    pollNow();
+    bgPollAll();
+  }
 });
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
@@ -1323,9 +1359,9 @@ async function bgPollAll() {
   for (const s of speakers) {
     if (s.host === activeHost) continue;
     try {
-      const st = await (await fetch('/api/state?host='+s.host)).json();
+      const st = await (await fetch('/api/ping?host='+s.host)).json();
       speakerErrors[s.host] = 0;
-      setChipOffline(s.host, false);
+      setChipOffline(s.host, !st.online);
       const chip = document.getElementById('chip-'+s.host.replace(/\./g,'_'));
       if (chip) chip.classList.toggle('playing', st.playing);
     } catch(e) {
@@ -1858,13 +1894,28 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/speakers":
             store = self.server_state.store
             self._json([{"host":d.host,"name":d.name,"model":d.model,
-                         "has_backup": store.load_backup(d.host) is not None}
+                         "has_backup": d.has_backup}
                         for d in self.server_state.devices])
 
         elif path == "/api/scan":
             self.server_state.scan()
             self._json([{"host":d.host,"name":d.name,"model":d.model}
                         for d in self.server_state.devices])
+
+        # ── lightweight ping (playing + online only, for background chips) ──────
+        elif path == "/api/ping":
+            host = qs.get("host",[None])[0]
+            dev  = self.server_state.get_device(host)
+            if not dev:
+                self._json({"online": False, "playing": False})
+            else:
+                np = dev._get("/now_playing")
+                if np is None:
+                    self._json({"online": False, "playing": False})
+                else:
+                    ps = np.get("playStatus") or np.findtext("playStatus") or ""
+                    self._json({"online": True,
+                                "playing": ps in ("PLAY_STATE","BUFFERING_STATE")})
 
         # ── device state / commands ───────────────────────────────────────────
         elif path == "/api/state":
@@ -1895,8 +1946,10 @@ class Handler(BaseHTTPRequestHandler):
             host = qs.get("host",[None])[0]
             dev = self.server_state.get_device(host)
             if dev:
+                dev.invalidate_preset_cache()
                 presets = dev.get_presets_detail()
                 data = self.server_state.store.backup_presets(host, presets)
+                dev.has_backup = True
                 self._json(data)
             else:
                 self._json({"error":"no_device"})
@@ -2137,8 +2190,10 @@ class Handler(BaseHTTPRequestHandler):
             results = []
             for dev in list(self.server_state.devices):
                 try:
+                    dev.invalidate_preset_cache()
                     presets = dev.get_presets_detail()
                     data    = self.server_state.store.backup_presets(dev.host, presets)
+                    dev.has_backup = True
                     results.append({"host":dev.host,"name":dev.name,"ok":True,"count":len(presets)})
                 except Exception as e:
                     results.append({"host":dev.host,"name":dev.name,"ok":False,"error":str(e)})
@@ -2229,6 +2284,8 @@ class AppState:
     def scan(self):
         log.info("Scanning network…")
         found = discover_all(timeout=3)
+        for dev in found:
+            dev.has_backup = self.store.load_backup(dev.host) is not None
         with self._lock:
             self.devices = found
         log.info(f"Scan complete — {len(self.devices)} speaker(s).")
