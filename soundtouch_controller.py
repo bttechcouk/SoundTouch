@@ -155,7 +155,12 @@ class SoundTouchDevice:
 
     def detail_info(self):
         """Return network/firmware details for the Settings tab."""
-        xml = self._get("/info")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+            f_info = ex.submit(self._get, "/info")
+            f_net  = ex.submit(self._get, "/netStats")
+        xml = f_info.result()
+        nsx = f_net.result()
+
         if xml is None:
             return {"name": self.name, "model": self.model, "ip": self.host}
         result = {
@@ -167,6 +172,11 @@ class SoundTouchDevice:
             "ip":        self.host,
             "mac":       "",
             "country":   xml.findtext("countryCode") or "",
+            "region":    xml.findtext("regionCode") or "",
+            "spotify_connect": (xml.findtext("variant") or "").lower() == "spotty",
+            "wifi_ssid":   "",
+            "wifi_signal": "",
+            "wifi_band":   "",
         }
         for comp in xml.findall("components/component"):
             cat = comp.findtext("componentCategory", "")
@@ -181,6 +191,17 @@ class SoundTouchDevice:
                 result["ip"]  = ni.findtext("ipAddress") or self.host
                 result["mac"] = ni.findtext("macAddress") or ""
                 break
+        # Network stats
+        if nsx is not None:
+            iface = nsx.find(".//interface")
+            if iface is not None:
+                result["wifi_ssid"]   = iface.findtext("ssid") or ""
+                result["wifi_signal"] = iface.findtext("rssi") or ""
+                try:
+                    khz = int(iface.findtext("frequencyKHz") or 0)
+                    result["wifi_band"] = "5 GHz" if khz >= 3_000_000 else "2.4 GHz" if khz else ""
+                except ValueError:
+                    pass
         return result
 
     def get_bass_capabilities(self):
@@ -1907,14 +1928,25 @@ async function loadSpeakerInfo() {
   el.innerHTML = '<p style="font-size:12px;color:var(--fg3)">Loading…</p>';
   try {
     const d = await (await fetch('/api/device-info?host='+activeHost)).json();
-    el.innerHTML = `<table class="speaker-info-table">
+    const sigColour = {Poor:'#ef4444',Fair:'#f59e0b',Good:'#4caf50',Excellent:'#4caf50'}[d.wifi_signal]||'var(--fg2)';
+    const spotifyBadge = d.spotify_connect
+      ? `<span style="font-size:10px;font-weight:700;color:#1db954;background:rgba(29,185,84,.1);
+           border:1px solid rgba(29,185,84,.3);padding:2px 8px;border-radius:10px;
+           letter-spacing:.04em;margin-left:6px">Spotify Connect</span>` : '';
+    el.innerHTML = `<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
+      <span style="font-size:14px;font-weight:700;color:var(--white)">${d.name||d.model||'Speaker'}</span>
+      ${spotifyBadge}
+    </div>
+    <table class="speaker-info-table">
       <tr><td>Model</td><td>${d.model||'—'}</td></tr>
       <tr><td>Firmware</td><td>${d.firmware||'—'}</td></tr>
       <tr><td>IP Address</td><td>${d.ip||activeHost}</td></tr>
       <tr><td>MAC Address</td><td>${d.mac||'—'}</td></tr>
       <tr><td>Serial Number</td><td>${d.serial||'—'}</td></tr>
       <tr><td>Device ID</td><td>${d.device_id||'—'}</td></tr>
-      <tr><td>Country</td><td>${d.country||'—'}</td></tr>
+      <tr><td>Country / Region</td><td>${[d.country,d.region].filter((v,i,a)=>v&&a.indexOf(v)===i).join(' / ')||'—'}</td></tr>
+      ${d.wifi_ssid?`<tr><td>Wi-Fi Network</td><td>${d.wifi_ssid}</td></tr>`:''}
+      ${d.wifi_signal?`<tr><td>Signal Strength</td><td style="color:${sigColour};font-weight:700">${d.wifi_signal}${d.wifi_band?' · '+d.wifi_band:''}</td></tr>`:''}
     </table>
     <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
       <input id="rename-input" style="flex:1;background:var(--surface2);border:1px solid var(--border);
