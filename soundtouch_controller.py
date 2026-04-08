@@ -102,6 +102,8 @@ class SoundTouchDevice:
         self._session  = requests.Session()  # reuse TCP connections across requests
         self._presets_cache = None       # cached preset list
         self._presets_ts    = 0.0        # monotonic time of last preset fetch
+        self._zone_cache    = None       # cached zone info
+        self._zone_ts       = 0.0        # monotonic time of last zone fetch
 
     # ── low-level ─────────────────────────────────────────────────────────────
     def _get(self, path, timeout=4):
@@ -354,8 +356,17 @@ class SoundTouchDevice:
         return self._post("/select", xml)
 
     # ── group / multi-room ─────────────────────────────────────────────────────
+    def invalidate_zone_cache(self):
+        """Force the next get_zone() call to re-fetch from the speaker."""
+        self._zone_ts = 0.0
+
     def get_zone(self):
-        """Return zone membership info for this speaker."""
+        """Return zone membership info for this speaker.
+        Result is cached for 10 s — zone membership changes only on explicit group ops."""
+        _ZONE_TTL = 10.0
+        now = time.monotonic()
+        if self._zone_cache is not None and (now - self._zone_ts) < _ZONE_TTL:
+            return self._zone_cache
         zx = self._get("/getZone")
         if zx is None:
             return {"is_master": False, "is_slave": False,
@@ -371,13 +382,16 @@ class SoundTouchDevice:
             for m in members:
                 if m["id"] == master_id:
                     master_ip = m["ip"]; break
-        return {
+        result = {
             "is_master": is_master,
             "is_slave":  is_slave,
             "master_id": master_id,
             "master_ip": master_ip,
             "members":   members,
         }
+        self._zone_cache = result
+        self._zone_ts    = time.monotonic()
+        return result
 
     def set_zone(self, slave_devices):
         """Create a zone with self as master and slave_devices as the slaves."""
@@ -1354,19 +1368,27 @@ function setChipOffline(host, offline) {
 }
 
 // Background poll — updates playing/offline state for all non-active speakers
+// Persistently offline speakers (≥5 consecutive failures) are checked every
+// 5th cycle (~60 s) instead of every cycle (~12 s) to avoid pointless traffic.
 let bgPollTimer = null;
+const bgPollSkip = {};  // host → cycles remaining to skip
 async function bgPollAll() {
   for (const s of speakers) {
     if (s.host === activeHost) continue;
+    // Back-off: skip this cycle if the counter is still running
+    if (bgPollSkip[s.host] > 0) { bgPollSkip[s.host]--; continue; }
     try {
       const st = await (await fetch('/api/ping?host='+s.host)).json();
       speakerErrors[s.host] = 0;
+      bgPollSkip[s.host] = 0;
       setChipOffline(s.host, !st.online);
       const chip = document.getElementById('chip-'+s.host.replace(/\./g,'_'));
       if (chip) chip.classList.toggle('playing', st.playing);
     } catch(e) {
       speakerErrors[s.host] = (speakerErrors[s.host]||0) + 1;
       if (speakerErrors[s.host] >= 2) setChipOffline(s.host, true);
+      // After 5 consecutive failures start skipping 4 out of every 5 cycles
+      if (speakerErrors[s.host] >= 5) bgPollSkip[s.host] = 4;
     }
   }
   bgPollTimer = setTimeout(bgPollAll, 12000);
@@ -2032,13 +2054,16 @@ class Handler(BaseHTTPRequestHandler):
                               for h in slave_hosts]
                 slave_devs = [d for d in slave_devs if d]
                 master_dev.set_zone(slave_devs)
+                for d in [master_dev] + slave_devs: d.invalidate_zone_cache()
                 self._json({"ok":True})
 
         elif path == "/api/group/remove":
             host = qs.get("host",[None])[0]
             dev  = self.server_state.get_device(host)
             if dev:
-                dev.remove_zone(); self._json({"ok":True})
+                dev.remove_zone()
+                for d in list(self.server_state.devices): d.invalidate_zone_cache()
+                self._json({"ok":True})
             else:
                 self._json({"ok":False,"error":"no_device"})
 
@@ -2063,6 +2088,7 @@ class Handler(BaseHTTPRequestHandler):
                     master = devices[0]
                 slaves = [d for d in devices if d is not master]
                 master.set_zone(slaves)
+                for d in devices: d.invalidate_zone_cache()
                 log.info(f"[GROUP] Party mode — master={master.host} "
                          f"slaves={[d.host for d in slaves]}")
                 self._json({"ok": True, "master": master.host,
@@ -2080,6 +2106,7 @@ class Handler(BaseHTTPRequestHandler):
                         dissolved.append(d.host)
                 except Exception:
                     pass
+            for d in devices: d.invalidate_zone_cache()
             log.info(f"[GROUP] Dissolved groups on: {dissolved}")
             self._json({"ok": True, "dissolved": dissolved})
 
@@ -2136,6 +2163,7 @@ class Handler(BaseHTTPRequestHandler):
                 if target.host not in slave_hosts:
                     existing_slaves.append(target)
                 master.set_zone(existing_slaves)
+                for d in devices: d.invalidate_zone_cache()
                 log.info(f"[GROUP] Join — master={master.host} "
                          f"slaves={[d.host for d in existing_slaves]}")
                 self._json({"ok": True, "master": master.host,
