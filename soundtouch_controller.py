@@ -391,6 +391,12 @@ class SoundTouchDevice:
                 el = np.find(tag)
                 if el is not None and el.text:
                     d[key] = el.text
+        # cloud source warning
+        src_key = d.get("source", "").upper()
+        if src_key in CLOUD_SOURCES:
+            d["cloud_warning"] = CLOUD_SOURCES[src_key][1]
+        else:
+            d["cloud_warning"] = ""
         # presets
         d["presets"] = f_pre.result()
         # zone / group role
@@ -1116,6 +1122,9 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 #group-badge{font-size:10px;font-weight:700;letter-spacing:.06em;
   color:var(--amber);background:var(--surface);border:1px solid var(--amber-dim);
   padding:3px 8px;border-radius:10px;white-space:nowrap;align-self:center;flex-shrink:0}
+#cloud-warn{margin:8px 20px 0;padding:8px 12px;
+  background:rgba(245,158,11,.08);border:1px solid var(--amber-dim);
+  border-radius:8px;font-size:11px;color:var(--amber);line-height:1.5}
 
 /* Power / Mute */
 #power-row{display:flex;justify-content:center;gap:10px;padding:10px 20px 18px}
@@ -1418,6 +1427,7 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
       <div id="group-badge" style="display:none"></div>
       <div id="source-badge" style="display:none"></div>
     </div>
+    <div id="cloud-warn" style="display:none"></div>
 
     <div id="vol-row">
       <span class="vol-icon vol-btn" onclick="nudgeVol(-1)">&#128264;</span>
@@ -2019,6 +2029,9 @@ function applyState(d) {
   setTrackName(track); setText('track-artist',artist);
   const badge=document.getElementById('source-badge');
   badge.textContent=d.source||''; badge.style.display=d.source?'':'none';
+  const cw=document.getElementById('cloud-warn');
+  if(d.cloud_warning){cw.textContent='⚠ '+d.cloud_warning; cw.style.display='';}
+  else{cw.style.display='none';}
   const gbadge=document.getElementById('group-badge');
   if (d.group_role==='master') {
     gbadge.textContent=`GROUP MASTER (${d.group_members||0})`; gbadge.style.display='';
