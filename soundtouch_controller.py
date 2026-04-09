@@ -155,7 +155,12 @@ class SoundTouchDevice:
 
     def detail_info(self):
         """Return network/firmware details for the Settings tab."""
-        xml = self._get("/info")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+            f_info = ex.submit(self._get, "/info")
+            f_net  = ex.submit(self._get, "/netStats")
+        xml = f_info.result()
+        nsx = f_net.result()
+
         if xml is None:
             return {"name": self.name, "model": self.model, "ip": self.host}
         result = {
@@ -167,6 +172,11 @@ class SoundTouchDevice:
             "ip":        self.host,
             "mac":       "",
             "country":   xml.findtext("countryCode") or "",
+            "region":    xml.findtext("regionCode") or "",
+            "spotify_connect": (xml.findtext("variant") or "").lower() == "spotty",
+            "wifi_ssid":   "",
+            "wifi_signal": "",
+            "wifi_band":   "",
         }
         for comp in xml.findall("components/component"):
             cat = comp.findtext("componentCategory", "")
@@ -181,6 +191,17 @@ class SoundTouchDevice:
                 result["ip"]  = ni.findtext("ipAddress") or self.host
                 result["mac"] = ni.findtext("macAddress") or ""
                 break
+        # Network stats
+        if nsx is not None:
+            iface = nsx.find(".//interface")
+            if iface is not None:
+                result["wifi_ssid"]   = iface.findtext("ssid") or ""
+                result["wifi_signal"] = iface.findtext("rssi") or ""
+                try:
+                    khz = int(iface.findtext("frequencyKHz") or 0)
+                    result["wifi_band"] = "5 GHz" if khz >= 3_000_000 else "2.4 GHz" if khz else ""
+                except ValueError:
+                    pass
         return result
 
     def get_bass_capabilities(self):
@@ -923,6 +944,70 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   border-radius:6px;color:var(--fg1);cursor:pointer}
 .qr-refresh:hover{background:var(--surface3)}
 
+/* ── Ambient art glow ────────────────────────────────────── */
+#art-glow{position:absolute;inset:-15%;width:130%;height:130%;object-fit:cover;
+  filter:blur(50px) saturate(1.4);opacity:0;transition:opacity .8s;
+  pointer-events:none;z-index:0;border-radius:0}
+#art-glow.visible{opacity:0.55}
+#art{z-index:1}
+#art-placeholder{z-index:1}
+
+/* ── EQ visualiser ───────────────────────────────────────── */
+.eq-bars{display:flex;align-items:flex-end;gap:2.5px;height:18px;
+  margin-left:8px;flex-shrink:0;align-self:center;opacity:0;transition:opacity .3s}
+.eq-bars.playing{opacity:1}
+.eq-bar{width:3px;border-radius:2px 2px 0 0;background:var(--blue-light);
+  transform-origin:bottom;animation:eq-bounce 1.2s ease-in-out infinite}
+.eq-bar:nth-child(1){height:35%;animation-delay:0s}
+.eq-bar:nth-child(2){height:75%;animation-delay:.18s}
+.eq-bar:nth-child(3){height:100%;animation-delay:.08s}
+.eq-bar:nth-child(4){height:55%;animation-delay:.28s}
+.eq-bar:nth-child(5){height:40%;animation-delay:.13s}
+@keyframes eq-bounce{0%,100%{transform:scaleY(.35)}50%{transform:scaleY(1)}}
+.eq-bars:not(.playing) .eq-bar{animation-play-state:paused}
+
+/* ── Play button pulse ring ──────────────────────────────── */
+#btn-play{position:relative}
+#btn-play::before{content:'';position:absolute;inset:-4px;border-radius:50%;
+  border:2px solid var(--blue);opacity:0;pointer-events:none;
+  animation:play-ring 2.4s ease-out infinite;animation-play-state:paused}
+#btn-play.playing::before{animation-play-state:running}
+@keyframes play-ring{
+  0%{opacity:.8;transform:scale(1)}
+  100%{opacity:0;transform:scale(1.55)}}
+
+/* ── Track name marquee ──────────────────────────────────── */
+#track-name{overflow:hidden;white-space:nowrap}
+#track-name span{display:inline-block;white-space:nowrap}
+#track-name.marquee span{animation:marquee-scroll 10s linear 1.5s infinite}
+@keyframes marquee-scroll{0%,12%{transform:translateX(0)}88%,100%{transform:translateX(var(--sw,0))}}
+
+/* ── Tab page fade-in ────────────────────────────────────── */
+.page.visible{animation:page-in .18s ease forwards}
+@keyframes page-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+
+/* ── Ripple ──────────────────────────────────────────────── */
+.t-btn,.preset,.mc-btn{overflow:hidden}
+.ripple{position:absolute;border-radius:50%;transform:scale(0);
+  background:rgba(255,255,255,.18);animation:ripple-out .45s linear;
+  pointer-events:none}
+@keyframes ripple-out{to{transform:scale(5);opacity:0}}
+
+/* ── Glassmorphism collapsible headers ───────────────────── */
+.qr-collapse-hdr{backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  background:rgba(19,21,29,.75)}
+
+/* ── Speaker chip mini-EQ ────────────────────────────────── */
+.chip-eq{display:none;align-items:flex-end;gap:1.5px;height:11px;
+  margin-left:3px;flex-shrink:0}
+.room-chip.playing .chip-eq{display:flex}
+.room-chip.playing .dot{display:none}
+.chip-eq-bar{width:2.5px;border-radius:1px 1px 0 0;background:var(--blue-light);
+  transform-origin:bottom;animation:eq-bounce 1.2s ease-in-out infinite}
+.chip-eq-bar:nth-child(1){height:40%;animation-delay:.05s}
+.chip-eq-bar:nth-child(2){height:100%;animation-delay:.2s}
+.chip-eq-bar:nth-child(3){height:60%;animation-delay:0s}
+
 /* ── Toast ───────────────────────────────────────────────── */
 #toast{position:fixed;bottom:32px;left:50%;transform:translateX(-50%);
   background:rgba(19,21,29,.96);color:var(--blue-light);border:1px solid var(--blue-dim);
@@ -986,14 +1071,19 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   <div id="page-player" class="page visible" style="padding:0 20px">
 
     <div id="art-wrap">
+      <img id="art-glow" src="" alt="" aria-hidden="true">
       <img id="art" src="" alt="" class="hidden">
       <div id="art-placeholder">&#9835;</div>
     </div>
 
     <div id="track-info">
       <div id="track-text">
-        <div id="track-name">—</div>
+        <div id="track-name"><span>—</span></div>
         <div id="track-artist"></div>
+      </div>
+      <div class="eq-bars" id="eq-bars">
+        <div class="eq-bar"></div><div class="eq-bar"></div><div class="eq-bar"></div>
+        <div class="eq-bar"></div><div class="eq-bar"></div>
       </div>
       <div id="group-badge" style="display:none"></div>
       <div id="source-badge" style="display:none"></div>
@@ -1010,13 +1100,13 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
     </div>
 
     <div id="transport">
-      <button class="t-btn t-btn-sm" onclick="cmd('prev')" title="Previous">
+      <button class="t-btn t-btn-sm" onclick="cmd('prev',this,event)" title="Previous">
         <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
           <polygon points="28,8 14,18 28,28" fill="currentColor"/>
           <rect x="8" y="8" width="4" height="20" rx="2" fill="currentColor"/>
         </svg>
       </button>
-      <button class="t-btn" id="btn-play" onclick="cmd('playpause')">
+      <button class="t-btn" id="btn-play" onclick="cmd('playpause',this,event)">
         <svg id="ico-play" width="30" height="30" viewBox="0 0 32 32">
           <polygon points="8,4 28,16 8,28" fill="currentColor"/>
         </svg>
@@ -1025,7 +1115,7 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
           <rect x="19" y="4" width="8" height="24" rx="2" fill="currentColor"/>
         </svg>
       </button>
-      <button class="t-btn t-btn-sm" onclick="cmd('next')" title="Next">
+      <button class="t-btn t-btn-sm" onclick="cmd('next',this,event)" title="Next">
         <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
           <polygon points="8,8 22,18 8,28" fill="currentColor"/>
           <rect x="24" y="8" width="4" height="20" rx="2" fill="currentColor"/>
@@ -1034,14 +1124,14 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
     </div>
 
     <div id="power-row">
-      <button id="btn-power" onclick="cmd('power')">
+      <button id="btn-power" onclick="cmd('power',this,event)" style="position:relative">
         <svg width="15" height="15" viewBox="0 0 16 16">
           <path d="M8 1v6M4.5 3.5A5 5 0 1 0 11.5 3.5" stroke="currentColor"
                 stroke-width="1.6" stroke-linecap="round" fill="none"/>
         </svg>
         Power
       </button>
-      <button id="btn-mute" onclick="cmd('mute')">
+      <button id="btn-mute" onclick="cmd('mute',this,event)" style="position:relative">
         <svg width="15" height="15" viewBox="0 0 16 16">
           <path d="M2 5.5h2.5L8 2v12l-3.5-3.5H2z" fill="currentColor"/>
           <path id="ico-mute-lines" d="M10 6a3 3 0 0 1 0 4M11.5 4a5 5 0 0 1 0 8"
@@ -1330,7 +1420,9 @@ function renderRooms() {
     <div class="room-chip${s.host===activeHost?' active':''}"
          id="chip-${s.host.replace(/\./g,'_')}"
          onclick="setActive('${s.host}')">
-      <span class="dot"></span><span class="name">${s.name}</span>${s.has_backup===false?'<span class="chip-warn" title="No preset backup">⚠</span>':''}</div>`).join('');
+      <span class="dot"></span>
+      <span class="chip-eq"><span class="chip-eq-bar"></span><span class="chip-eq-bar"></span><span class="chip-eq-bar"></span></span>
+      <span class="name">${s.name}</span>${s.has_backup===false?'<span class="chip-warn" title="No preset backup">⚠</span>':''}</div>`).join('');
 }
 function setActive(h) {
   activeHost=h; clearTimeout(pollTimer); renderRooms(); pollNow();
@@ -1394,10 +1486,25 @@ async function bgPollAll() {
   bgPollTimer = setTimeout(bgPollAll, 12000);
 }
 setTimeout(bgPollAll, 5000); // stagger start so it doesn't clash with boot poll
+function setTrackName(text) {
+  const el = document.getElementById('track-name');
+  if (!el) return;
+  el.classList.remove('marquee');
+  el.style.removeProperty('--sw');
+  let span = el.querySelector('span');
+  if (!span) { el.innerHTML='<span></span>'; span = el.querySelector('span'); }
+  span.textContent = text;
+  requestAnimationFrame(() => {
+    if (span.scrollWidth > el.offsetWidth + 2) {
+      el.style.setProperty('--sw', `-${span.scrollWidth - el.offsetWidth + 24}px`);
+      el.classList.add('marquee');
+    }
+  });
+}
 function applyState(d) {
   if (!d) return; lastState = d;
   const track = d.track||(d.source||'—'), artist = d.artist||d.album||'';
-  setText('track-name',track); setText('track-artist',artist);
+  setTrackName(track); setText('track-artist',artist);
   const badge=document.getElementById('source-badge');
   badge.textContent=d.source||''; badge.style.display=d.source?'':'none';
   const gbadge=document.getElementById('group-badge');
@@ -1408,17 +1515,29 @@ function applyState(d) {
   } else {
     gbadge.style.display='none';
   }
-  // art
+  // art + ambient glow
   const artEl=document.getElementById('art'), ph=document.getElementById('art-placeholder');
+  const glowEl=document.getElementById('art-glow');
   if (d.art && d.art!==lastArt) {
     lastArt=d.art; const tmp=new Image();
-    tmp.onload=()=>{artEl.src=d.art;artEl.classList.remove('hidden');ph.style.display='none'};
-    tmp.onerror=()=>{artEl.classList.add('hidden');ph.style.display=''};
+    tmp.onload=()=>{
+      artEl.src=d.art; artEl.classList.remove('hidden'); ph.style.display='none';
+      if(glowEl){glowEl.src=d.art; glowEl.classList.add('visible');}
+    };
+    tmp.onerror=()=>{
+      artEl.classList.add('hidden'); ph.style.display='';
+      if(glowEl){glowEl.src=''; glowEl.classList.remove('visible');}
+    };
     tmp.src=d.art;
-  } else if (!d.art) { artEl.classList.add('hidden'); ph.style.display=''; }
-  // play icon
+  } else if (!d.art) {
+    artEl.classList.add('hidden'); ph.style.display='';
+    if(glowEl){glowEl.src=''; glowEl.classList.remove('visible');}
+  }
+  // EQ visualiser + play button ring
+  document.getElementById('eq-bars')?.classList.toggle('playing', d.playing);
   document.getElementById('ico-play').style.display=d.playing?'none':'';
   document.getElementById('ico-pause').style.display=d.playing?'':'none';
+  document.getElementById('btn-play').classList.toggle('playing', d.playing);
   // power button — highlight while playing
   document.getElementById('btn-power').classList.toggle('playing', d.playing);
   // mute button
@@ -1443,7 +1562,7 @@ function applyState(d) {
       div.className='preset'+(nm?' has-name':'');
       div.innerHTML=`<div class="preset-num">Preset ${i+1}</div>
                      <div class="preset-name">${nm||'—'}</div>`;
-      div.onclick=()=>{ cmd('preset'+(i+1)); closePresets(); };
+      div.onclick=(e)=>{ ripple(div,e); if(navigator.vibrate)navigator.vibrate(8); cmd('preset'+(i+1)); closePresets(); };
       g.appendChild(div);
     }
   } else {
@@ -1481,7 +1600,20 @@ function nudgeVol(delta) {
 }
 
 // ── Commands ─────────────────────────────────────────────────────────────────
-async function cmd(a) {
+function ripple(el, e) {
+  const r = document.createElement('span');
+  r.className = 'ripple';
+  const rect = el.getBoundingClientRect();
+  const size = Math.max(rect.width, rect.height);
+  const x = (e.clientX||rect.left+rect.width/2) - rect.left - size/2;
+  const y = (e.clientY||rect.top+rect.height/2) - rect.top - size/2;
+  r.style.cssText=`width:${size}px;height:${size}px;left:${x}px;top:${y}px`;
+  el.appendChild(r);
+  r.addEventListener('animationend', ()=>r.remove());
+}
+async function cmd(a, el, e) {
+  if (el && e) ripple(el, e);
+  if (navigator.vibrate) navigator.vibrate(8);
   if (!activeHost) { toast('No speaker selected'); return; }
   await fetch(`/api/cmd?host=${activeHost}&action=${a}`);
   setTimeout(pollNow,500);
@@ -1796,14 +1928,25 @@ async function loadSpeakerInfo() {
   el.innerHTML = '<p style="font-size:12px;color:var(--fg3)">Loading…</p>';
   try {
     const d = await (await fetch('/api/device-info?host='+activeHost)).json();
-    el.innerHTML = `<table class="speaker-info-table">
+    const sigColour = {Poor:'#ef4444',Fair:'#f59e0b',Good:'#4caf50',Excellent:'#4caf50'}[d.wifi_signal]||'var(--fg2)';
+    const spotifyBadge = d.spotify_connect
+      ? `<span style="font-size:10px;font-weight:700;color:#1db954;background:rgba(29,185,84,.1);
+           border:1px solid rgba(29,185,84,.3);padding:2px 8px;border-radius:10px;
+           letter-spacing:.04em;margin-left:6px">Spotify Connect</span>` : '';
+    el.innerHTML = `<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px">
+      <span style="font-size:14px;font-weight:700;color:var(--white)">${d.name||d.model||'Speaker'}</span>
+      ${spotifyBadge}
+    </div>
+    <table class="speaker-info-table">
       <tr><td>Model</td><td>${d.model||'—'}</td></tr>
       <tr><td>Firmware</td><td>${d.firmware||'—'}</td></tr>
       <tr><td>IP Address</td><td>${d.ip||activeHost}</td></tr>
       <tr><td>MAC Address</td><td>${d.mac||'—'}</td></tr>
       <tr><td>Serial Number</td><td>${d.serial||'—'}</td></tr>
       <tr><td>Device ID</td><td>${d.device_id||'—'}</td></tr>
-      <tr><td>Country</td><td>${d.country||'—'}</td></tr>
+      <tr><td>Country / Region</td><td>${[d.country,d.region].filter((v,i,a)=>v&&a.indexOf(v)===i).join(' / ')||'—'}</td></tr>
+      ${d.wifi_ssid?`<tr><td>Wi-Fi Network</td><td>${d.wifi_ssid}</td></tr>`:''}
+      ${d.wifi_signal?`<tr><td>Signal Strength</td><td style="color:${sigColour};font-weight:700">${d.wifi_signal}${d.wifi_band?' · '+d.wifi_band:''}</td></tr>`:''}
     </table>
     <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
       <input id="rename-input" style="flex:1;background:var(--surface2);border:1px solid var(--border);
