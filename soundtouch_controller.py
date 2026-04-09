@@ -3747,10 +3747,12 @@ def _tts_announce(devices, text, volume, web_port):
         try:
             # ── capture current state ────────────────────────────────────────
             np = dev._get("/now_playing")
-            was_playing, saved_ci = False, None
+            was_playing, was_standby, saved_ci = False, False, None
             if np is not None:
-                ps = np.get("playStatus") or np.findtext("playStatus") or ""
+                ps  = np.get("playStatus") or np.findtext("playStatus") or ""
+                src = np.get("source") or np.findtext("source") or ""
                 was_playing = ps in ("PLAY_STATE", "BUFFERING_STATE")
+                was_standby = src.upper() in ("STANDBY", "") or not was_playing and not src
                 ci = np.find("ContentItem")
                 if ci is not None:
                     saved_ci = ET.tostring(ci, encoding="unicode")
@@ -3762,7 +3764,7 @@ def _tts_announce(devices, text, volume, web_port):
                     if el is not None:
                         saved_vol = int(el.text); break
 
-            log.info(f"[TTS] {dev.host} was_playing={was_playing} saved_vol={saved_vol}")
+            log.info(f"[TTS] {dev.host} was_playing={was_playing} was_standby={was_standby} saved_vol={saved_vol}")
 
             # ── play announcement ────────────────────────────────────────────
             dev.set_volume(volume)
@@ -3774,12 +3776,16 @@ def _tts_announce(devices, text, volume, web_port):
             # Time-based wait: 128kbps MP3 ≈ 16 000 bytes/s + 2 s buffer
             time.sleep(play_duration)
 
-            # ── restore volume then power off ─────────────────────────────────
+            # ── restore ───────────────────────────────────────────────────────
             if saved_vol is not None:
                 dev.set_volume(saved_vol)
             time.sleep(0.3)
-            dev.power()
-            log.info(f"[TTS] {dev.host} powered off after announcement")
+            if was_standby:
+                dev.power()
+                log.info(f"[TTS] {dev.host} returned to standby")
+            elif was_playing and saved_ci:
+                dev._post("/select", saved_ci)
+                log.info(f"[TTS] {dev.host} resumed previous content")
         except Exception as e:
             log.error(f"[TTS] announce_one({dev.host}) error: {e}")
 
