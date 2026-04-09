@@ -1179,10 +1179,31 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 #toast.show{opacity:1}
 
 /* ── All-speaker volume row ──────────────────────────────── */
-#all-vol-row{padding:8px 4px 2px;border-top:1px solid var(--border);margin-top:6px;display:none}
-#all-vol-row.visible{display:block}
+#all-vol-row{padding:8px 4px 2px;border-bottom:1px solid var(--border);margin-bottom:14px}
 #all-vol-label{font-size:10px;font-weight:700;letter-spacing:.12em;color:var(--fg3);
   text-transform:uppercase;margin-bottom:6px}
+
+/* ── Header icon buttons (scenes / alarms quick-view) ────── */
+.icon-btn{background:var(--surface);border:1px solid var(--border);color:var(--fg2);
+  width:32px;height:32px;border-radius:50%;font-size:15px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;transition:all .2s;padding:0;
+  flex-shrink:0}
+.icon-btn:active{background:var(--blue-dim);color:var(--blue-light);border-color:var(--blue)}
+
+/* ── Modal overlays ──────────────────────────────────────── */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(7,8,12,.85);
+  backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
+  align-items:center;justify-content:center;z-index:150}
+.modal-overlay.open{display:flex}
+.modal-box{background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);width:92%;max-width:380px;max-height:78vh;
+  overflow-y:auto;padding:20px;box-shadow:0 8px 40px rgba(0,0,0,.6)}
+.modal-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.modal-hdr span{font-size:15px;font-weight:700;color:var(--white)}
+/* Select input for forms */
+.form-select{width:100%;background:var(--surface2);border:1px solid var(--border);
+  color:var(--fg);padding:9px 12px;border-radius:8px;font-size:13px;outline:none;
+  -webkit-appearance:none;appearance:none}
 #all-vol-inner{display:flex;align-items:center;gap:10px}
 #all-vol-track{flex:1;position:relative;padding-top:22px}
 #all-vol-tip{position:absolute;top:0;transform:translateX(-50%);
@@ -1237,6 +1258,8 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   <header style="position:relative;z-index:51">
     <div class="logo"><div class="logo-stripe"></div><span class="logo-txt">SOUNDTOUCH</span></div>
     <div style="display:flex;gap:8px;align-items:center">
+      <button class="icon-btn" onclick="openScenesModal()" title="Scenes">&#9654;</button>
+      <button class="icon-btn" onclick="openAlarmsModal()" title="Alarms">&#9201;</button>
       <button id="preset-toggle" onclick="togglePresets()">
         Presets <span class="arrow">▼</span>
       </button>
@@ -1334,24 +1357,26 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
       </button>
     </div>
 
-    <!-- All-speaker volume (shown when 2+ speakers are discovered) -->
-    <div id="all-vol-row">
-      <div id="all-vol-label">All Speakers</div>
-      <div id="all-vol-inner">
-        <span class="vol-icon vol-btn" onclick="nudgeAllVol(-1)">&#128264;</span>
-        <div id="all-vol-track">
-          <div id="all-vol-tip">50</div>
-          <input type="range" id="all-vol-slider" min="0" max="100" value="50"
-                 oninput="onAllVolInput(this.value)" onchange="sendAllVol(this.value)">
-        </div>
-        <span class="vol-icon vol-btn" onclick="nudgeAllVol(1)">&#128266;</span>
-      </div>
-    </div>
   </div>
 
   <!-- ═══ PAGE: Groups ═══ -->
   <div id="page-groups" class="page">
     <div class="manage-section">
+
+      <!-- All-speaker volume -->
+      <div id="all-vol-row">
+        <div id="all-vol-label">All Speakers Volume</div>
+        <div id="all-vol-inner">
+          <span class="vol-icon vol-btn" onclick="nudgeAllVol(-1)">&#128264;</span>
+          <div id="all-vol-track">
+            <div id="all-vol-tip">50</div>
+            <input type="range" id="all-vol-slider" min="0" max="100" value="50"
+                   oninput="onAllVolInput(this.value)" onchange="sendAllVol(this.value)">
+          </div>
+          <span class="vol-icon vol-btn" onclick="nudgeAllVol(1)">&#128266;</span>
+        </div>
+      </div>
+
       <h2>Multi-Room Groups</h2>
       <p style="font-size:12px;color:var(--fg3);margin-bottom:14px">
         Group speakers together so they all play the same audio in sync.
@@ -1359,30 +1384,6 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
       </p>
       <div id="group-status"></div>
       <div id="group-builder"></div>
-
-      <!-- Scenes -->
-      <div class="qr-section" style="margin-top:18px">
-        <div class="qr-collapse-hdr" onclick="toggleSection('sec-scenes','chev-scenes')">
-          <span class="title">Scenes</span>
-          <span id="chev-scenes" class="qr-chevron">&#9660;</span>
-        </div>
-        <div id="sec-scenes" class="qr-body" style="display:none">
-          <p style="font-size:12px;color:var(--fg3);margin-bottom:12px">
-            Save the current speaker group, volumes, and a preset as a named scene.
-            One tap replays everything exactly.
-          </p>
-          <div id="scenes-list"></div>
-          <div class="add-form" style="margin:10px 0 0">
-            <label>Scene Name</label>
-            <input id="scene-name-input" placeholder="e.g. Morning, Party, Bedtime">
-            <label>Preset to play (1–6)</label>
-            <input id="scene-preset-input" type="number" min="1" max="6" value="1">
-            <div class="form-row">
-              <button class="mc-btn primary" onclick="saveScene()">Save Scene</button>
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
   </div>
 
@@ -1442,10 +1443,13 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
         <div id="sec-alarms" class="qr-body" style="display:none">
           <p style="font-size:12px;color:var(--fg3);margin-bottom:12px">
             Schedule a speaker to start playing a preset at a set time.
-            Uses the currently active speaker when saved.
           </p>
           <div id="alarms-list"></div>
           <div class="add-form" style="margin:10px 0 0">
+            <label>Speaker</label>
+            <select id="alarm-speaker-select" class="form-select">
+              <option value="">Select a speaker…</option>
+            </select>
             <label>Name (optional)</label>
             <input id="alarm-name" placeholder="Morning Radio">
             <label>Time</label>
@@ -1464,11 +1468,32 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
               <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="5">Sat</label>
               <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="6">Sun</label>
             </div>
-            <p style="font-size:11px;color:var(--fg3);margin-top:8px">
-              Speaker: <span id="alarm-speaker-name" style="color:var(--fg2)">—</span>
-            </p>
             <div class="form-row">
               <button class="mc-btn primary" onclick="addAlarm()">Add Alarm</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Scenes -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-scenes','chev-scenes')">
+          <span class="title">Scenes</span>
+          <span id="chev-scenes" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-scenes" class="qr-body" style="display:none">
+          <p style="font-size:12px;color:var(--fg3);margin-bottom:12px">
+            Save the current speaker group, volumes, and a preset as a named scene.
+            One tap replays everything exactly.
+          </p>
+          <div id="scenes-list"></div>
+          <div class="add-form" style="margin:10px 0 0">
+            <label>Scene Name</label>
+            <input id="scene-name-input" placeholder="e.g. Morning, Party, Bedtime">
+            <label>Preset to play (1–6)</label>
+            <input id="scene-preset-input" type="number" min="1" max="6" value="1">
+            <div class="form-row">
+              <button class="mc-btn primary" onclick="saveScene()">Save Scene</button>
             </div>
           </div>
         </div>
@@ -1620,6 +1645,28 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 
 </div>
 
+<!-- Scenes quick-view modal -->
+<div id="scenes-modal" class="modal-overlay" onclick="if(event.target===this)closeModal('scenes-modal')">
+  <div class="modal-box">
+    <div class="modal-hdr">
+      <span>Scenes</span>
+      <button class="mc-btn" onclick="closeModal('scenes-modal')">&#10005;</button>
+    </div>
+    <div id="scenes-modal-body"><p style="font-size:12px;color:var(--fg3)">Loading…</p></div>
+  </div>
+</div>
+
+<!-- Alarms quick-view modal -->
+<div id="alarms-modal" class="modal-overlay" onclick="if(event.target===this)closeModal('alarms-modal')">
+  <div class="modal-box">
+    <div class="modal-hdr">
+      <span>Alarms</span>
+      <button class="mc-btn" onclick="closeModal('alarms-modal')">&#10005;</button>
+    </div>
+    <div id="alarms-modal-body"><p style="font-size:12px;color:var(--fg3)">Loading…</p></div>
+  </div>
+</div>
+
 <div id="toast"></div>
 <div id="scanning">
   <div class="scan-box">
@@ -1657,10 +1704,8 @@ function switchTab(name) {
   document.querySelectorAll('.page').forEach(p =>
     p.classList.toggle('visible', p.id === 'page-' + name));
   if (name === 'manage')   { /* sections load on expand */ }
-  if (name === 'groups')   { loadGroups();
-    const sec = document.getElementById('sec-scenes');
-    if (sec && sec.style.display !== 'none') loadScenes(); }
-  if (name === 'settings') { updateAlarmSpeakerName(); }
+  if (name === 'groups')   { loadGroups(); }
+  if (name === 'settings') { /* sections load on expand */ }
   localStorage.setItem('activeTab', name);
 }
 
@@ -1695,12 +1740,10 @@ function renderRooms() {
       <span class="dot"></span>
       <span class="chip-eq"><span class="chip-eq-bar"></span><span class="chip-eq-bar"></span><span class="chip-eq-bar"></span></span>
       <span class="name">${s.name}</span>${s.has_backup===false?'<span class="chip-warn" title="No preset backup">⚠</span>':''}</div>`).join('');
-  // Show all-speaker volume only when 2+ speakers are available
-  document.getElementById('all-vol-row')?.classList.toggle('visible', speakers.length >= 2);
+  updateAlarmSpeakerSelect();
 }
 function setActive(h) {
   activeHost=h; clearTimeout(pollTimer); renderRooms(); pollNow();
-  updateAlarmSpeakerName();
   const tab = document.querySelector('.tab.active')?.dataset?.tab;
   if (tab === 'manage') {
     const sec = document.getElementById('sec-manage-backup');
@@ -2387,44 +2430,47 @@ async function deleteScene(id) {
 // ── Alarms ────────────────────────────────────────────────────────────────────
 const ALARM_DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 
-function updateAlarmSpeakerName() {
-  const el=document.getElementById('alarm-speaker-name');
-  if(!el)return;
-  const sp=speakers.find(s=>s.host===activeHost);
-  el.textContent=sp?sp.name:(activeHost||'None selected');
+function updateAlarmSpeakerSelect() {
+  const sel=document.getElementById('alarm-speaker-select');
+  if(!sel)return;
+  const cur=sel.value;
+  sel.innerHTML='<option value="">Select a speaker…</option>'+
+    speakers.map(s=>`<option value="${s.host}"${s.host===cur?' selected':''}>${s.name}</option>`).join('');
+}
+
+function _alarmHtml(a, closeModalId) {
+  const dayStr=a.days.length===7?'Every day':
+    (a.days.length===5&&!a.days.includes(5)&&!a.days.includes(6)?'Weekdays':
+     a.days.map(d=>ALARM_DAYS[d]).join(', '));
+  const spk=speakers.find(s=>s.host===a.host);
+  const closeArg=closeModalId?`,'${closeModalId}'`:'';
+  return`<div class="manage-card">
+    <div class="mc-left">
+      <div class="mc-name">${a.name} · ${a.time}</div>
+      <div class="mc-meta">${spk?spk.name:a.host} · Preset ${a.preset} · ${dayStr}${a.volume!=null?' · Vol '+a.volume:''}</div>
+    </div>
+    <div class="mc-actions">
+      <button class="mc-btn${a.enabled?' primary':''}" onclick="toggleAlarm('${a.id}',${!a.enabled}${closeArg})">${a.enabled?'On':'Off'}</button>
+      <button class="mc-btn danger" onclick="deleteAlarm('${a.id}'${closeArg})">✕</button>
+    </div>
+  </div>`;
 }
 
 async function loadAlarms() {
   const el=document.getElementById('alarms-list');
   if(!el)return;
-  updateAlarmSpeakerName();
+  updateAlarmSpeakerSelect();
   try{
     const alarms=await(await fetch('/api/alarms')).json();
-    if(!alarms.length){
-      el.innerHTML='<p style="font-size:12px;color:var(--fg3);margin-bottom:10px">No alarms set.</p>';
-      return;
-    }
-    el.innerHTML=alarms.map(a=>{
-      const dayStr=a.days.length===7?'Every day':
-        (a.days.length===5&&!a.days.includes(5)&&!a.days.includes(6)?'Weekdays':
-         a.days.map(d=>ALARM_DAYS[d]).join(', '));
-      const spk=speakers.find(s=>s.host===a.host);
-      return`<div class="manage-card">
-        <div class="mc-left">
-          <div class="mc-name">${a.name} · ${a.time}</div>
-          <div class="mc-meta">${spk?spk.name:a.host} · Preset ${a.preset} · ${dayStr}${a.volume!=null?' · Vol '+a.volume:''}</div>
-        </div>
-        <div class="mc-actions">
-          <button class="mc-btn${a.enabled?' primary':''}" onclick="toggleAlarm('${a.id}',${!a.enabled})">${a.enabled?'On':'Off'}</button>
-          <button class="mc-btn danger" onclick="deleteAlarm('${a.id}')">✕</button>
-        </div>
-      </div>`;
-    }).join('');
+    el.innerHTML=alarms.length
+      ?alarms.map(a=>_alarmHtml(a)).join('')
+      :'<p style="font-size:12px;color:var(--fg3);margin-bottom:10px">No alarms set.</p>';
   }catch(e){}
 }
 
 async function addAlarm() {
-  if(!activeHost){toast('Select a speaker first');return;}
+  const host=document.getElementById('alarm-speaker-select').value;
+  if(!host){toast('Select a speaker');return;}
   const time=document.getElementById('alarm-time').value;
   if(!time){toast('Set a time');return;}
   const days=[];
@@ -2436,21 +2482,65 @@ async function addAlarm() {
   const volume=volRaw!==''?parseInt(volRaw):null;
   try{
     await fetch('/api/alarms',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({name,host:activeHost,preset,time,days,volume})});
+      body:JSON.stringify({name,host,preset,time,days,volume})});
     document.getElementById('alarm-name').value='';
     toast('Alarm saved'); loadAlarms();
   }catch(e){toast('Failed to save alarm');}
 }
 
-async function deleteAlarm(id) {
+async function deleteAlarm(id, modalId) {
   if(!confirm('Delete this alarm?'))return;
   await fetch('/api/alarms/delete?id='+id);
   toast('Alarm deleted'); loadAlarms();
+  if(modalId) _refreshAlarmsModal();
 }
 
-async function toggleAlarm(id,enabled) {
+async function toggleAlarm(id, enabled, modalId) {
   await fetch(`/api/alarms/toggle?id=${id}&enabled=${enabled}`);
   loadAlarms();
+  if(modalId) _refreshAlarmsModal();
+}
+
+// ── Modals ────────────────────────────────────────────────────────────────────
+function openModal(id)  { document.getElementById(id)?.classList.add('open'); }
+function closeModal(id) { document.getElementById(id)?.classList.remove('open'); }
+
+async function _refreshScenesModal() {
+  const el=document.getElementById('scenes-modal-body'); if(!el)return;
+  try{
+    const scenes=await(await fetch('/api/scenes')).json();
+    if(!scenes.length){el.innerHTML='<p style="font-size:12px;color:var(--fg3)">No scenes saved yet.</p>';return;}
+    el.innerHTML=scenes.map(s=>`
+      <div class="manage-card">
+        <div class="mc-left">
+          <div class="mc-name">${s.name}</div>
+          <div class="mc-meta">Preset ${s.preset} · ${[s.master,...(s.slaves||[])].length} speaker(s)</div>
+        </div>
+        <div class="mc-actions">
+          <button class="mc-btn primary" onclick="activateScene('${s.id}');closeModal('scenes-modal')">Play</button>
+          <button class="mc-btn danger" onclick="deleteSceneModal('${s.id}')">✕</button>
+        </div>
+      </div>`).join('');
+  }catch(e){el.innerHTML='<p style="font-size:12px;color:var(--fg3)">Failed to load scenes.</p>';}
+}
+
+async function _refreshAlarmsModal() {
+  const el=document.getElementById('alarms-modal-body'); if(!el)return;
+  try{
+    const alarms=await(await fetch('/api/alarms')).json();
+    el.innerHTML=alarms.length
+      ?alarms.map(a=>_alarmHtml(a,'alarms-modal')).join('')
+      :'<p style="font-size:12px;color:var(--fg3)">No alarms set.</p>';
+  }catch(e){}
+}
+
+async function openScenesModal() { openModal('scenes-modal'); await _refreshScenesModal(); }
+async function openAlarmsModal() { openModal('alarms-modal'); await _refreshAlarmsModal(); }
+
+async function deleteSceneModal(id) {
+  if(!confirm('Delete this scene?'))return;
+  await fetch('/api/scenes/delete?id='+id);
+  toast('Scene deleted'); loadScenes(); _refreshScenesModal();
 }
 </script>
 </body>
