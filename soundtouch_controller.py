@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import pathlib
+import queue
 import re
 import socket
 import struct
@@ -1922,9 +1923,35 @@ function dismissInstall() {
   localStorage.setItem('pwa-dismissed', '1');
 }
 
+// ── Server-Sent Events (primary) ─────────────────────────────────────────────
+let _sseOk = false;
+function initSSE() {
+  const es = new EventSource('/api/events');
+  es.addEventListener('state', e => {
+    _sseOk = true;
+    const d = JSON.parse(e.data);
+    if (d.host === activeHost) {
+      applyState(d);
+      // reset fallback poll timer so it doesn't fire immediately after SSE
+      clearTimeout(pollTimer);
+      schedPoll();
+    }
+    // update background chip for non-active speakers
+    const chip = document.getElementById('chip-'+d.host.replace(/\./g,'_'));
+    if (chip) chip.classList.toggle('playing', !!d.playing);
+    setChipOffline(d.host, false);
+  });
+  es.onerror = () => {
+    _sseOk = false;
+    // EventSource auto-reconnects; fallback poll handles the gap
+  };
+}
+
 // ── Boot ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
-  fetchSpeakers(false); schedPoll();
+  fetchSpeakers(false);
+  initSSE();
+  schedPoll();   // fallback poll still runs, but at 3 s it rarely fires before SSE
   const savedTab = localStorage.getItem('activeTab');
   if (savedTab) switchTab(savedTab);
 });
@@ -3611,7 +3638,18 @@ async function init(){
   pollAll().then(()=>{
     if(speakers.length) selectCard(speakers[0].host);
   });
-  setInterval(pollAll, 4000);
+
+  // SSE — primary update mechanism
+  const es=new EventSource('/api/events');
+  es.addEventListener('state',e=>{
+    const d=JSON.parse(e.data);
+    lastState[d.host]=d;
+    applyCard(d.host,d);
+    if(d.host===activeHost) renderPresets();
+  });
+
+  // Slow fallback poll in case SSE drops
+  setInterval(pollAll, 30000);
 }
 
 init();
@@ -3817,6 +3855,49 @@ def _tts_announce(devices, text, volume, web_port):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Server-Sent Events broadcaster
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_sse_clients: list = []          # list of queue.Queue — one per connected browser tab
+_sse_lock    = threading.Lock()
+_POLL_INTERVAL = 1.0             # seconds between speaker polls on the server side
+
+# Keys compared to decide whether to push an update
+_STATE_KEYS = ("track", "artist", "volume", "playing", "source", "muted",
+               "group_role", "art", "playStatus")
+
+def _sse_broadcast(event_type: str, data: dict):
+    """Push an SSE event to every connected client."""
+    payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n".encode()
+    with _sse_lock:
+        dead = [q for q in _sse_clients if not _sse_put(q, payload)]
+        for q in dead:
+            _sse_clients.remove(q)
+
+def _sse_put(q: queue.Queue, payload: bytes) -> bool:
+    try:
+        q.put_nowait(payload)
+        return True
+    except queue.Full:
+        return False
+
+def _sse_poller(app_state):
+    """Background thread: poll all speakers every second, broadcast on change."""
+    last: dict = {}
+    while True:
+        for dev in list(app_state.devices):
+            try:
+                state = dev.state()
+                prev  = last.get(dev.host)
+                if prev is None or any(state.get(k) != prev.get(k) for k in _STATE_KEYS):
+                    _sse_broadcast("state", state)
+                    last[dev.host] = state
+            except Exception:
+                pass
+        time.sleep(_POLL_INTERVAL)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # HTTP handler
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -3839,6 +3920,48 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path in ("/wall", "/wall.html", "/tab", "/panel"):
             self._html(WALL_HTML)
+
+        elif path == "/api/events":
+            # Server-Sent Events — keep connection open, push state changes
+            q = queue.Queue(maxsize=100)
+            with _sse_lock:
+                _sse_clients.append(q)
+            self.send_response(200)
+            self.send_header("Content-Type",  "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection",    "keep-alive")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            # Flush current state for all speakers immediately
+            for dev in list(self.server_state.devices):
+                try:
+                    state = dev.state()
+                    self.wfile.write(
+                        f"event: state\ndata: {json.dumps(state)}\n\n".encode())
+                except Exception:
+                    pass
+            try:
+                self.wfile.flush()
+            except Exception:
+                pass
+            # Stream events until client disconnects
+            try:
+                while True:
+                    try:
+                        msg = q.get(timeout=20)
+                        self.wfile.write(msg)
+                        self.wfile.flush()
+                    except queue.Empty:
+                        self.wfile.write(b": heartbeat\n\n")
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                with _sse_lock:
+                    try:
+                        _sse_clients.remove(q)
+                    except ValueError:
+                        pass
 
         # ── speaker list / scan ───────────────────────────────────────────────
         elif path == "/api/speakers":
@@ -4700,6 +4823,12 @@ Examples:
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     else:
         print(f"  SoundTouch Controller running — {url}")
+
+    # Start SSE background poller (waits a few seconds for initial scan)
+    def _start_sse_poller():
+        time.sleep(5)
+        _sse_poller(state)
+    threading.Thread(target=_start_sse_poller, daemon=True).start()
 
     server = HTTPServer(("0.0.0.0", args.port), Handler)
     try:
