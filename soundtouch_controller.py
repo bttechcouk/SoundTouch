@@ -49,6 +49,9 @@ except ImportError:
 
 # In-memory store for TTS audio files: {audio_id: bytes}
 _tts_cache: dict = {}
+# Debounce duplicate requests: last (text, hosts_key) → timestamp
+_tts_last: dict = {}
+_tts_lock = threading.Lock()
 
 WEB_PORT      = 8888
 DATA_DIR      = pathlib.Path(__file__).parent / "data"
@@ -3732,12 +3735,17 @@ def _tts_announce(devices, text, volume, web_port):
 
     audio_id = _uuid.uuid4().hex
     _tts_cache[audio_id] = mp3_bytes
-    url = f"http://{get_local_ip()}:{web_port}/api/tts/audio/{audio_id}.mp3"
-    log.info(f"[TTS] '{text}' → {url}  ({len(mp3_bytes)} bytes)")
+    local_ip = get_local_ip()
+    # Descriptor URL (JSON) — what the speaker fetches for stationurl type
+    desc_url = f"http://{local_ip}:{web_port}/api/tts/desc/{audio_id}"
+    mp3_url  = f"http://{local_ip}:{web_port}/api/tts/audio/{audio_id}.mp3"
+    # 128 kbps MP3 = 16 000 bytes/s; add 2 s head/tail buffer
+    play_duration = max(len(mp3_bytes) / 16000.0 + 2.0, 3.0)
+    log.info(f"[TTS] '{text}' → {mp3_url}  ({len(mp3_bytes)} bytes, ~{play_duration:.1f}s wait)")
 
     def announce_one(dev):
         try:
-            # Capture current state for restore
+            # ── capture current state ────────────────────────────────────────
             np = dev._get("/now_playing")
             was_playing, saved_ci = False, None
             if np is not None:
@@ -3754,30 +3762,25 @@ def _tts_announce(devices, text, volume, web_port):
                     if el is not None:
                         saved_vol = int(el.text); break
 
-            # Play announcement
+            log.info(f"[TTS] {dev.host} was_playing={was_playing} saved_vol={saved_vol}")
+
+            # ── play announcement ────────────────────────────────────────────
             dev.set_volume(volume)
-            time.sleep(0.4)
-            dev.select_content("LOCAL_INTERNET_RADIO", "stationurl", url, "Announcement")
-
-            # Wait for playback to start then finish (max 90 s)
-            started = False
-            for _ in range(180):
-                time.sleep(0.5)
-                np2 = dev._get("/now_playing")
-                if np2 is None: break
-                ps2 = np2.get("playStatus") or np2.findtext("playStatus") or ""
-                if ps2 in ("PLAY_STATE", "BUFFERING_STATE"):
-                    started = True
-                elif started and ps2 not in ("PLAY_STATE", "BUFFERING_STATE"):
-                    break
             time.sleep(0.5)
+            # Use desc_url (station descriptor JSON) — stationurl type expects JSON,
+            # not raw audio.  The descriptor points to the actual MP3.
+            dev.select_content("LOCAL_INTERNET_RADIO", "stationurl", desc_url, "Announcement")
 
-            # Restore volume then content
+            # Time-based wait: 128kbps MP3 ≈ 16 000 bytes/s + 2 s buffer
+            time.sleep(play_duration)
+
+            # ── restore ──────────────────────────────────────────────────────
             if saved_vol is not None:
                 dev.set_volume(saved_vol)
             if was_playing and saved_ci:
                 time.sleep(0.3)
                 dev._post("/select", saved_ci)
+                log.info(f"[TTS] {dev.host} restored previous content")
         except Exception as e:
             log.error(f"[TTS] announce_one({dev.host}) error: {e}")
 
@@ -4353,6 +4356,21 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Location", "/icon.svg")
                 self.end_headers()
 
+        elif path.startswith("/api/tts/desc/"):
+            audio_id = path.split("/")[-1]
+            if audio_id in _tts_cache:
+                mp3_url = (f"http://{get_local_ip()}:{self.server_state.web_port}"
+                           f"/api/tts/audio/{audio_id}.mp3")
+                desc = json.dumps({
+                    "name": "Announcement",
+                    "imageUrl": "",
+                    "streamType": "liveRadio",
+                    "audio": {"streamUrl": mp3_url, "hasPlaylist": False, "isRealtime": False},
+                })
+                self._respond(200, "application/json", desc.encode())
+            else:
+                self._respond(404, "text/plain", b"TTS descriptor not found")
+
         elif path.startswith("/api/tts/audio/"):
             audio_id = path.split("/")[-1].replace(".mp3", "")
             data = _tts_cache.get(audio_id)
@@ -4467,12 +4485,22 @@ class Handler(BaseHTTPRequestHandler):
                     if not devices:
                         self._json({"ok": False, "error": "no matching speakers"})
                     else:
-                        threading.Thread(
-                            target=_tts_announce,
-                            args=(devices, text, volume, self.server_state.web_port),
-                            daemon=True
-                        ).start()
-                        self._json({"ok": True, "speakers": len(devices)})
+                        # Debounce: ignore duplicate within 3 seconds (lock prevents race)
+                        dedup_key = (text, ",".join(sorted(hosts)))
+                        now = time.monotonic()
+                        with _tts_lock:
+                            duplicate = now - _tts_last.get(dedup_key, 0) < 3.0
+                            if not duplicate:
+                                _tts_last[dedup_key] = now
+                        if duplicate:
+                            self._json({"ok": True, "speakers": len(devices), "deduped": True})
+                        else:
+                            threading.Thread(
+                                target=_tts_announce,
+                                args=(devices, text, volume, self.server_state.web_port),
+                                daemon=True
+                            ).start()
+                            self._json({"ok": True, "speakers": len(devices)})
             except Exception as e:
                 self._json({"ok": False, "error": str(e)})
 
