@@ -558,6 +558,12 @@ class PresetStore:
             return json.loads(path.read_text())
         return None
 
+    def backup_presets_raw(self, host, data):
+        """Save pre-validated backup data (e.g. after user editing)."""
+        path = self._speaker_file(host)
+        path.write_text(json.dumps(data, indent=2))
+        log.info(f"[BACKUP] Saved edited backup for {host}")
+
     def list_backups(self):
         out = []
         for f in sorted(self.presets_dir.glob("*.json")):
@@ -1642,6 +1648,7 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="mc-btn primary" onclick="backupPresets()">Backup Now</button>
             <button class="mc-btn" onclick="restorePresets()">Restore to Speaker</button>
+            <button class="mc-btn" onclick="openBackupEditor()">Open / Edit JSON</button>
           </div>
           <div id="backup-status" style="font-size:12px;color:var(--fg3);margin-top:10px"></div>
           <div id="backup-list" style="margin-top:12px"></div>
@@ -1715,6 +1722,34 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   </div>
   <button class="mc-btn primary" onclick="installPWA()" style="flex-shrink:0">Install</button>
   <button class="mc-btn" onclick="dismissInstall()" style="flex-shrink:0;padding:6px 10px">&#10005;</button>
+</div>
+
+<!-- Backup JSON editor modal -->
+<div id="backup-json-modal" class="modal-overlay" onclick="if(event.target===this)closeModal('backup-json-modal')">
+  <div class="modal-box" style="max-width:500px;width:96%">
+    <div class="modal-hdr">
+      <span id="backup-json-title">Preset Backup JSON</span>
+      <button class="mc-btn" onclick="closeModal('backup-json-modal')">&#10005;</button>
+    </div>
+    <p style="font-size:11px;color:var(--fg3);margin-bottom:10px">
+      Edit the JSON below. Changes are validated before saving. Use <em>Save &amp; Restore</em>
+      to write edits directly to the speaker.
+    </p>
+    <textarea id="backup-json-editor" spellcheck="false"
+      style="width:100%;height:320px;background:var(--surface2);border:1px solid var(--border);
+             color:var(--fg);font-family:monospace;font-size:11px;padding:10px 12px;
+             border-radius:8px;resize:vertical;outline:none;line-height:1.6;
+             tab-size:2"></textarea>
+    <div id="backup-json-error"
+      style="display:none;font-size:11px;color:#ef4444;margin-top:7px;
+             background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);
+             border-radius:6px;padding:6px 10px"></div>
+    <div class="form-row" style="margin-top:12px;flex-wrap:wrap;gap:8px">
+      <button class="mc-btn primary" onclick="saveBackupJson()">Save Changes</button>
+      <button class="mc-btn primary" onclick="saveAndRestoreJson()">Save &amp; Restore to Speaker</button>
+      <button class="mc-btn" onclick="closeModal('backup-json-modal')">Cancel</button>
+    </div>
+  </div>
 </div>
 
 <!-- Scenes quick-view modal -->
@@ -2453,6 +2488,81 @@ function showScanning(m) { document.getElementById('scan-label').textContent=m||
   document.getElementById('scanning').classList.add('show'); }
 function hideScanning() { document.getElementById('scanning').classList.remove('show'); }
 
+// ── Backup JSON editor ────────────────────────────────────────────────────────
+async function openBackupEditor() {
+  if (!activeHost) { toast('Select a speaker first'); return; }
+  const errEl = document.getElementById('backup-json-error');
+  const ta    = document.getElementById('backup-json-editor');
+  errEl.style.display = 'none';
+  ta.value = 'Loading…';
+  openModal('backup-json-modal');
+  const spk = speakers.find(s => s.host === activeHost);
+  document.getElementById('backup-json-title').textContent =
+    'Backup JSON' + (spk ? ' — ' + spk.name : '');
+  try {
+    const d = await (await fetch('/api/presets/backup-json?host=' + activeHost)).json();
+    if (d.error) {
+      ta.value = '// No backup found for this speaker.\n// Click "Backup Now" first, then reopen.';
+    } else {
+      ta.value = JSON.stringify(d, null, 2);
+    }
+  } catch(e) { ta.value = '// Failed to load backup.'; }
+}
+
+async function _postBackupJson() {
+  const ta    = document.getElementById('backup-json-editor');
+  const errEl = document.getElementById('backup-json-error');
+  errEl.style.display = 'none';
+  let data;
+  try { data = JSON.parse(ta.value); }
+  catch(e) {
+    errEl.textContent = 'Invalid JSON: ' + e.message;
+    errEl.style.display = '';
+    return null;
+  }
+  try {
+    const r = await fetch('/api/presets/backup-json?host=' + activeHost, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data)
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      errEl.textContent = d.error || 'Save failed';
+      errEl.style.display = '';
+      return null;
+    }
+    return true;
+  } catch(e) {
+    errEl.textContent = 'Save failed';
+    errEl.style.display = '';
+    return null;
+  }
+}
+
+async function saveBackupJson() {
+  if (await _postBackupJson()) { toast('Backup saved'); }
+}
+
+async function saveAndRestoreJson() {
+  if (!await _postBackupJson()) return;
+  try {
+    const d = await (await fetch('/api/presets/restore?host=' + activeHost)).json();
+    if (d.ok) {
+      toast('Saved & restored ' + d.count + ' preset' + (d.count !== 1 ? 's' : ''));
+      closeModal('backup-json-modal');
+      setTimeout(pollNow, 600);
+    } else {
+      const errEl = document.getElementById('backup-json-error');
+      errEl.textContent = d.error || 'Restore failed';
+      errEl.style.display = '';
+    }
+  } catch(e) {
+    const errEl = document.getElementById('backup-json-error');
+    errEl.textContent = 'Restore failed';
+    errEl.style.display = '';
+  }
+}
+
 // ── All-speaker volume ────────────────────────────────────────────────────────
 let allVolTT=null;
 function onAllVolInput(v) {
@@ -2736,6 +2846,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(data)
             else:
                 self._json({"error":"no_device"})
+
+        elif path == "/api/presets/backup-json":
+            host = qs.get("host", [None])[0]
+            data = self.server_state.store.load_backup(host)
+            if data:
+                self._json(data)
+            else:
+                self._json({"error": "no_backup"})
 
         elif path == "/api/presets/backup-info":
             host = qs.get("host",[None])[0]
@@ -3131,6 +3249,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok":True,"id":sid})
             except Exception as e:
                 self._json({"ok":False,"error":str(e)})
+
+        elif path == "/api/presets/backup-json":
+            host = qs.get("host", [None])[0]
+            try:
+                data = json.loads(body)
+                if "presets" not in data:
+                    self._json({"ok": False, "error": "invalid: missing 'presets' key"})
+                else:
+                    self.server_state.store.backup_presets_raw(host, data)
+                    dev = self.server_state.get_device(host)
+                    if dev: dev.has_backup = True
+                    self._json({"ok": True})
+            except json.JSONDecodeError as e:
+                self._json({"ok": False, "error": f"Invalid JSON: {e}"})
 
         elif path == "/api/scenes":
             try:
