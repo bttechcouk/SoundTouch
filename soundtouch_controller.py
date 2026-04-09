@@ -2797,7 +2797,7 @@ async function saveScene() {
 
 async function activateScene(id) {
   try{
-    const d=await(await fetch('/api/scenes/activate?id='+id)).json();
+    const d=await(await fetch('/api/scenes/activate?id='+encodeURIComponent(id))).json();
     toast(d.ok?'Scene activated':'Could not activate scene');
     if(d.ok)setTimeout(pollNow,1200);
   }catch(e){toast('Failed');}
@@ -2805,7 +2805,7 @@ async function activateScene(id) {
 
 async function deleteScene(id) {
   if(!confirm('Delete this scene?'))return;
-  await fetch('/api/scenes/delete?id='+id);
+  await fetch('/api/scenes/delete?id='+encodeURIComponent(id));
   toast('Scene deleted'); loadScenes();
 }
 
@@ -2921,7 +2921,7 @@ async function openAlarmsModal() { openModal('alarms-modal'); await _refreshAlar
 
 async function deleteSceneModal(id) {
   if(!confirm('Delete this scene?'))return;
-  await fetch('/api/scenes/delete?id='+id);
+  await fetch('/api/scenes/delete?id='+encodeURIComponent(id));
   toast('Scene deleted'); loadScenes(); _refreshScenesModal();
 }
 </script>
@@ -3546,7 +3546,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not name:
                     self._json({"ok": False, "error": "name required"})
                 else:
-                    sid = "scene_" + name.lower().replace(" ", "_")[:20] + "_" + str(int(time.time()))[-5:]
+                    safe = re.sub(r"[^a-z0-9]+", "_", name.lower())[:20].strip("_")
+                    sid = "scene_" + safe + "_" + str(int(time.time()))[-5:]
                     scene = {
                         "id":      sid,
                         "name":    name,
