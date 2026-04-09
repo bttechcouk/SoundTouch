@@ -51,7 +51,7 @@ ALARMS_FILE   = DATA_DIR / "alarms.json"
 
 # ── PWA service worker (served at /sw.js) ───────────────────────────────────
 SW_JS = r"""
-const CACHE='soundtouch-v1';
+const CACHE='soundtouch-v2';
 self.addEventListener('install',e=>{
   e.waitUntil(caches.open(CACHE).then(c=>c.addAll(['/'])));
   self.skipWaiting();
@@ -883,7 +883,7 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 .speaker-info-table td:last-child{color:var(--fg1);font-family:monospace;font-size:11px;word-break:break-all}
 
 .qr-collapse-hdr{display:flex;align-items:center;gap:10px;cursor:pointer;
-  padding:11px 14px;user-select:none;background:var(--surface1);
+  padding:11px 14px;user-select:none;background:var(--surface2);
   border-radius:var(--radius);border:1px solid var(--border);margin-top:4px}
 .qr-collapse-hdr:hover{background:var(--surface2)}
 .qr-collapse-hdr span.title{font-size:13px;font-weight:600;color:var(--fg1);flex:1}
@@ -1091,9 +1091,9 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   border:1px solid var(--border);border-radius:6px;padding:2px 8px;
   font-family:monospace;font-size:12px;color:var(--silver);margin:1px 0}
 
-.qr-section{margin-top:18px;padding:16px;background:var(--surface1);
+.qr-section{margin-top:18px;padding:16px;background:var(--surface);
   border:1px solid var(--border);border-radius:var(--radius)}
-.qr-section h3{margin:0 0 12px;font-size:13px;color:var(--fg1)}
+.qr-section h3{margin:0 0 12px;font-size:13px;color:var(--fg)}
 .qr-box{background:#fff;color:#000;font-family:monospace;font-size:13px;
   line-height:1;padding:14px;border-radius:6px;display:inline-block;
   border:2px solid #ccc;white-space:pre}
