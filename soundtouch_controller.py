@@ -3126,21 +3126,24 @@ class Handler(BaseHTTPRequestHandler):
                             f"http://opml.radiotime.com/Tune.ashx?id={gid}&render=json",
                             timeout=4,
                             headers={"User-Agent": "SoundTouchController/1.0"})
+                        # Tune.ashx body uses element="audio" and key "url" (lowercase)
                         streams = [b for b in tr.json().get("body",[])
-                                   if b.get("type") == "audio" and b.get("URL")]
+                                   if b.get("element") == "audio" and (b.get("url") or b.get("URL"))]
+                        def _url(b): return b.get("url") or b.get("URL","")
                         # Prefer HTTP — SoundTouch firmware does not support HTTPS streams
-                        http_s  = [s for s in streams if s["URL"].startswith("http://")]
+                        http_s  = [s for s in streams if _url(s).startswith("http://")]
                         chosen  = (http_s or streams or [None])[0]
                         if not chosen:
                             return None
+                        stream_url = _url(chosen)
                         return {
-                            "name":    st.get("text","").strip(),
-                            "url":     chosen["URL"],
-                            "country": st.get("subtext",""),
-                            "bitrate": st.get("bitrate",""),
-                            "codec":   st.get("formats",""),
-                            "favicon": st.get("image",""),
-                            "https_only": not chosen["URL"].startswith("http://"),
+                            "name":       st.get("text","").strip(),
+                            "url":        stream_url,
+                            "country":    st.get("subtext",""),
+                            "bitrate":    st.get("bitrate",""),
+                            "codec":      st.get("formats",""),
+                            "favicon":    st.get("image",""),
+                            "https_only": not stream_url.startswith("http://"),
                         }
                     except Exception:
                         return None
