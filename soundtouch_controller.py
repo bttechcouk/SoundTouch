@@ -2259,16 +2259,18 @@ async function searchStationStream(nameOverride) {
       resultsEl.innerHTML = '<div class="sr-item" style="cursor:default;color:var(--fg3)">No results found — try a shorter name or paste the URL manually</div>';
       return;
     }
-    resultsEl.innerHTML = d.map((s,i) => `
-      <div class="sr-item" onclick="pickStreamResult(${i})">
+    resultsEl.innerHTML = d.map((s,i) => {
+      const warn = s.https_only ? '<span style="color:#f87171;font-size:9px"> ⚠ HTTPS — SoundTouch may not support</span>' : '';
+      return `<div class="sr-item" onclick="pickStreamResult(${i})">
         ${s.favicon ? `<img class="sr-logo" src="${s.favicon}" onerror="this.style.display='none'">` : '<div class="sr-logo"></div>'}
         <div class="sr-info">
-          <div class="sr-name">${s.name}</div>
+          <div class="sr-name">${s.name}${warn}</div>
           <div class="sr-meta">${[s.country, s.bitrate?s.bitrate+'kbps':'', s.codec].filter(Boolean).join(' · ')}</div>
           <div class="sr-meta" style="font-size:9px;opacity:.6">${s.url}</div>
         </div>
         <div class="sr-use">Use ›</div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
     window._streamResults = d;
   } catch(e) {
     resultsEl.innerHTML = '<div class="sr-item" style="cursor:default;color:var(--fg3)">Search failed</div>';
@@ -3097,26 +3099,55 @@ class Handler(BaseHTTPRequestHandler):
             if not q:
                 self._json([]); return
             try:
-                enc = urlquote(q)
-                # RadioBrowser: free, no key required, community-maintained station directory
-                url = (f"https://de1.api.radio-browser.info/json/stations/search"
-                       f"?name={enc}&limit=8&hidebroken=true&order=votes&reverse=true")
-                r = requests.get(url, timeout=6,
-                                 headers={"User-Agent": "SoundTouchController/1.0"})
-                rows = r.json()
-                results = []
-                for s in rows:
-                    stream = s.get("url_resolved") or s.get("url","")
-                    if not stream: continue
-                    results.append({
-                        "name":    s.get("name","").strip(),
-                        "url":     stream,
-                        "country": s.get("country",""),
-                        "codec":   s.get("codec",""),
-                        "bitrate": s.get("bitrate",0) or "",
-                        "favicon": s.get("favicon",""),
-                    })
-                self._json(results)
+                # Step 1 — search TuneIn for matching stations
+                search_url = (f"http://opml.radiotime.com/Search.ashx"
+                              f"?query={urlquote(q)}&render=json&type=station")
+                sr = requests.get(search_url, timeout=6,
+                                  headers={"User-Agent": "SoundTouchController/1.0"})
+                body = sr.json().get("body", [])
+                # Flatten nested categories; keep only audio station entries
+                stations = []
+                def _collect(items):
+                    for item in (items or []):
+                        if item.get("type") == "audio" and item.get("item") == "station":
+                            stations.append(item)
+                        elif item.get("children"):
+                            _collect(item["children"])
+                _collect(body)
+                stations = stations[:8]
+
+                # Step 2 — resolve each station's direct stream URL in parallel
+                def _resolve(st):
+                    gid = st.get("guide_id","")
+                    if not gid:
+                        return None
+                    try:
+                        tr = requests.get(
+                            f"http://opml.radiotime.com/Tune.ashx?id={gid}&render=json",
+                            timeout=4,
+                            headers={"User-Agent": "SoundTouchController/1.0"})
+                        streams = [b for b in tr.json().get("body",[])
+                                   if b.get("type") == "audio" and b.get("URL")]
+                        # Prefer HTTP — SoundTouch firmware does not support HTTPS streams
+                        http_s  = [s for s in streams if s["URL"].startswith("http://")]
+                        chosen  = (http_s or streams or [None])[0]
+                        if not chosen:
+                            return None
+                        return {
+                            "name":    st.get("text","").strip(),
+                            "url":     chosen["URL"],
+                            "country": st.get("subtext",""),
+                            "bitrate": st.get("bitrate",""),
+                            "codec":   st.get("formats",""),
+                            "favicon": st.get("image",""),
+                            "https_only": not chosen["URL"].startswith("http://"),
+                        }
+                    except Exception:
+                        return None
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+                    resolved = list(ex.map(_resolve, stations))
+                self._json([r for r in resolved if r])
             except Exception as e:
                 self._json({"error": str(e)})
 
