@@ -33,7 +33,7 @@ import uuid as _uuid
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, quote as urlquote
 
 try:
     import requests
@@ -1164,6 +1164,17 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 .health-source{font-size:11px;color:var(--fg3);margin-top:1px}
 .health-sug{font-size:11px;color:#f87171;margin-top:4px;line-height:1.4}
 #btn-health-check{color:#4ade80}
+/* Stream search results */
+#st-search-results{margin-top:6px;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.sr-item{display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:pointer;
+  background:var(--surface2);border-bottom:1px solid var(--border);transition:background .12s}
+.sr-item:last-child{border-bottom:none}
+.sr-item:hover{background:var(--blue-dim)}
+.sr-logo{width:28px;height:28px;border-radius:4px;object-fit:cover;flex-shrink:0;background:var(--surface3)}
+.sr-info{min-width:0;flex:1}
+.sr-name{font-size:12px;font-weight:600;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sr-meta{font-size:10px;color:var(--fg3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sr-use{font-size:10px;color:var(--blue-light);flex-shrink:0;font-weight:600}
 
 /* Add station form */
 .add-form{background:var(--surface);border:1px solid var(--border);
@@ -1736,7 +1747,11 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
             <label>Station Name</label>
             <input id="st-name" placeholder="e.g. BBC Radio 1">
             <label>Stream URL (HTTP)</label>
-            <input id="st-url" placeholder="http://stream.live.vc.bbcmedia.co.uk/bbc_radio_one">
+            <div style="display:flex;gap:6px;align-items:center">
+              <input id="st-url" placeholder="http://stream.live.vc.bbcmedia.co.uk/bbc_radio_one" style="flex:1">
+              <button class="mc-btn" onclick="searchStationStream()" title="Search RadioBrowser for a direct stream URL" style="white-space:nowrap">&#128269; Find stream</button>
+            </div>
+            <div id="st-search-results" style="display:none"></div>
             <label>Album Art URL (optional)</label>
             <input id="st-art" placeholder="https://example.com/logo.png">
             <div class="form-row">
@@ -2160,6 +2175,7 @@ async function loadBackupInfo() {
 }
 
 // ── Preset health check ──────────────────────────────────────────────────────
+window._healthPresets = {};  // id → {name, location, source}
 async function checkPresetHealth() {
   if (!activeHost) { toast('Select a speaker first'); return; }
   const btn = document.getElementById('btn-health-check');
@@ -2169,17 +2185,17 @@ async function checkPresetHealth() {
   try {
     const d = await (await fetch(`/api/presets/health?host=${activeHost}`)).json();
     if (d.error) { toast('Could not fetch preset data'); return; }
-    const riskIcons = {high:'⚠', safe:'✓', empty:'–', unknown:'?'};
+    // Store preset data keyed by id so onclick buttons can reference without escaping issues
+    window._healthPresets = {};
+    d.presets.forEach(p => { window._healthPresets[p.id] = p; });
     const summary = d.at_risk === 0
       ? `<div class="health-summary all-safe">✓ All ${d.total} presets are safe — no cloud dependency</div>`
       : `<div class="health-summary has-risk">⚠ ${d.at_risk} of ${d.total} preset${d.at_risk>1?'s':''} at risk — will stop working after the Bose cloud shuts down on 6 May 2026</div>`;
     const cards = d.presets.map(p => {
       const srcLine = p.label ? `${p.label} (${p.source})` : (p.source || 'Empty slot');
       const sug = p.suggestion ? `<div class="health-sug">→ ${p.suggestion}</div>` : '';
-      const isDirectUrl = /^https?:\/\//i.test(p.location||'');
       const replBtn = (p.risk==='high'||p.risk==='unknown') ? `
-        <button class="mc-btn health-replace-btn"
-          onclick="prefillCustomStation(${JSON.stringify(p.name||'')},${JSON.stringify(p.location||'')},${JSON.stringify(isDirectUrl)})"
+        <button class="mc-btn" onclick="prefillCustomStation('${p.id}')"
           style="margin-top:6px;font-size:10px;padding:4px 8px">
           + Use as Custom Station template
         </button>` : '';
@@ -2201,32 +2217,72 @@ async function checkPresetHealth() {
   finally { btn.textContent = '● Health Check'; btn.disabled = false; }
 }
 
-function prefillCustomStation(name, location, isDirectUrl) {
-  // Make sure we're on the Presets tab and stations section is open
+function prefillCustomStation(presetId) {
+  const p = window._healthPresets[presetId];
+  if (!p) return;
+  const isDirectUrl = /^https?:\/\//i.test(p.location||'');
+  // Switch to Presets tab and open Custom Radio Stations section
   switchTab('manage');
-  const body  = document.getElementById('sec-stations');
-  const chev  = document.getElementById('chev-stations');
+  const body = document.getElementById('sec-stations');
+  const chev = document.getElementById('chev-stations');
   if (body && body.style.display === 'none') {
     body.style.display = 'block';
     if (chev) chev.classList.add('open');
     loadStations();
   }
   // Fill the form
-  document.getElementById('st-name').value = name;
-  document.getElementById('st-url').value  = isDirectUrl ? location : '';
+  document.getElementById('st-name').value = p.name || '';
+  document.getElementById('st-url').value  = isDirectUrl ? (p.location||'') : '';
   document.getElementById('st-art').value  = '';
-  // Scroll add form into view and focus the URL field
+  document.getElementById('st-search-results').style.display = 'none';
+  // Scroll and auto-search if no direct URL
   const form = document.getElementById('add-form');
   if (form) form.scrollIntoView({behavior:'smooth', block:'center'});
-  const urlField = document.getElementById('st-url');
-  if (urlField) {
-    urlField.focus();
-    if (!isDirectUrl && location) {
-      toast('Name pre-filled — paste a direct HTTP stream URL to replace the cloud source');
-    } else if (isDirectUrl) {
-      toast('Form pre-filled — review then click Add Station');
-    }
+  if (isDirectUrl) {
+    toast('Form pre-filled — review then click Add Station');
+    document.getElementById('st-url').focus();
+  } else {
+    // Auto-search RadioBrowser so the user can pick a direct stream
+    setTimeout(() => searchStationStream(), 400);
   }
+}
+
+async function searchStationStream(nameOverride) {
+  const name = nameOverride || document.getElementById('st-name').value.trim();
+  if (!name) { toast('Enter a station name first'); return; }
+  const resultsEl = document.getElementById('st-search-results');
+  resultsEl.style.display = 'block';
+  resultsEl.innerHTML = '<div class="sr-item" style="cursor:default;color:var(--fg3)">Searching…</div>';
+  try {
+    const d = await (await fetch(`/api/stations/stream-search?q=${encodeURIComponent(name)}`)).json();
+    if (d.error || !d.length) {
+      resultsEl.innerHTML = '<div class="sr-item" style="cursor:default;color:var(--fg3)">No results found — try a shorter name or paste the URL manually</div>';
+      return;
+    }
+    resultsEl.innerHTML = d.map((s,i) => `
+      <div class="sr-item" onclick="pickStreamResult(${i})">
+        ${s.favicon ? `<img class="sr-logo" src="${s.favicon}" onerror="this.style.display='none'">` : '<div class="sr-logo"></div>'}
+        <div class="sr-info">
+          <div class="sr-name">${s.name}</div>
+          <div class="sr-meta">${[s.country, s.bitrate?s.bitrate+'kbps':'', s.codec].filter(Boolean).join(' · ')}</div>
+          <div class="sr-meta" style="font-size:9px;opacity:.6">${s.url}</div>
+        </div>
+        <div class="sr-use">Use ›</div>
+      </div>`).join('');
+    window._streamResults = d;
+  } catch(e) {
+    resultsEl.innerHTML = '<div class="sr-item" style="cursor:default;color:var(--fg3)">Search failed</div>';
+  }
+}
+
+function pickStreamResult(idx) {
+  const s = (window._streamResults||[])[idx];
+  if (!s) return;
+  document.getElementById('st-url').value  = s.url;
+  if (!document.getElementById('st-name').value) document.getElementById('st-name').value = s.name;
+  if (s.favicon && !document.getElementById('st-art').value) document.getElementById('st-art').value = s.favicon;
+  document.getElementById('st-search-results').style.display = 'none';
+  toast('Stream URL selected — click Add Station to save');
 }
 
 // ── Custom stations ──────────────────────────────────────────────────────────
@@ -3036,6 +3092,34 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok":True,"count":count})
 
         # ── custom stations ───────────────────────────────────────────────────
+        elif path == "/api/stations/stream-search":
+            q = qs.get("q",[""])[0].strip()
+            if not q:
+                self._json([]); return
+            try:
+                enc = urlquote(q)
+                # RadioBrowser: free, no key required, community-maintained station directory
+                url = (f"https://de1.api.radio-browser.info/json/stations/search"
+                       f"?name={enc}&limit=8&hidebroken=true&order=votes&reverse=true")
+                r = requests.get(url, timeout=6,
+                                 headers={"User-Agent": "SoundTouchController/1.0"})
+                rows = r.json()
+                results = []
+                for s in rows:
+                    stream = s.get("url_resolved") or s.get("url","")
+                    if not stream: continue
+                    results.append({
+                        "name":    s.get("name","").strip(),
+                        "url":     stream,
+                        "country": s.get("country",""),
+                        "codec":   s.get("codec",""),
+                        "bitrate": s.get("bitrate",0) or "",
+                        "favicon": s.get("favicon",""),
+                    })
+                self._json(results)
+            except Exception as e:
+                self._json({"error": str(e)})
+
         elif path == "/api/stations":
             self._json(self.server_state.store.list_stations())
 
