@@ -3030,7 +3030,7 @@ body{display:flex;flex-direction:column;height:100vh}
   flex:1;
   gap:0;
   min-height:0;
-  padding:20px;
+  padding:46px 20px 12px;
   align-items:center;
   gap:20px;
 }
@@ -3072,8 +3072,9 @@ body{display:flex;flex-direction:column;height:100vh}
 /* info */
 .card-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
 .card-room{
-  font-size:11px;font-weight:700;letter-spacing:.1em;
-  text-transform:uppercase;color:var(--fg3);margin-bottom:2px;
+  position:absolute;top:14px;left:18px;
+  font-size:15px;font-weight:700;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--fg);z-index:1;
 }
 .card-track{
   font-size:17px;font-weight:600;color:var(--fg);
@@ -3199,6 +3200,7 @@ function buildCard(sp){
   card.className='room-card'; card.id='card-'+id;
   card.innerHTML=`
     <div class="card-bg" id="bg-${id}"></div>
+    <div class="card-room">${sp.name}</div>
     <div class="card-inner">
       <div class="card-art" id="art-${id}">
         <img id="artimg-${id}" src="" alt="" style="display:none">
@@ -3215,7 +3217,6 @@ function buildCard(sp){
         </div>
       </div>
       <div class="card-info">
-        <div class="card-room">${sp.name}</div>
         <div class="card-track" id="track-${id}">—</div>
         <div class="card-artist" id="artist-${id}"></div>
         <div class="card-badges" id="badges-${id}"></div>
