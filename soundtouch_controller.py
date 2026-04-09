@@ -1662,8 +1662,8 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
             <input type="range" id="main-ann-vol" min="10" max="100" value="60"
               style="flex:1;height:3px;-webkit-appearance:none;appearance:none;border-radius:2px;
                      outline:none;cursor:pointer;
-                     background:linear-gradient(to right,var(--blue) 60%,var(--surface2) 60%)"
-              oninput="this.style.background='linear-gradient(to right,var(--blue) '+this.value+'%,var(--surface2) '+this.value+'%)'">
+                     background:linear-gradient(to right,var(--blue) 55.6%,var(--surface2) 55.6%)"
+              oninput="this.style.background='linear-gradient(to right,var(--blue) '+((this.value-this.min)/(this.max-this.min)*100).toFixed(1)+'%,var(--surface2) '+((this.value-this.min)/(this.max-this.min)*100).toFixed(1)+'%)'">
             <span id="main-ann-vol-lbl" style="font-size:12px;font-weight:700;color:var(--fg2);width:26px;text-align:right">60</span>
           </div>
           <div id="main-ann-status" style="font-size:12px;color:var(--amber);min-height:16px;margin-bottom:8px"></div>
@@ -3638,7 +3638,7 @@ function closeAnnounce(){
   document.getElementById('announce-overlay').classList.remove('open');
 }
 function onAnnVol(el){
-  const pct=(el.value/100*100).toFixed(1)+'%';
+  const pct=((el.value-el.min)/(el.max-el.min)*100).toFixed(1)+'%';
   el.style.setProperty('--avp',pct);
   document.getElementById('ann-vol-lbl').textContent=el.value;
 }
@@ -3698,7 +3698,7 @@ document.getElementById('announce-overlay')?.addEventListener('click',e=>{
           <polygon points="1,5 5,5 8,2 8,12 5,9 1,9" stroke="currentColor" stroke-width="1.3" fill="none"/>
         </svg>
         <input type="range" id="ann-vol-slider" min="10" max="100" value="60"
-          oninput="onAnnVol(this)" style="--avp:60%">
+          oninput="onAnnVol(this)" style="--avp:55.6%">
         <div class="ann-vol-lbl" id="ann-vol-lbl">60</div>
       </div>
     </div>
@@ -3774,13 +3774,12 @@ def _tts_announce(devices, text, volume, web_port):
             # Time-based wait: 128kbps MP3 ≈ 16 000 bytes/s + 2 s buffer
             time.sleep(play_duration)
 
-            # ── restore ──────────────────────────────────────────────────────
+            # ── restore volume then power off ─────────────────────────────────
             if saved_vol is not None:
                 dev.set_volume(saved_vol)
-            if was_playing and saved_ci:
-                time.sleep(0.3)
-                dev._post("/select", saved_ci)
-                log.info(f"[TTS] {dev.host} restored previous content")
+            time.sleep(0.3)
+            dev.power()
+            log.info(f"[TTS] {dev.host} powered off after announcement")
         except Exception as e:
             log.error(f"[TTS] announce_one({dev.host}) error: {e}")
 
