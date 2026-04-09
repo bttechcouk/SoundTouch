@@ -3739,8 +3739,8 @@ def _tts_announce(devices, text, volume, web_port):
     # Descriptor URL (JSON) — what the speaker fetches for stationurl type
     desc_url = f"http://{local_ip}:{web_port}/api/tts/desc/{audio_id}"
     mp3_url  = f"http://{local_ip}:{web_port}/api/tts/audio/{audio_id}.mp3"
-    # 128 kbps MP3 = 16 000 bytes/s; add 2 s head/tail buffer
-    play_duration = max(len(mp3_bytes) / 16000.0 + 2.0, 3.0)
+    # 128 kbps MP3 = 16 000 bytes/s; add 4 s buffer (network + speaker decode latency)
+    play_duration = max(len(mp3_bytes) / 16000.0 + 4.0, 5.0)
     log.info(f"[TTS] '{text}' → {mp3_url}  ({len(mp3_bytes)} bytes, ~{play_duration:.1f}s wait)")
 
     def announce_one(dev):
@@ -3771,8 +3771,9 @@ def _tts_announce(devices, text, volume, web_port):
             time.sleep(0.5)
             dev.select_content("LOCAL_INTERNET_RADIO", "stationurl", desc_url, "Announcement")
 
-            # Wait for speaker to actually start playing (handles standby wake-up delay).
-            # Poll up to 15 s for PLAY_STATE, then hold for the audio duration.
+            # Wait for speaker to reach PLAY_STATE (not just BUFFERING — audio must
+            # actually be flowing before we start the duration countdown).
+            # Handles standby wake-up which can take 10-20 s.
             started = False
             for _ in range(60):          # 60 × 0.5 s = 30 s max wake-up wait
                 time.sleep(0.5)
@@ -3780,12 +3781,13 @@ def _tts_announce(devices, text, volume, web_port):
                 if np2 is None:
                     break
                 ps2 = np2.get("playStatus") or np2.findtext("playStatus") or ""
-                if ps2 in ("PLAY_STATE", "BUFFERING_STATE"):
+                if ps2 == "PLAY_STATE":
                     started = True
                     break
 
             if started:
-                # Speaker is playing — wait for the audio to finish
+                # Audio is flowing — now wait for the clip to finish
+                log.info(f"[TTS] {dev.host} playing — waiting {play_duration:.1f}s")
                 time.sleep(play_duration)
             else:
                 log.warning(f"[TTS] {dev.host} never reached PLAY_STATE — skipping wait")
