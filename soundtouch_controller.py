@@ -1179,7 +1179,7 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 #toast.show{opacity:1}
 
 /* ── All-speaker volume row ──────────────────────────────── */
-#all-vol-row{padding:8px 4px 2px;border-bottom:1px solid var(--border);margin-bottom:14px}
+#all-vol-row{padding:14px 4px 4px;border-top:1px solid var(--border);margin-top:18px}
 #all-vol-label{font-size:10px;font-weight:700;letter-spacing:.12em;color:var(--fg3);
   text-transform:uppercase;margin-bottom:6px}
 
@@ -1226,7 +1226,8 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   padding:5px 10px;font-size:11px;font-weight:600;color:var(--fg2);cursor:pointer;
   user-select:none;transition:all .15s}
 .day-btn:has(input:checked){background:var(--blue-dim);border-color:var(--blue);color:var(--blue-light)}
-.day-btn input{display:none}
+.day-btn{position:relative}
+.day-btn input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
 
 /* ── Scanning overlay ────────────────────────────────────── */
 #scanning{display:none;position:fixed;inset:0;background:rgba(7,8,12,.85);
@@ -1362,6 +1363,13 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   <!-- ═══ PAGE: Groups ═══ -->
   <div id="page-groups" class="page">
     <div class="manage-section">
+      <h2>Multi-Room Groups</h2>
+      <p style="font-size:12px;color:var(--fg3);margin-bottom:14px">
+        Group speakers together so they all play the same audio in sync.
+        The active speaker becomes the group master.
+      </p>
+      <div id="group-status"></div>
+      <div id="group-builder"></div>
 
       <!-- All-speaker volume -->
       <div id="all-vol-row">
@@ -1376,14 +1384,6 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
           <span class="vol-icon vol-btn" onclick="nudgeAllVol(1)">&#128266;</span>
         </div>
       </div>
-
-      <h2>Multi-Room Groups</h2>
-      <p style="font-size:12px;color:var(--fg3);margin-bottom:14px">
-        Group speakers together so they all play the same audio in sync.
-        The active speaker becomes the group master.
-      </p>
-      <div id="group-status"></div>
-      <div id="group-builder"></div>
     </div>
   </div>
 
