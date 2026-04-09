@@ -41,6 +41,18 @@ except ImportError:
     print("ERROR: 'requests' package not found.  Run:  pip3 install requests")
     sys.exit(1)
 
+try:
+    from gtts import gTTS as _gTTS
+    _TTS_AVAILABLE = True
+except ImportError:
+    _TTS_AVAILABLE = False
+
+# In-memory store for TTS audio files: {audio_id: bytes}
+_tts_cache: dict = {}
+# Debounce duplicate requests: last (text, hosts_key) → timestamp
+_tts_last: dict = {}
+_tts_lock = threading.Lock()
+
 WEB_PORT      = 8888
 DATA_DIR      = pathlib.Path(__file__).parent / "data"
 PRESETS_DIR   = DATA_DIR / "presets"
@@ -1625,6 +1637,40 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
         </div>
       </div>
 
+      <!-- Announce -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-announce','chev-announce')">
+          <span class="title">Send Announcement</span>
+          <span id="chev-announce" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-announce" class="qr-body" style="display:none">
+          <p style="font-size:12px;color:var(--fg2);margin-bottom:12px;line-height:1.5">
+            Speak a message through one or more speakers. Playback is paused,
+            the announcement plays, then resumes automatically.
+          </p>
+          <textarea id="main-ann-text" rows="3"
+            style="width:100%;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);
+                   border-radius:8px;color:var(--fg);font-size:14px;resize:none;outline:none;
+                   font-family:inherit;line-height:1.4;margin-bottom:10px"
+            placeholder="e.g. Dinner is ready…"></textarea>
+          <div style="font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+                      color:var(--fg3);margin-bottom:8px">Speakers</div>
+          <div id="main-ann-speakers" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px"></div>
+          <div style="font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+                      color:var(--fg3);margin-bottom:6px">Volume</div>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+            <input type="range" id="main-ann-vol" min="10" max="100" value="60"
+              style="flex:1;height:3px;-webkit-appearance:none;appearance:none;border-radius:2px;
+                     outline:none;cursor:pointer;
+                     background:linear-gradient(to right,var(--blue) 55.6%,var(--surface2) 55.6%)"
+              oninput="this.style.background='linear-gradient(to right,var(--blue) '+((this.value-this.min)/(this.max-this.min)*100).toFixed(1)+'%,var(--surface2) '+((this.value-this.min)/(this.max-this.min)*100).toFixed(1)+'%)'">
+            <span id="main-ann-vol-lbl" style="font-size:12px;font-weight:700;color:var(--fg2);width:26px;text-align:right">60</span>
+          </div>
+          <div id="main-ann-status" style="font-size:12px;color:var(--amber);min-height:16px;margin-bottom:8px"></div>
+          <button class="mc-btn primary" onclick="sendMainAnnounce()">Send Announcement</button>
+        </div>
+      </div>
+
       <!-- Alexa Integration -->
       <div class="qr-section">
         <div class="qr-collapse-hdr" onclick="toggleSection('sec-alexa','chev-alexa')">
@@ -2645,6 +2691,46 @@ function toggleSection(bodyId, chevronId) {
   if (opening && bodyId === 'sec-stations')      loadStations();
   if (opening && bodyId === 'sec-scenes')        loadScenes();
   if (opening && bodyId === 'sec-alarms')        loadAlarms();
+  if (opening && bodyId === 'sec-announce')      loadAnnounceSection();
+}
+function loadAnnounceSection() {
+  const container = document.getElementById('main-ann-speakers');
+  if (!container || container.children.length) return;
+  speakers.forEach(sp => {
+    const id = 'main-ann-chk-' + sp.host.replace(/\./g,'_');
+    const row = document.createElement('label');
+    row.style.cssText = 'display:flex;align-items:center;gap:10px;cursor:pointer;padding:7px 10px;' +
+      'background:var(--surface2);border-radius:8px;border:1px solid var(--border)';
+    row.innerHTML = `<input type="checkbox" id="${id}" checked style="accent-color:var(--blue);width:15px;height:15px">` +
+      `<span style="font-size:13px;font-weight:600">${sp.name}</span>`;
+    container.appendChild(row);
+  });
+  const volEl = document.getElementById('main-ann-vol');
+  const lblEl = document.getElementById('main-ann-vol-lbl');
+  if (volEl && lblEl) volEl.oninput = function() {
+    lblEl.textContent = this.value;
+    this.style.background = `linear-gradient(to right,var(--blue) ${this.value}%,var(--surface2) ${this.value}%)`;
+  };
+}
+async function sendMainAnnounce() {
+  const text = document.getElementById('main-ann-text').value.trim();
+  const statusEl = document.getElementById('main-ann-status');
+  if (!text) { statusEl.textContent = 'Please enter a message.'; return; }
+  const hosts = speakers
+    .filter(sp => document.getElementById('main-ann-chk-' + sp.host.replace(/\./g,'_'))?.checked)
+    .map(sp => sp.host);
+  if (!hosts.length) { statusEl.textContent = 'Select at least one speaker.'; return; }
+  const volume = parseInt(document.getElementById('main-ann-vol').value);
+  statusEl.textContent = 'Sending…';
+  try {
+    const r = await fetch('/api/tts/announce', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text, hosts, volume})});
+    const d = await r.json();
+    statusEl.textContent = d.ok
+      ? `Announcing on ${d.speakers} speaker${d.speakers!==1?'s':''}…`
+      : 'Error: ' + (d.error||'unknown');
+  } catch(e) { statusEl.textContent = 'Request failed.'; }
 }
 function toggleQR() {
   const body    = document.getElementById('qr-body');
@@ -3173,18 +3259,85 @@ input[type=range].wall-vol::-moz-range-thumb{
 .hdr-preset:hover{background:var(--surface);color:var(--fg);border-color:var(--blue)}
 .hdr-preset:active{border-color:var(--blue-light);color:var(--blue-light)}
 .hdr-preset.empty{opacity:.3;pointer-events:none}
+
+/* ── Announce button & modal ──────────────────── */
+#announce-btn{
+  background:var(--surface2);border:1px solid var(--border);
+  color:var(--fg2);border-radius:10px;padding:7px 16px;
+  font-size:13px;font-weight:600;cursor:pointer;
+  display:flex;align-items:center;gap:7px;flex-shrink:0;
+  transition:background .15s,border-color .15s,color .15s;
+}
+#announce-btn:hover{background:var(--surface);color:var(--fg);border-color:var(--blue)}
+#announce-overlay{
+  display:none;position:fixed;inset:0;z-index:100;
+  background:rgba(0,0,0,.65);backdrop-filter:blur(4px);
+  align-items:center;justify-content:center;
+}
+#announce-overlay.open{display:flex}
+#announce-box{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:18px;padding:28px;width:min(520px,94vw);
+  display:flex;flex-direction:column;gap:18px;
+}
+#announce-box h2{font-size:17px;font-weight:700;color:var(--fg)}
+#announce-text{
+  width:100%;padding:12px 14px;
+  background:var(--surface2);border:1px solid var(--border);
+  border-radius:10px;color:var(--fg);font-size:16px;
+  outline:none;resize:none;line-height:1.4;
+  font-family:inherit;
+}
+#announce-text:focus{border-color:var(--blue)}
+.ann-section-label{font-size:11px;font-weight:700;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--fg3);margin-bottom:6px}
+.ann-speakers{display:flex;flex-direction:column;gap:8px}
+.ann-spk{display:flex;align-items:center;gap:10px;cursor:pointer;
+  padding:8px 12px;background:var(--surface2);border-radius:8px;
+  border:1px solid var(--border);transition:border-color .15s}
+.ann-spk:has(input:checked){border-color:var(--blue)}
+.ann-spk input{accent-color:var(--blue);width:16px;height:16px;cursor:pointer}
+.ann-spk-name{font-size:13px;font-weight:600;color:var(--fg)}
+.ann-vol-row{display:flex;align-items:center;gap:10px}
+.ann-vol-row input{flex:1;height:3px;-webkit-appearance:none;appearance:none;
+  border-radius:2px;outline:none;cursor:pointer;
+  background:linear-gradient(to right,var(--blue) var(--avp,60%),var(--surface2) var(--avp,60%));}
+.ann-vol-row input::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;
+  border-radius:50%;background:var(--silver);box-shadow:0 0 6px var(--blue-glow);}
+.ann-vol-row input::-moz-range-thumb{width:14px;height:14px;border-radius:50%;
+  background:var(--silver);border:none;}
+.ann-vol-lbl{font-size:12px;font-weight:700;color:var(--fg2);width:28px;text-align:right}
+.ann-btns{display:flex;gap:10px;justify-content:flex-end}
+.ann-btn{padding:10px 22px;border-radius:10px;font-size:14px;font-weight:600;
+  border:1px solid var(--border);cursor:pointer;transition:all .15s}
+.ann-btn.cancel{background:var(--surface2);color:var(--fg2)}
+.ann-btn.cancel:hover{color:var(--fg)}
+.ann-btn.send{background:var(--blue);border-color:var(--blue);color:#fff}
+.ann-btn.send:hover{filter:brightness(1.15)}
+.ann-btn.send:disabled{opacity:.4;cursor:default;filter:none}
+#announce-status{font-size:12px;color:var(--amber);min-height:16px;text-align:center}
 </style>
 </head>
 <body>
 
 <div id="header">
-  <div id="header-logo">
-    <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
-      <circle cx="11" cy="11" r="10" stroke="#60a5fa" stroke-width="1.5"/>
-      <circle cx="11" cy="11" r="5.5" stroke="#60a5fa" stroke-width="1.5"/>
-      <circle cx="11" cy="11" r="1.5" fill="#60a5fa"/>
-    </svg>
-    <span id="header-title">SoundTouch</span>
+  <div id="header-logo" style="display:flex;align-items:center;gap:16px">
+    <div style="display:flex;align-items:center;gap:10px">
+      <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+        <circle cx="11" cy="11" r="10" stroke="#60a5fa" stroke-width="1.5"/>
+        <circle cx="11" cy="11" r="5.5" stroke="#60a5fa" stroke-width="1.5"/>
+        <circle cx="11" cy="11" r="1.5" fill="#60a5fa"/>
+      </svg>
+      <span id="header-title">SoundTouch</span>
+    </div>
+    <button id="announce-btn" onclick="openAnnounce()">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+        <path d="M2 6h2l5-4v12l-5-4H2a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="1.4" fill="none"/>
+        <path d="M11 5.5c1 .8 1.5 1.5 1.5 2.5s-.5 1.7-1.5 2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        <path d="M12.5 3.5C14.2 4.9 15 6.4 15 8s-.8 3.1-2.5 4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      </svg>
+      Announce
+    </button>
   </div>
   <div id="preset-bar">
     <span id="preset-bar-label" style="display:none"></span>
@@ -3462,10 +3615,205 @@ async function init(){
 }
 
 init();
+
+// ── Announce modal ─────────────────────────────────────────────────────────
+function openAnnounce(){
+  // Populate speaker checkboxes
+  const list=document.getElementById('ann-speakers-list');
+  list.innerHTML='';
+  speakers.forEach(sp=>{
+    const id='ann-chk-'+sp.host.replace(/\./g,'_');
+    const row=document.createElement('label');
+    row.className='ann-spk';
+    row.innerHTML=`<input type="checkbox" id="${id}" checked>
+      <span class="ann-spk-name">${sp.name}</span>`;
+    list.appendChild(row);
+  });
+  document.getElementById('announce-status').textContent='';
+  document.getElementById('announce-text').value='';
+  document.getElementById('announce-overlay').classList.add('open');
+  setTimeout(()=>document.getElementById('announce-text').focus(),80);
+}
+function closeAnnounce(){
+  document.getElementById('announce-overlay').classList.remove('open');
+}
+function onAnnVol(el){
+  const pct=((el.value-el.min)/(el.max-el.min)*100).toFixed(1)+'%';
+  el.style.setProperty('--avp',pct);
+  document.getElementById('ann-vol-lbl').textContent=el.value;
+}
+async function sendAnnounce(){
+  const text=document.getElementById('announce-text').value.trim();
+  if(!text){document.getElementById('announce-status').textContent='Please enter a message.';return;}
+  const hosts=speakers
+    .filter(sp=>document.getElementById('ann-chk-'+sp.host.replace(/\./g,'_'))?.checked)
+    .map(sp=>sp.host);
+  if(!hosts.length){document.getElementById('announce-status').textContent='Select at least one speaker.';return;}
+  const volume=parseInt(document.getElementById('ann-vol-slider').value);
+  const btn=document.getElementById('ann-send-btn');
+  btn.disabled=true;
+  document.getElementById('announce-status').textContent='Sending…';
+  try{
+    const r=await fetch('/api/tts/announce',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({text,hosts,volume})});
+    const d=await r.json();
+    if(d.ok){
+      document.getElementById('announce-status').textContent=
+        `Announcing on ${d.speakers} speaker${d.speakers!==1?'s':''}…`;
+      setTimeout(closeAnnounce,1800);
+    } else {
+      document.getElementById('announce-status').textContent='Error: '+(d.error||'unknown');
+    }
+  }catch(e){
+    document.getElementById('announce-status').textContent='Request failed.';
+  }finally{ btn.disabled=false; }
+}
+document.getElementById('announce-text')?.addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)) sendAnnounce();
+});
+// Close on backdrop click
+document.getElementById('announce-overlay')?.addEventListener('click',e=>{
+  if(e.target===e.currentTarget) closeAnnounce();
+});
 </script>
+
+<!-- Announce modal -->
+<div id="announce-overlay">
+  <div id="announce-box">
+    <h2>📢 Send Announcement</h2>
+    <div>
+      <div class="ann-section-label">Message</div>
+      <textarea id="announce-text" rows="3" placeholder="e.g. Dinner is ready…"></textarea>
+      <div style="font-size:10px;color:var(--fg3);margin-top:4px">Ctrl+Enter to send</div>
+    </div>
+    <div>
+      <div class="ann-section-label">Speakers</div>
+      <div class="ann-speakers" id="ann-speakers-list"></div>
+    </div>
+    <div>
+      <div class="ann-section-label">Announcement Volume</div>
+      <div class="ann-vol-row">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="opacity:.5;flex-shrink:0">
+          <polygon points="1,5 5,5 8,2 8,12 5,9 1,9" stroke="currentColor" stroke-width="1.3" fill="none"/>
+        </svg>
+        <input type="range" id="ann-vol-slider" min="10" max="100" value="60"
+          oninput="onAnnVol(this)" style="--avp:55.6%">
+        <div class="ann-vol-lbl" id="ann-vol-lbl">60</div>
+      </div>
+    </div>
+    <div id="announce-status"></div>
+    <div class="ann-btns">
+      <button class="ann-btn cancel" onclick="closeAnnounce()">Cancel</button>
+      <button class="ann-btn send" id="ann-send-btn" onclick="sendAnnounce()">Send</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
 """
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TTS announcement engine
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _tts_announce(devices, text, volume, web_port):
+    """Generate TTS MP3, serve it, play on each device, then restore state."""
+    import io
+    if not _TTS_AVAILABLE:
+        log.error("[TTS] gTTS not installed — run: pip3 install gtts")
+        return
+    try:
+        buf = io.BytesIO()
+        _gTTS(text, lang="en", tld="co.uk").write_to_fp(buf)
+        mp3_bytes = buf.getvalue()
+    except Exception as e:
+        log.error(f"[TTS] gTTS generation failed: {e}")
+        return
+
+    audio_id = _uuid.uuid4().hex
+    _tts_cache[audio_id] = mp3_bytes
+    local_ip = get_local_ip()
+    # Descriptor URL (JSON) — what the speaker fetches for stationurl type
+    desc_url = f"http://{local_ip}:{web_port}/api/tts/desc/{audio_id}"
+    mp3_url  = f"http://{local_ip}:{web_port}/api/tts/audio/{audio_id}.mp3"
+    # 128 kbps MP3 = 16 000 bytes/s; add 4 s buffer (network + speaker decode latency)
+    play_duration = max(len(mp3_bytes) / 16000.0 + 4.0, 5.0)
+    log.info(f"[TTS] '{text}' → {mp3_url}  ({len(mp3_bytes)} bytes, ~{play_duration:.1f}s wait)")
+
+    def announce_one(dev):
+        try:
+            # ── capture current state ────────────────────────────────────────
+            np = dev._get("/now_playing")
+            was_playing, was_standby, saved_ci = False, False, None
+            if np is not None:
+                ps  = np.get("playStatus") or np.findtext("playStatus") or ""
+                src = np.get("source") or np.findtext("source") or ""
+                was_playing = ps in ("PLAY_STATE", "BUFFERING_STATE")
+                was_standby = src.upper() in ("STANDBY", "") or not was_playing and not src
+                ci = np.find("ContentItem")
+                if ci is not None:
+                    saved_ci = ET.tostring(ci, encoding="unicode")
+            vx = dev._get("/volume")
+            saved_vol = None
+            if vx is not None:
+                for tag in ("actualvolume", "targetvolume"):
+                    el = vx.find(tag)
+                    if el is not None:
+                        saved_vol = int(el.text); break
+
+            log.info(f"[TTS] {dev.host} was_playing={was_playing} was_standby={was_standby} saved_vol={saved_vol}")
+
+            # ── play announcement ────────────────────────────────────────────
+            dev.set_volume(volume)
+            time.sleep(0.5)
+            dev.select_content("LOCAL_INTERNET_RADIO", "stationurl", desc_url, "Announcement")
+
+            # Wait for speaker to reach PLAY_STATE (not just BUFFERING — audio must
+            # actually be flowing before we start the duration countdown).
+            # Handles standby wake-up which can take 10-20 s.
+            started = False
+            for _ in range(60):          # 60 × 0.5 s = 30 s max wake-up wait
+                time.sleep(0.5)
+                np2 = dev._get("/now_playing")
+                if np2 is None:
+                    break
+                ps2 = np2.get("playStatus") or np2.findtext("playStatus") or ""
+                if ps2 == "PLAY_STATE":
+                    started = True
+                    break
+
+            if started:
+                # Audio is flowing — now wait for the clip to finish
+                log.info(f"[TTS] {dev.host} playing — waiting {play_duration:.1f}s")
+                time.sleep(play_duration)
+            else:
+                log.warning(f"[TTS] {dev.host} never reached PLAY_STATE — skipping wait")
+
+            # ── restore ───────────────────────────────────────────────────────
+            if saved_vol is not None:
+                dev.set_volume(saved_vol)
+            time.sleep(0.3)
+            if was_standby:
+                dev.power()
+                log.info(f"[TTS] {dev.host} returned to standby")
+            elif was_playing and saved_ci:
+                dev._post("/select", saved_ci)
+                log.info(f"[TTS] {dev.host} resumed previous content")
+        except Exception as e:
+            log.error(f"[TTS] announce_one({dev.host}) error: {e}")
+
+    threads = [threading.Thread(target=announce_one, args=(d,), daemon=True) for d in devices]
+    for t in threads: t.start()
+    for t in threads: t.join()
+
+    # Remove cached audio after 5 minutes
+    def _cleanup():
+        time.sleep(300)
+        _tts_cache.pop(audio_id, None)
+    threading.Thread(target=_cleanup, daemon=True).start()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4029,6 +4377,32 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Location", "/icon.svg")
                 self.end_headers()
 
+        elif path.startswith("/api/tts/desc/"):
+            audio_id = path.split("/")[-1]
+            if audio_id in _tts_cache:
+                mp3_url = (f"http://{get_local_ip()}:{self.server_state.web_port}"
+                           f"/api/tts/audio/{audio_id}.mp3")
+                desc = json.dumps({
+                    "name": "Announcement",
+                    "imageUrl": "",
+                    "streamType": "liveRadio",
+                    "audio": {"streamUrl": mp3_url, "hasPlaylist": False, "isRealtime": False},
+                })
+                self._respond(200, "application/json", desc.encode())
+            else:
+                self._respond(404, "text/plain", b"TTS descriptor not found")
+
+        elif path.startswith("/api/tts/audio/"):
+            audio_id = path.split("/")[-1].replace(".mp3", "")
+            data = _tts_cache.get(audio_id)
+            if data:
+                self._respond(200, "audio/mpeg", data)
+            else:
+                self._respond(404, "text/plain", b"TTS audio not found")
+
+        elif path == "/api/tts/status":
+            self._json({"available": _TTS_AVAILABLE})
+
         else:
             self._respond(404, "text/plain", b"Not found")
 
@@ -4114,6 +4488,40 @@ class Handler(BaseHTTPRequestHandler):
                 self.server_state.alarm_store.save_alarm(alarm)
                 log.info(f"[ALARM] Saved '{alarm['name']}' at {alarm['time']}")
                 self._json({"ok": True, "id": alarm_id})
+            except Exception as e:
+                self._json({"ok": False, "error": str(e)})
+
+        elif path == "/api/tts/announce":
+            try:
+                data    = json.loads(body)
+                text    = data.get("text", "").strip()
+                hosts   = data.get("hosts", [])
+                volume  = int(data.get("volume", 60))
+                if not text:
+                    self._json({"ok": False, "error": "no text"})
+                elif not _TTS_AVAILABLE:
+                    self._json({"ok": False, "error": "gTTS not installed — run: pip3 install gtts"})
+                else:
+                    devices = [d for d in self.server_state.devices if d.host in hosts]
+                    if not devices:
+                        self._json({"ok": False, "error": "no matching speakers"})
+                    else:
+                        # Debounce: ignore duplicate within 3 seconds (lock prevents race)
+                        dedup_key = (text, ",".join(sorted(hosts)))
+                        now = time.monotonic()
+                        with _tts_lock:
+                            duplicate = now - _tts_last.get(dedup_key, 0) < 3.0
+                            if not duplicate:
+                                _tts_last[dedup_key] = now
+                        if duplicate:
+                            self._json({"ok": True, "speakers": len(devices), "deduped": True})
+                        else:
+                            threading.Thread(
+                                target=_tts_announce,
+                                args=(devices, text, volume, self.server_state.web_port),
+                                daemon=True
+                            ).start()
+                            self._json({"ok": True, "speakers": len(devices)})
             except Exception as e:
                 self._json({"ok": False, "error": str(e)})
 
