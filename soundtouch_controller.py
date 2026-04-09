@@ -3227,6 +3227,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         p    = urlparse(self.path)
         path = p.path
+        qs   = parse_qs(p.query)
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length) if length else b""
         if path.startswith("/api/"):
