@@ -2256,14 +2256,14 @@ async function searchStationStream(nameOverride) {
   try {
     const d = await (await fetch(`/api/stations/stream-search?q=${encodeURIComponent(name)}`)).json();
     if (d.error || !d.length) {
-      resultsEl.innerHTML = '<div class="sr-item" style="cursor:default;color:var(--fg3)">No HTTP streams found on TuneIn for this station — most major stations have moved to HTTPS which SoundTouch cannot play. Try searching for a niche or community station, or paste a direct HTTP stream URL manually.</div>';
+      resultsEl.innerHTML = '<div class="sr-item" style="cursor:default;color:var(--fg3)">No results found — try a shorter name or paste the URL manually</div>';
       return;
     }
     resultsEl.innerHTML = d.map((s,i) => `
       <div class="sr-item" onclick="pickStreamResult(${i})">
         ${s.favicon ? `<img class="sr-logo" src="${s.favicon}" onerror="this.style.display='none'">` : '<div class="sr-logo"></div>'}
         <div class="sr-info">
-          <div class="sr-name">${s.name} <span style="font-size:9px;opacity:.5;font-weight:400">${s.source||''}</span></div>
+          <div class="sr-name">${s.name}</div>
           <div class="sr-meta">${[s.country, s.bitrate?s.bitrate+'kbps':'', s.codec].filter(Boolean).join(' · ')}</div>
           <div class="sr-meta" style="font-size:9px;opacity:.6">${s.url}</div>
         </div>
@@ -3098,81 +3098,50 @@ class Handler(BaseHTTPRequestHandler):
                 self._json([]); return
             try:
                 ua = {"User-Agent": "SoundTouchController/1.0"}
+                # Step 1 — search TuneIn for matching stations
+                sr = requests.get(
+                    f"http://opml.radiotime.com/Search.ashx"
+                    f"?query={urlquote(q)}&render=json&type=station",
+                    timeout=6, headers=ua)
+                body = sr.json().get("body", [])
+                stations = []
+                def _collect(items):
+                    for item in (items or []):
+                        if item.get("type") == "audio" and item.get("item") == "station":
+                            stations.append(item)
+                        elif item.get("children"):
+                            _collect(item["children"])
+                _collect(body)
+                stations = stations[:8]
 
-                def _search_tunein(query):
-                    """Search TuneIn OPML API and resolve direct HTTP stream URLs."""
-                    sr = requests.get(
-                        f"http://opml.radiotime.com/Search.ashx"
-                        f"?query={urlquote(query)}&render=json&type=station",
-                        timeout=6, headers=ua)
-                    body = sr.json().get("body", [])
-                    stations = []
-                    def _collect(items):
-                        for item in (items or []):
-                            if item.get("type") == "audio" and item.get("item") == "station":
-                                stations.append(item)
-                            elif item.get("children"):
-                                _collect(item["children"])
-                    _collect(body)
-                    def _resolve(st):
-                        gid = st.get("guide_id","")
-                        if not gid: return None
-                        try:
-                            tr = requests.get(
-                                f"http://opml.radiotime.com/Tune.ashx?id={gid}&render=json",
-                                timeout=4, headers=ua)
-                            streams = [b for b in tr.json().get("body",[])
-                                       if b.get("element") == "audio"]
-                            def _u(b): return b.get("url") or b.get("URL","")
-                            http_s = [s for s in streams
-                                      if _u(s).startswith("http://") and "notcompatible" not in _u(s)]
-                            if not http_s: return None
-                            return {"name": st.get("text","").strip(), "url": _u(http_s[0]),
-                                    "country": st.get("subtext",""), "bitrate": st.get("bitrate",""),
-                                    "codec": st.get("formats",""), "favicon": st.get("image",""),
-                                    "source": "TuneIn"}
-                        except Exception: return None
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
-                        return [r for r in ex.map(_resolve, stations[:8]) if r]
+                # Step 2 — resolve each station's direct stream URL in parallel
+                def _resolve(st):
+                    gid = st.get("guide_id","")
+                    if not gid: return None
+                    try:
+                        tr = requests.get(
+                            f"http://opml.radiotime.com/Tune.ashx?id={gid}&render=json",
+                            timeout=4, headers=ua)
+                        streams = [b for b in tr.json().get("body",[])
+                                   if b.get("element") == "audio"]
+                        def _u(b): return b.get("url") or b.get("URL","")
+                        valid = [s for s in streams
+                                 if _u(s) and "notcompatible" not in _u(s)]
+                        if not valid: return None
+                        stream_url = _u(valid[0])
+                        return {
+                            "name":    st.get("text","").strip(),
+                            "url":     stream_url,
+                            "country": st.get("subtext",""),
+                            "bitrate": st.get("bitrate",""),
+                            "codec":   st.get("formats",""),
+                            "favicon": st.get("image",""),
+                        }
+                    except Exception: return None
 
-                def _search_radiobrowser(query):
-                    """Search RadioBrowser — open community directory, HTTP streams only."""
-                    r = requests.get(
-                        f"https://de1.api.radio-browser.info/json/stations/search"
-                        f"?name={urlquote(query)}&limit=8&hidebroken=true"
-                        f"&order=votes&reverse=true",
-                        timeout=6, headers=ua)
-                    results = []
-                    for s in r.json():
-                        url = s.get("url_resolved") or s.get("url","")
-                        if not url.startswith("http://"): continue
-                        results.append({
-                            "name":    s.get("name","").strip(),
-                            "url":     url,
-                            "country": s.get("country",""),
-                            "bitrate": str(s.get("bitrate","") or ""),
-                            "codec":   s.get("codec",""),
-                            "favicon": s.get("favicon",""),
-                            "source":  "RadioBrowser",
-                        })
-                    return results
-
-                # Run both searches in parallel
-                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-                    f_tunein = ex.submit(_search_tunein, q)
-                    f_rb     = ex.submit(_search_radiobrowser, q)
-                    tunein_results = f_tunein.result()
-                    rb_results     = f_rb.result()
-
-                # Merge: TuneIn first, then RadioBrowser; skip RadioBrowser duplicates by name
-                seen = {r["name"].lower() for r in tunein_results}
-                merged = tunein_results[:]
-                for r in rb_results:
-                    if r["name"].lower() not in seen:
-                        merged.append(r)
-                        seen.add(r["name"].lower())
-
-                self._json(merged)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+                    resolved = list(ex.map(_resolve, stations))
+                self._json([r for r in resolved if r])
             except Exception as e:
                 self._json({"error": str(e)})
 
