@@ -3774,7 +3774,7 @@ def _tts_announce(devices, text, volume, web_port):
             # Wait for speaker to actually start playing (handles standby wake-up delay).
             # Poll up to 15 s for PLAY_STATE, then hold for the audio duration.
             started = False
-            for _ in range(30):          # 30 × 0.5 s = 15 s max wake-up wait
+            for _ in range(60):          # 60 × 0.5 s = 30 s max wake-up wait
                 time.sleep(0.5)
                 np2 = dev._get("/now_playing")
                 if np2 is None:
