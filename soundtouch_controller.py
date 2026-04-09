@@ -46,6 +46,44 @@ DATA_DIR      = pathlib.Path(__file__).parent / "data"
 PRESETS_DIR   = DATA_DIR / "presets"
 STATIONS_DIR  = DATA_DIR / "stations"
 LOG_FILE      = pathlib.Path(__file__).parent / "soundtouch.log"
+SCENES_DIR    = DATA_DIR / "scenes"
+ALARMS_FILE   = DATA_DIR / "alarms.json"
+
+# ── PWA service worker (served at /sw.js) ───────────────────────────────────
+SW_JS = r"""
+const CACHE='soundtouch-v1';
+self.addEventListener('install',e=>{
+  e.waitUntil(caches.open(CACHE).then(c=>c.addAll(['/'])));
+  self.skipWaiting();
+});
+self.addEventListener('activate',e=>{
+  e.waitUntil(caches.keys().then(ks=>
+    Promise.all(ks.filter(k=>k!==CACHE).map(k=>caches.delete(k)))));
+  self.clients.claim();
+});
+self.addEventListener('fetch',e=>{
+  const u=new URL(e.request.url);
+  if(u.pathname.startsWith('/api/')||u.pathname==='/sw.js'||e.request.method!=='GET')return;
+  e.respondWith(caches.match(e.request).then(cached=>{
+    const net=fetch(e.request).then(r=>{
+      if(r&&r.status===200&&r.type==='basic'){
+        caches.open(CACHE).then(c=>c.put(e.request,r.clone()));
+      }return r;
+    }).catch(()=>cached);
+    return cached||net;
+  }));
+});
+"""
+
+# ── App icon SVG (served at /icon.svg) ──────────────────────────────────────
+ICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+    '<rect width="100" height="100" rx="22" fill="#0b0c11"/>'
+    '<circle cx="50" cy="50" r="36" fill="#2277ee" opacity=".9"/>'
+    '<text x="50" y="67" text-anchor="middle" '
+    'font-family="system-ui,sans-serif" font-size="48" fill="white">&#9836;</text>'
+    '</svg>'
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -534,6 +572,126 @@ class PresetStore:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Scene store  (named zone + preset + volume snapshots)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SceneStore:
+    """Stores named scenes as JSON files in data/scenes/."""
+
+    def __init__(self, scenes_dir=SCENES_DIR):
+        self.scenes_dir = pathlib.Path(scenes_dir)
+        self.scenes_dir.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, scene_id):
+        return self.scenes_dir / f"{scene_id}.json"
+
+    def save(self, scene_id, data):
+        self._path(scene_id).write_text(json.dumps(data, indent=2))
+
+    def load(self, scene_id):
+        p = self._path(scene_id)
+        return json.loads(p.read_text()) if p.exists() else None
+
+    def delete(self, scene_id):
+        p = self._path(scene_id)
+        if p.exists(): p.unlink(); return True
+        return False
+
+    def list_scenes(self):
+        out = []
+        for f in sorted(self.scenes_dir.glob("*.json")):
+            try: out.append(json.loads(f.read_text()))
+            except Exception: pass
+        return out
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Alarm store + scheduler  (wake-up / timed playback)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AlarmStore:
+    """Persists alarm definitions to data/alarms.json."""
+
+    def __init__(self, alarm_file=ALARMS_FILE):
+        self._file = pathlib.Path(alarm_file)
+        self._lock = threading.Lock()
+
+    def _load(self):
+        if not self._file.exists(): return []
+        try: return json.loads(self._file.read_text())
+        except Exception: return []
+
+    def _save(self, alarms):
+        self._file.parent.mkdir(parents=True, exist_ok=True)
+        self._file.write_text(json.dumps(alarms, indent=2))
+
+    def list_alarms(self):
+        with self._lock: return list(self._load())
+
+    def save_alarm(self, alarm):
+        with self._lock:
+            alarms = self._load()
+            idx = next((i for i, a in enumerate(alarms) if a["id"] == alarm["id"]), None)
+            if idx is not None: alarms[idx] = alarm
+            else: alarms.append(alarm)
+            self._save(alarms)
+
+    def delete_alarm(self, alarm_id):
+        with self._lock:
+            self._save([a for a in self._load() if a["id"] != alarm_id])
+
+    def toggle_alarm(self, alarm_id, enabled):
+        with self._lock:
+            alarms = self._load()
+            for a in alarms:
+                if a["id"] == alarm_id: a["enabled"] = enabled; break
+            self._save(alarms)
+
+
+class AlarmScheduler:
+    """Background thread that fires alarms at their scheduled time."""
+
+    def __init__(self, alarm_store, app_state):
+        self._store     = alarm_store
+        self._app       = app_state
+        self._fired     = {}   # alarm_id+date key → True
+        self._thread    = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        log.info("[ALARM] Scheduler started")
+
+    def _run(self):
+        while True:
+            try: self._tick()
+            except Exception as e: log.warning(f"[ALARM] tick error: {e}")
+            time.sleep(30)
+
+    def _tick(self):
+        now    = time.localtime()
+        hhmm   = f"{now.tm_hour:02d}:{now.tm_min:02d}"
+        wday   = now.tm_wday   # 0=Mon … 6=Sun
+        today  = f"{now.tm_year}{now.tm_yday}"
+        for alarm in self._store.list_alarms():
+            if not alarm.get("enabled"): continue
+            if alarm.get("time") != hhmm: continue
+            if wday not in alarm.get("days", list(range(7))): continue
+            key = f"{alarm['id']}_{hhmm}_{today}"
+            if self._fired.get(key): continue
+            self._fired[key] = True
+            threading.Thread(target=self._fire, args=(alarm,), daemon=True).start()
+
+    def _fire(self, alarm):
+        host = alarm.get("host")
+        dev  = self._app.get_device(host) if host else None
+        if not dev:
+            log.warning(f"[ALARM] Device not found for alarm '{alarm.get('name')}'"); return
+        vol = alarm.get("volume")
+        if vol is not None:
+            dev.set_volume(vol); time.sleep(0.5)
+        dev.preset(alarm.get("preset", 1))
+        log.info(f"[ALARM] Fired '{alarm.get('name')}' — {host} preset {alarm.get('preset',1)}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Speaker discovery
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -663,8 +821,11 @@ HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
-<meta name="theme-color" content="#1a0a0a">
+<meta name="theme-color" content="#0b0c11">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon.svg">
 <title>SoundTouch</title>
+<script>if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});</script>
 <style>
 /* ── Reset ───────────────────────────────────────────────── */
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
@@ -1017,6 +1178,35 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   white-space:nowrap;box-shadow:0 4px 24px rgba(0,0,0,.5)}
 #toast.show{opacity:1}
 
+/* ── All-speaker volume row ──────────────────────────────── */
+#all-vol-row{padding:8px 4px 2px;border-top:1px solid var(--border);margin-top:6px;display:none}
+#all-vol-row.visible{display:block}
+#all-vol-label{font-size:10px;font-weight:700;letter-spacing:.12em;color:var(--fg3);
+  text-transform:uppercase;margin-bottom:6px}
+#all-vol-inner{display:flex;align-items:center;gap:10px}
+#all-vol-track{flex:1;position:relative;padding-top:22px}
+#all-vol-tip{position:absolute;top:0;transform:translateX(-50%);
+  background:var(--silver-dim);color:#000;font-size:11px;font-weight:700;
+  padding:2px 7px;border-radius:10px;pointer-events:none;white-space:nowrap;
+  opacity:0;transition:opacity .2s;left:var(--pct,50%)}
+#all-vol-tip.visible{opacity:1}
+#all-vol-slider{width:100%;height:4px;-webkit-appearance:none;appearance:none;
+  border-radius:2px;outline:none;cursor:pointer;
+  background:linear-gradient(to right,var(--silver-dim) var(--pct,50%),var(--surface2) var(--pct,50%))}
+#all-vol-slider::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;
+  border-radius:50%;background:var(--silver);cursor:pointer;
+  box-shadow:0 0 6px rgba(200,212,232,.3)}
+#all-vol-slider::-moz-range-thumb{width:18px;height:18px;border-radius:50%;
+  background:var(--silver);cursor:pointer;border:none}
+
+/* ── Alarm day buttons ───────────────────────────────────── */
+.day-btn{display:inline-flex;align-items:center;justify-content:center;
+  background:var(--surface2);border:1px solid var(--border);border-radius:6px;
+  padding:5px 10px;font-size:11px;font-weight:600;color:var(--fg2);cursor:pointer;
+  user-select:none;transition:all .15s}
+.day-btn:has(input:checked){background:var(--blue-dim);border-color:var(--blue);color:var(--blue-light)}
+.day-btn input{display:none}
+
 /* ── Scanning overlay ────────────────────────────────────── */
 #scanning{display:none;position:fixed;inset:0;background:rgba(7,8,12,.85);
   backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
@@ -1143,6 +1333,20 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
         Mute
       </button>
     </div>
+
+    <!-- All-speaker volume (shown when 2+ speakers are discovered) -->
+    <div id="all-vol-row">
+      <div id="all-vol-label">All Speakers</div>
+      <div id="all-vol-inner">
+        <span class="vol-icon vol-btn" onclick="nudgeAllVol(-1)">&#128264;</span>
+        <div id="all-vol-track">
+          <div id="all-vol-tip">50</div>
+          <input type="range" id="all-vol-slider" min="0" max="100" value="50"
+                 oninput="onAllVolInput(this.value)" onchange="sendAllVol(this.value)">
+        </div>
+        <span class="vol-icon vol-btn" onclick="nudgeAllVol(1)">&#128266;</span>
+      </div>
+    </div>
   </div>
 
   <!-- ═══ PAGE: Groups ═══ -->
@@ -1155,6 +1359,30 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
       </p>
       <div id="group-status"></div>
       <div id="group-builder"></div>
+
+      <!-- Scenes -->
+      <div class="qr-section" style="margin-top:18px">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-scenes','chev-scenes')">
+          <span class="title">Scenes</span>
+          <span id="chev-scenes" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-scenes" class="qr-body" style="display:none">
+          <p style="font-size:12px;color:var(--fg3);margin-bottom:12px">
+            Save the current speaker group, volumes, and a preset as a named scene.
+            One tap replays everything exactly.
+          </p>
+          <div id="scenes-list"></div>
+          <div class="add-form" style="margin:10px 0 0">
+            <label>Scene Name</label>
+            <input id="scene-name-input" placeholder="e.g. Morning, Party, Bedtime">
+            <label>Preset to play (1–6)</label>
+            <input id="scene-preset-input" type="number" min="1" max="6" value="1">
+            <div class="form-row">
+              <button class="mc-btn primary" onclick="saveScene()">Save Scene</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1202,6 +1430,47 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
           </p>
           <button class="mc-btn primary" onclick="backupAll()">Backup All Speakers</button>
           <span id="backup-all-status" style="font-size:12px;color:var(--fg3);margin-left:10px"></span>
+        </div>
+      </div>
+
+      <!-- Alarms -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-alarms','chev-alarms')">
+          <span class="title">Alarms</span>
+          <span id="chev-alarms" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-alarms" class="qr-body" style="display:none">
+          <p style="font-size:12px;color:var(--fg3);margin-bottom:12px">
+            Schedule a speaker to start playing a preset at a set time.
+            Uses the currently active speaker when saved.
+          </p>
+          <div id="alarms-list"></div>
+          <div class="add-form" style="margin:10px 0 0">
+            <label>Name (optional)</label>
+            <input id="alarm-name" placeholder="Morning Radio">
+            <label>Time</label>
+            <input id="alarm-time" type="time" value="07:00">
+            <label>Preset (1–6)</label>
+            <input id="alarm-preset" type="number" min="1" max="6" value="1">
+            <label>Volume (optional — leave blank to keep current)</label>
+            <input id="alarm-vol" type="number" min="0" max="100" placeholder="0–100">
+            <label>Days</label>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+              <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="0" checked>Mon</label>
+              <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="1" checked>Tue</label>
+              <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="2" checked>Wed</label>
+              <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="3" checked>Thu</label>
+              <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="4" checked>Fri</label>
+              <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="5">Sat</label>
+              <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="6">Sun</label>
+            </div>
+            <p style="font-size:11px;color:var(--fg3);margin-top:8px">
+              Speaker: <span id="alarm-speaker-name" style="color:var(--fg2)">—</span>
+            </p>
+            <div class="form-row">
+              <button class="mc-btn primary" onclick="addAlarm()">Add Alarm</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1388,8 +1657,10 @@ function switchTab(name) {
   document.querySelectorAll('.page').forEach(p =>
     p.classList.toggle('visible', p.id === 'page-' + name));
   if (name === 'manage')   { /* sections load on expand */ }
-  if (name === 'groups')   { loadGroups(); }
-  if (name === 'settings') { /* sections load on expand */ }
+  if (name === 'groups')   { loadGroups();
+    const sec = document.getElementById('sec-scenes');
+    if (sec && sec.style.display !== 'none') loadScenes(); }
+  if (name === 'settings') { updateAlarmSpeakerName(); }
   localStorage.setItem('activeTab', name);
 }
 
@@ -1413,7 +1684,8 @@ async function rescan() {
 }
 function renderRooms() {
   const el = document.getElementById('rooms-list');
-  if (!speakers.length) { el.innerHTML='<div id="no-speakers">No speakers found</div>'; return; }
+  if (!speakers.length) { el.innerHTML='<div id="no-speakers">No speakers found</div>';
+    document.getElementById('all-vol-row')?.classList.remove('visible'); return; }
   // Single speaker: full-width; 2+: 2-column grid
   el.style.gridTemplateColumns = speakers.length === 1 ? '1fr' : 'repeat(2,1fr)';
   el.innerHTML = speakers.map(s=>`
@@ -1423,9 +1695,12 @@ function renderRooms() {
       <span class="dot"></span>
       <span class="chip-eq"><span class="chip-eq-bar"></span><span class="chip-eq-bar"></span><span class="chip-eq-bar"></span></span>
       <span class="name">${s.name}</span>${s.has_backup===false?'<span class="chip-warn" title="No preset backup">⚠</span>':''}</div>`).join('');
+  // Show all-speaker volume only when 2+ speakers are available
+  document.getElementById('all-vol-row')?.classList.toggle('visible', speakers.length >= 2);
 }
 function setActive(h) {
   activeHost=h; clearTimeout(pollTimer); renderRooms(); pollNow();
+  updateAlarmSpeakerName();
   const tab = document.querySelector('.tab.active')?.dataset?.tab;
   if (tab === 'manage') {
     const sec = document.getElementById('sec-manage-backup');
@@ -2003,10 +2278,12 @@ function toggleSection(bodyId, chevronId) {
   const opening = body.style.display === 'none';
   body.style.display = opening ? 'block' : 'none';
   if (chevron) chevron.classList.toggle('open', opening);
-  if (opening && bodyId === 'sec-speaker')      loadSpeakerInfo();
-  if (opening && bodyId === 'sec-alexa')        loadAlexaQR();
+  if (opening && bodyId === 'sec-speaker')       loadSpeakerInfo();
+  if (opening && bodyId === 'sec-alexa')         loadAlexaQR();
   if (opening && bodyId === 'sec-manage-backup') loadBackupInfo();
-  if (opening && bodyId === 'sec-stations')     loadStations();
+  if (opening && bodyId === 'sec-stations')      loadStations();
+  if (opening && bodyId === 'sec-scenes')        loadScenes();
+  if (opening && bodyId === 'sec-alarms')        loadAlarms();
 }
 function toggleQR() {
   const body    = document.getElementById('qr-body');
@@ -2028,6 +2305,153 @@ function toast(m) {
 function showScanning(m) { document.getElementById('scan-label').textContent=m||'Scanning…';
   document.getElementById('scanning').classList.add('show'); }
 function hideScanning() { document.getElementById('scanning').classList.remove('show'); }
+
+// ── All-speaker volume ────────────────────────────────────────────────────────
+let allVolTT=null;
+function onAllVolInput(v) {
+  const pct=v+'%';
+  document.getElementById('all-vol-track').style.setProperty('--pct',pct);
+  document.getElementById('all-vol-slider').style.setProperty('--pct',pct);
+  const tip=document.getElementById('all-vol-tip');
+  tip.style.left=pct; tip.textContent=v; tip.classList.add('visible');
+  clearTimeout(allVolTT); allVolTT=setTimeout(()=>tip.classList.remove('visible'),1200);
+}
+function sendAllVol(v) { fetch(`/api/volume/all?value=${v}`); }
+function nudgeAllVol(delta) {
+  const s=document.getElementById('all-vol-slider');
+  const v=Math.min(100,Math.max(0,parseInt(s.value)+delta));
+  s.value=v; onAllVolInput(v); sendAllVol(v);
+}
+
+// ── Scenes ────────────────────────────────────────────────────────────────────
+async function loadScenes() {
+  const el=document.getElementById('scenes-list');
+  if(!el)return;
+  try {
+    const scenes=await(await fetch('/api/scenes')).json();
+    if(!scenes.length){
+      el.innerHTML='<p style="font-size:12px;color:var(--fg3);margin-bottom:10px">No scenes saved yet.</p>';
+      return;
+    }
+    el.innerHTML=scenes.map(s=>`
+      <div class="manage-card">
+        <div class="mc-left">
+          <div class="mc-name">${s.name}</div>
+          <div class="mc-meta">Preset ${s.preset} · ${[s.master,...(s.slaves||[])].length} speaker(s)</div>
+        </div>
+        <div class="mc-actions">
+          <button class="mc-btn primary" onclick="activateScene('${s.id}')">Play</button>
+          <button class="mc-btn danger" onclick="deleteScene('${s.id}')">✕</button>
+        </div>
+      </div>`).join('');
+  }catch(e){}
+}
+
+async function saveScene() {
+  if(!activeHost){toast('Select a speaker first');return;}
+  const name=document.getElementById('scene-name-input').value.trim();
+  if(!name){toast('Enter a scene name');return;}
+  const presetSlot=parseInt(document.getElementById('scene-preset-input').value)||1;
+  // Capture zone members
+  let slaves=[];
+  try{const z=await(await fetch('/api/group?host='+activeHost)).json();
+      slaves=(z.members||[]).map(m=>m.ip).filter(ip=>ip!==activeHost);}catch(e){}
+  // Capture volumes
+  const hosts=[activeHost,...slaves];
+  const volumes={};
+  await Promise.all(hosts.map(async h=>{
+    try{const st=await(await fetch('/api/state?host='+h)).json(); volumes[h]=st.volume||30;}catch(e){}
+  }));
+  try{
+    await fetch('/api/scenes',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name,master:activeHost,slaves,volumes,preset:presetSlot})});
+    document.getElementById('scene-name-input').value='';
+    toast('Scene saved'); loadScenes();
+  }catch(e){toast('Failed to save scene');}
+}
+
+async function activateScene(id) {
+  try{
+    const d=await(await fetch('/api/scenes/activate?id='+id)).json();
+    toast(d.ok?'Scene activated':'Could not activate scene');
+    if(d.ok)setTimeout(pollNow,1200);
+  }catch(e){toast('Failed');}
+}
+
+async function deleteScene(id) {
+  if(!confirm('Delete this scene?'))return;
+  await fetch('/api/scenes/delete?id='+id);
+  toast('Scene deleted'); loadScenes();
+}
+
+// ── Alarms ────────────────────────────────────────────────────────────────────
+const ALARM_DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+function updateAlarmSpeakerName() {
+  const el=document.getElementById('alarm-speaker-name');
+  if(!el)return;
+  const sp=speakers.find(s=>s.host===activeHost);
+  el.textContent=sp?sp.name:(activeHost||'None selected');
+}
+
+async function loadAlarms() {
+  const el=document.getElementById('alarms-list');
+  if(!el)return;
+  updateAlarmSpeakerName();
+  try{
+    const alarms=await(await fetch('/api/alarms')).json();
+    if(!alarms.length){
+      el.innerHTML='<p style="font-size:12px;color:var(--fg3);margin-bottom:10px">No alarms set.</p>';
+      return;
+    }
+    el.innerHTML=alarms.map(a=>{
+      const dayStr=a.days.length===7?'Every day':
+        (a.days.length===5&&!a.days.includes(5)&&!a.days.includes(6)?'Weekdays':
+         a.days.map(d=>ALARM_DAYS[d]).join(', '));
+      const spk=speakers.find(s=>s.host===a.host);
+      return`<div class="manage-card">
+        <div class="mc-left">
+          <div class="mc-name">${a.name} · ${a.time}</div>
+          <div class="mc-meta">${spk?spk.name:a.host} · Preset ${a.preset} · ${dayStr}${a.volume!=null?' · Vol '+a.volume:''}</div>
+        </div>
+        <div class="mc-actions">
+          <button class="mc-btn${a.enabled?' primary':''}" onclick="toggleAlarm('${a.id}',${!a.enabled})">${a.enabled?'On':'Off'}</button>
+          <button class="mc-btn danger" onclick="deleteAlarm('${a.id}')">✕</button>
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){}
+}
+
+async function addAlarm() {
+  if(!activeHost){toast('Select a speaker first');return;}
+  const time=document.getElementById('alarm-time').value;
+  if(!time){toast('Set a time');return;}
+  const days=[];
+  document.querySelectorAll('.alarm-day-chk:checked').forEach(cb=>days.push(parseInt(cb.value)));
+  if(!days.length){toast('Select at least one day');return;}
+  const name=document.getElementById('alarm-name').value.trim()||'Alarm';
+  const preset=parseInt(document.getElementById('alarm-preset').value)||1;
+  const volRaw=document.getElementById('alarm-vol').value;
+  const volume=volRaw!==''?parseInt(volRaw):null;
+  try{
+    await fetch('/api/alarms',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name,host:activeHost,preset,time,days,volume})});
+    document.getElementById('alarm-name').value='';
+    toast('Alarm saved'); loadAlarms();
+  }catch(e){toast('Failed to save alarm');}
+}
+
+async function deleteAlarm(id) {
+  if(!confirm('Delete this alarm?'))return;
+  await fetch('/api/alarms/delete?id='+id);
+  toast('Alarm deleted'); loadAlarms();
+}
+
+async function toggleAlarm(id,enabled) {
+  await fetch(`/api/alarms/toggle?id=${id}&enabled=${enabled}`);
+  loadAlarms();
+}
 </script>
 </body>
 </html>
@@ -2388,6 +2812,85 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._respond(404, "text/plain", b"Station not found")
 
+        # ── all-speaker volume ────────────────────────────────────────────────
+        elif path == "/api/volume/all":
+            value = qs.get("value", [None])[0]
+            if value:
+                for dev in list(self.server_state.devices):
+                    try: dev.set_volume(value)
+                    except Exception: pass
+            self._json({"ok": bool(value)})
+
+        # ── scenes ────────────────────────────────────────────────────────────
+        elif path == "/api/scenes":
+            self._json(self.server_state.scene_store.list_scenes())
+
+        elif path == "/api/scenes/delete":
+            sid = qs.get("id", [""])[0]
+            self.server_state.scene_store.delete(sid)
+            self._json({"ok": True})
+
+        elif path == "/api/scenes/activate":
+            sid   = qs.get("id", [""])[0]
+            scene = self.server_state.scene_store.load(sid)
+            if not scene:
+                self._json({"ok": False, "error": "not_found"})
+            else:
+                master_host = scene.get("master")
+                slave_hosts = scene.get("slaves", [])
+                master_dev  = self.server_state.get_device(master_host)
+                if not master_dev:
+                    self._json({"ok": False, "error": "master_not_found"})
+                else:
+                    slave_devs = [self.server_state.get_device(h) for h in slave_hosts]
+                    slave_devs = [d for d in slave_devs if d]
+                    if slave_devs:
+                        master_dev.set_zone(slave_devs)
+                        for d in [master_dev] + slave_devs: d.invalidate_zone_cache()
+                    for host, vol in scene.get("volumes", {}).items():
+                        d = self.server_state.get_device(host)
+                        if d: d.set_volume(vol)
+                    time.sleep(0.3)
+                    master_dev.preset(scene.get("preset", 1))
+                    log.info(f"[SCENE] Activated '{scene.get('name')}' on {master_host}")
+                    self._json({"ok": True})
+
+        # ── alarms ────────────────────────────────────────────────────────────
+        elif path == "/api/alarms":
+            self._json(self.server_state.alarm_store.list_alarms())
+
+        elif path == "/api/alarms/delete":
+            aid = qs.get("id", [""])[0]
+            self.server_state.alarm_store.delete_alarm(aid)
+            self._json({"ok": True})
+
+        elif path == "/api/alarms/toggle":
+            aid     = qs.get("id", [""])[0]
+            enabled = qs.get("enabled", ["true"])[0].lower() == "true"
+            self.server_state.alarm_store.toggle_alarm(aid, enabled)
+            self._json({"ok": True})
+
+        # ── PWA manifest + service worker + icon ──────────────────────────────
+        elif path == "/manifest.json":
+            manifest = {
+                "name": "SoundTouch", "short_name": "SoundTouch",
+                "description": "Bose SoundTouch local controller",
+                "start_url": "/", "display": "standalone",
+                "orientation": "portrait",
+                "background_color": "#0b0c11", "theme_color": "#0b0c11",
+                "icons": [{"src": "/icon.svg", "type": "image/svg+xml",
+                           "sizes": "any", "purpose": "any maskable"}],
+            }
+            self._respond(200, "application/manifest+json",
+                          json.dumps(manifest).encode())
+
+        elif path == "/sw.js":
+            self._respond(200, "application/javascript; charset=utf-8",
+                          SW_JS.encode())
+
+        elif path == "/icon.svg":
+            self._respond(200, "image/svg+xml", ICON_SVG.encode())
+
         else:
             self._respond(404, "text/plain", b"Not found")
 
@@ -2416,6 +2919,50 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok":True,"id":sid})
             except Exception as e:
                 self._json({"ok":False,"error":str(e)})
+
+        elif path == "/api/scenes":
+            try:
+                data = json.loads(body)
+                name = data.get("name", "").strip()
+                if not name:
+                    self._json({"ok": False, "error": "name required"})
+                else:
+                    sid = "scene_" + name.lower().replace(" ", "_")[:20] + "_" + str(int(time.time()))[-5:]
+                    scene = {
+                        "id":      sid,
+                        "name":    name,
+                        "master":  data.get("master"),
+                        "slaves":  data.get("slaves", []),
+                        "volumes": data.get("volumes", {}),
+                        "preset":  int(data.get("preset", 1)),
+                        "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    }
+                    self.server_state.scene_store.save(sid, scene)
+                    log.info(f"[SCENE] Saved '{name}'")
+                    self._json({"ok": True, "id": sid})
+            except Exception as e:
+                self._json({"ok": False, "error": str(e)})
+
+        elif path == "/api/alarms":
+            try:
+                data    = json.loads(body)
+                alarm_id = "alarm_" + str(int(time.time()))
+                alarm = {
+                    "id":      alarm_id,
+                    "name":    data.get("name", "Alarm").strip() or "Alarm",
+                    "host":    data.get("host"),
+                    "preset":  int(data.get("preset", 1)),
+                    "time":    data.get("time", "07:00"),
+                    "days":    [int(d) for d in data.get("days", list(range(7)))],
+                    "enabled": True,
+                    "volume":  int(data["volume"]) if data.get("volume") not in (None, "") else None,
+                }
+                self.server_state.alarm_store.save_alarm(alarm)
+                log.info(f"[ALARM] Saved '{alarm['name']}' at {alarm['time']}")
+                self._json({"ok": True, "id": alarm_id})
+            except Exception as e:
+                self._json({"ok": False, "error": str(e)})
+
         else:
             self._respond(404, "text/plain", b"Not found")
 
@@ -2447,10 +2994,13 @@ class Handler(BaseHTTPRequestHandler):
 
 class AppState:
     def __init__(self, web_port=WEB_PORT):
-        self.devices  = []
-        self._lock    = threading.Lock()
-        self.store    = PresetStore()
-        self.web_port = web_port
+        self.devices      = []
+        self._lock        = threading.Lock()
+        self.store        = PresetStore()
+        self.scene_store  = SceneStore()
+        self.alarm_store  = AlarmStore()
+        self.scheduler    = None   # set in main() after state is created
+        self.web_port     = web_port
 
     def scan(self):
         log.info("Scanning network…")
@@ -2546,6 +3096,7 @@ Examples:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PRESETS_DIR.mkdir(parents=True, exist_ok=True)
     STATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    SCENES_DIR.mkdir(parents=True, exist_ok=True)
 
     local_ip = get_local_ip()
     url      = f"http://{local_ip}:{args.port}"
@@ -2565,6 +3116,7 @@ Examples:
     _check_network(args.port)
 
     state = AppState(web_port=args.port)
+    state.scheduler = AlarmScheduler(state.alarm_store, state)
     Handler.server_state = state
 
     if not args.daemon:
