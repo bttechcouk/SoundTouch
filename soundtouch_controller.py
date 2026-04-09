@@ -2176,12 +2176,20 @@ async function checkPresetHealth() {
     const cards = d.presets.map(p => {
       const srcLine = p.label ? `${p.label} (${p.source})` : (p.source || 'Empty slot');
       const sug = p.suggestion ? `<div class="health-sug">→ ${p.suggestion}</div>` : '';
+      const isDirectUrl = /^https?:\/\//i.test(p.location||'');
+      const replBtn = (p.risk==='high'||p.risk==='unknown') ? `
+        <button class="mc-btn health-replace-btn"
+          onclick="prefillCustomStation(${JSON.stringify(p.name||'')},${JSON.stringify(p.location||'')},${JSON.stringify(isDirectUrl)})"
+          style="margin-top:6px;font-size:10px;padding:4px 8px">
+          + Use as Custom Station template
+        </button>` : '';
       return `<div class="health-card risk-${p.risk}">
         <div class="health-dot"></div>
-        <div>
+        <div style="flex:1;min-width:0">
           <div class="health-name">Preset ${p.id}${p.name?' — '+p.name:''}</div>
           <div class="health-source">${srcLine}</div>
           ${sug}
+          ${replBtn}
         </div>
       </div>`;
     }).join('');
@@ -2191,6 +2199,34 @@ async function checkPresetHealth() {
     box.style.display = 'block';
   } catch(e) { toast('Health check failed'); }
   finally { btn.textContent = '● Health Check'; btn.disabled = false; }
+}
+
+function prefillCustomStation(name, location, isDirectUrl) {
+  // Make sure we're on the Presets tab and stations section is open
+  switchTab('manage');
+  const body  = document.getElementById('sec-stations');
+  const chev  = document.getElementById('chev-stations');
+  if (body && body.style.display === 'none') {
+    body.style.display = 'block';
+    if (chev) chev.classList.add('open');
+    loadStations();
+  }
+  // Fill the form
+  document.getElementById('st-name').value = name;
+  document.getElementById('st-url').value  = isDirectUrl ? location : '';
+  document.getElementById('st-art').value  = '';
+  // Scroll add form into view and focus the URL field
+  const form = document.getElementById('add-form');
+  if (form) form.scrollIntoView({behavior:'smooth', block:'center'});
+  const urlField = document.getElementById('st-url');
+  if (urlField) {
+    urlField.focus();
+    if (!isDirectUrl && location) {
+      toast('Name pre-filled — paste a direct HTTP stream URL to replace the cloud source');
+    } else if (isDirectUrl) {
+      toast('Form pre-filled — review then click Add Station');
+    }
+  }
 }
 
 // ── Custom stations ──────────────────────────────────────────────────────────
@@ -2954,18 +2990,23 @@ class Handler(BaseHTTPRequestHandler):
                 name = p.get("name") or ""
                 if not src or not name:
                     result.append({"id": p.get("id",""), "name": name or f"Preset {p.get('id','')}",
-                                   "source": src, "risk": "empty", "label": "", "suggestion": ""})
+                                   "source": src, "risk": "empty", "label": "", "suggestion": "",
+                                   "location": ""})
                     continue
+                loc = p.get("location") or ""
                 if src in CLOUD_SOURCES:
                     lbl, sug = CLOUD_SOURCES[src]
                     result.append({"id": p.get("id",""), "name": name, "source": src,
-                                   "risk": "high", "label": lbl, "suggestion": sug})
+                                   "risk": "high", "label": lbl, "suggestion": sug,
+                                   "location": loc})
                 elif src in SAFE_SOURCES:
                     result.append({"id": p.get("id",""), "name": name, "source": src,
-                                   "risk": "safe", "label": src.replace("_"," ").title(), "suggestion": ""})
+                                   "risk": "safe", "label": src.replace("_"," ").title(), "suggestion": "",
+                                   "location": loc})
                 else:
                     result.append({"id": p.get("id",""), "name": name, "source": src,
-                                   "risk": "unknown", "label": src, "suggestion": "Source type unknown — verify it will still work after the Bose cloud shutdown"})
+                                   "risk": "unknown", "label": src, "suggestion": "Source type unknown — verify it will still work after the Bose cloud shutdown",
+                                   "location": loc})
             at_risk = sum(1 for r in result if r["risk"] == "high")
             self._json({"presets": result, "at_risk": at_risk, "total": len(result),
                         "data_source": source_label})
