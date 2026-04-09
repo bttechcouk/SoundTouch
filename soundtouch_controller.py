@@ -1795,11 +1795,18 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
+function collapseAll(pageId) {
+  const page = document.getElementById(pageId);
+  if (!page) return;
+  page.querySelectorAll('.qr-body').forEach(b => b.style.display = 'none');
+  page.querySelectorAll('.qr-chevron').forEach(c => c.classList.remove('open'));
+}
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t =>
     t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.page').forEach(p =>
     p.classList.toggle('visible', p.id === 'page-' + name));
+  collapseAll('page-' + name);
   if (name === 'manage')   { /* sections load on expand */ }
   if (name === 'groups')   { loadGroups(); }
   if (name === 'settings') { /* sections load on expand */ }
