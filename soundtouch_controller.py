@@ -2263,7 +2263,7 @@ async function searchStationStream(nameOverride) {
       <div class="sr-item" onclick="pickStreamResult(${i})">
         ${s.favicon ? `<img class="sr-logo" src="${s.favicon}" onerror="this.style.display='none'">` : '<div class="sr-logo"></div>'}
         <div class="sr-info">
-          <div class="sr-name">${s.name}</div>
+          <div class="sr-name">${s.name} <span style="font-size:9px;opacity:.5;font-weight:400">${s.source||''}</span></div>
           <div class="sr-meta">${[s.country, s.bitrate?s.bitrate+'kbps':'', s.codec].filter(Boolean).join(' · ')}</div>
           <div class="sr-meta" style="font-size:9px;opacity:.6">${s.url}</div>
         </div>
@@ -3097,60 +3097,82 @@ class Handler(BaseHTTPRequestHandler):
             if not q:
                 self._json([]); return
             try:
-                # Step 1 — search TuneIn for matching stations
-                search_url = (f"http://opml.radiotime.com/Search.ashx"
-                              f"?query={urlquote(q)}&render=json&type=station")
-                sr = requests.get(search_url, timeout=6,
-                                  headers={"User-Agent": "SoundTouchController/1.0"})
-                body = sr.json().get("body", [])
-                # Flatten nested categories; keep only audio station entries
-                stations = []
-                def _collect(items):
-                    for item in (items or []):
-                        if item.get("type") == "audio" and item.get("item") == "station":
-                            stations.append(item)
-                        elif item.get("children"):
-                            _collect(item["children"])
-                _collect(body)
-                stations = stations[:8]
+                ua = {"User-Agent": "SoundTouchController/1.0"}
 
-                # Step 2 — resolve each station's direct stream URL in parallel
-                def _resolve(st):
-                    gid = st.get("guide_id","")
-                    if not gid:
-                        return None
-                    try:
-                        tr = requests.get(
-                            f"http://opml.radiotime.com/Tune.ashx?id={gid}&render=json",
-                            timeout=4,
-                            headers={"User-Agent": "SoundTouchController/1.0"})
-                        # Tune.ashx body uses element="audio" and key "url" (lowercase)
-                        streams = [b for b in tr.json().get("body",[])
-                                   if b.get("element") == "audio" and (b.get("url") or b.get("URL"))]
-                        def _url(b): return b.get("url") or b.get("URL","")
-                        # SoundTouch firmware cannot connect to HTTPS — HTTP only
-                        # Also skip TuneIn's "not compatible" placeholder URLs
-                        def _usable(b):
-                            u = _url(b)
-                            return u.startswith("http://") and "notcompatible" not in u
-                        http_s = [s for s in streams if _usable(s)]
-                        if not http_s:
-                            return None  # no usable HTTP stream, skip this station
-                        stream_url = _url(http_s[0])
-                        return {
-                            "name":    st.get("text","").strip(),
-                            "url":     stream_url,
-                            "country": st.get("subtext",""),
-                            "bitrate": st.get("bitrate",""),
-                            "codec":   st.get("formats",""),
-                            "favicon": st.get("image",""),
-                        }
-                    except Exception:
-                        return None
+                def _search_tunein(query):
+                    """Search TuneIn OPML API and resolve direct HTTP stream URLs."""
+                    sr = requests.get(
+                        f"http://opml.radiotime.com/Search.ashx"
+                        f"?query={urlquote(query)}&render=json&type=station",
+                        timeout=6, headers=ua)
+                    body = sr.json().get("body", [])
+                    stations = []
+                    def _collect(items):
+                        for item in (items or []):
+                            if item.get("type") == "audio" and item.get("item") == "station":
+                                stations.append(item)
+                            elif item.get("children"):
+                                _collect(item["children"])
+                    _collect(body)
+                    def _resolve(st):
+                        gid = st.get("guide_id","")
+                        if not gid: return None
+                        try:
+                            tr = requests.get(
+                                f"http://opml.radiotime.com/Tune.ashx?id={gid}&render=json",
+                                timeout=4, headers=ua)
+                            streams = [b for b in tr.json().get("body",[])
+                                       if b.get("element") == "audio"]
+                            def _u(b): return b.get("url") or b.get("URL","")
+                            http_s = [s for s in streams
+                                      if _u(s).startswith("http://") and "notcompatible" not in _u(s)]
+                            if not http_s: return None
+                            return {"name": st.get("text","").strip(), "url": _u(http_s[0]),
+                                    "country": st.get("subtext",""), "bitrate": st.get("bitrate",""),
+                                    "codec": st.get("formats",""), "favicon": st.get("image",""),
+                                    "source": "TuneIn"}
+                        except Exception: return None
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+                        return [r for r in ex.map(_resolve, stations[:8]) if r]
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
-                    resolved = list(ex.map(_resolve, stations))
-                self._json([r for r in resolved if r])
+                def _search_radiobrowser(query):
+                    """Search RadioBrowser — open community directory, HTTP streams only."""
+                    r = requests.get(
+                        f"https://de1.api.radio-browser.info/json/stations/search"
+                        f"?name={urlquote(query)}&limit=8&hidebroken=true"
+                        f"&order=votes&reverse=true",
+                        timeout=6, headers=ua)
+                    results = []
+                    for s in r.json():
+                        url = s.get("url_resolved") or s.get("url","")
+                        if not url.startswith("http://"): continue
+                        results.append({
+                            "name":    s.get("name","").strip(),
+                            "url":     url,
+                            "country": s.get("country",""),
+                            "bitrate": str(s.get("bitrate","") or ""),
+                            "codec":   s.get("codec",""),
+                            "favicon": s.get("favicon",""),
+                            "source":  "RadioBrowser",
+                        })
+                    return results
+
+                # Run both searches in parallel
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+                    f_tunein = ex.submit(_search_tunein, q)
+                    f_rb     = ex.submit(_search_radiobrowser, q)
+                    tunein_results = f_tunein.result()
+                    rb_results     = f_rb.result()
+
+                # Merge: TuneIn first, then RadioBrowser; skip RadioBrowser duplicates by name
+                seen = {r["name"].lower() for r in tunein_results}
+                merged = tunein_results[:]
+                for r in rb_results:
+                    if r["name"].lower() not in seen:
+                        merged.append(r)
+                        seen.add(r["name"].lower())
+
+                self._json(merged)
             except Exception as e:
                 self._json({"error": str(e)})
 
