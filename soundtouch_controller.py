@@ -49,9 +49,27 @@ LOG_FILE      = pathlib.Path(__file__).parent / "soundtouch.log"
 SCENES_DIR    = DATA_DIR / "scenes"
 ALARMS_FILE   = DATA_DIR / "alarms.json"
 
+# Sources that route through the Bose cloud — will break on 6 May 2026
+CLOUD_SOURCES = {
+    "TUNEIN":          ("TuneIn Radio",     "Replace with a Custom Radio Station using a direct stream URL"),
+    "AMAZON":          ("Amazon Music",     "Amazon Music presets require the Bose cloud — replace with Bluetooth or a local stream"),
+    "DEEZER":          ("Deezer",           "Deezer presets require the Bose cloud — replace with a local stream"),
+    "PANDORA":         ("Pandora",          "Pandora presets require the Bose cloud — replace with a local stream"),
+    "NAPSTER":         ("Napster",          "Napster presets require the Bose cloud — replace with a local stream"),
+    "IHEART":          ("iHeartRadio",      "Replace with a Custom Radio Station using the station's direct stream URL"),
+    "TIDAL":           ("Tidal",            "Tidal presets require the Bose cloud — replace with a local stream"),
+    "SIRIUSXM":        ("SiriusXM",         "SiriusXM presets require the Bose cloud — replace with a local stream"),
+    "SOUNDCLOUD":      ("SoundCloud",       "SoundCloud presets require the Bose cloud — replace with a local stream"),
+    "INTERNET_RADIO":  ("Internet Radio",   "Bose Internet Radio presets are cloud-routed — replace with a Custom Radio Station"),
+    "SPOTIFY":         ("Spotify",          "Spotify presets are recalled via the Bose cloud — replace with Bluetooth or Spotify Connect"),
+}
+# Sources that are fully local and will continue to work after shutdown
+SAFE_SOURCES = {"LOCAL_INTERNET_RADIO", "BLUETOOTH", "AUX", "AIRPLAY", "TV",
+                "STORED_MUSIC", "PRODUCT", "STANDBY"}
+
 # ── PWA service worker (served at /sw.js) ───────────────────────────────────
 SW_JS = r"""
-const CACHE='soundtouch-v2';
+const CACHE='soundtouch-v3';
 self.addEventListener('install',e=>{
   e.waitUntil(caches.open(CACHE).then(c=>c.addAll(['/'])));
   self.skipWaiting();
@@ -1126,6 +1144,26 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 .mc-btn.primary{background:var(--blue-dim);color:var(--blue-light);border-color:var(--blue)}
 .mc-btn.primary:active{background:var(--blue);color:var(--white)}
 .mc-btn.danger{border-color:var(--amber-dim);color:var(--amber)}
+/* Preset health check */
+.health-summary{font-size:12px;font-weight:600;padding:8px 12px;border-radius:8px;
+  margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.health-summary.all-safe{background:rgba(34,197,94,.12);color:#4ade80;border:1px solid rgba(34,197,94,.3)}
+.health-summary.has-risk{background:rgba(239,68,68,.12);color:#f87171;border:1px solid rgba(239,68,68,.3)}
+.health-card{border-radius:8px;padding:10px 12px;margin-bottom:6px;
+  display:flex;align-items:flex-start;gap:10px;border:1px solid transparent}
+.health-card.risk-high{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.25)}
+.health-card.risk-safe{background:rgba(34,197,94,.06);border-color:rgba(34,197,94,.2)}
+.health-card.risk-empty{background:var(--surface);border-color:var(--border);opacity:.55}
+.health-card.risk-unknown{background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.25)}
+.health-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-top:4px}
+.risk-high .health-dot{background:#f87171}
+.risk-safe .health-dot{background:#4ade80}
+.risk-empty .health-dot{background:var(--fg3)}
+.risk-unknown .health-dot{background:#fbbf24}
+.health-name{font-size:13px;font-weight:600;color:var(--fg);line-height:1.3}
+.health-source{font-size:11px;color:var(--fg3);margin-top:1px}
+.health-sug{font-size:11px;color:#f87171;margin-top:4px;line-height:1.4}
+#btn-health-check{color:#4ade80}
 
 /* Add station form */
 .add-form{background:var(--surface);border:1px solid var(--border);
@@ -1649,9 +1687,11 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
             <button class="mc-btn primary" onclick="backupPresets()">Backup Now</button>
             <button class="mc-btn" onclick="restorePresets()">Restore to Speaker</button>
             <button class="mc-btn" onclick="openBackupEditor()">Open / Edit JSON</button>
+            <button class="mc-btn" onclick="checkPresetHealth()" id="btn-health-check">&#9679; Health Check</button>
           </div>
           <div id="backup-status" style="font-size:12px;color:var(--fg3);margin-top:10px"></div>
           <div id="backup-list" style="margin-top:12px"></div>
+          <div id="health-results" style="margin-top:12px;display:none"></div>
         </div>
       </div>
 
@@ -2117,6 +2157,40 @@ async function loadBackupInfo() {
       document.getElementById('backup-list').innerHTML = '';
     }
   } catch(e){}
+}
+
+// ── Preset health check ──────────────────────────────────────────────────────
+async function checkPresetHealth() {
+  if (!activeHost) { toast('Select a speaker first'); return; }
+  const btn = document.getElementById('btn-health-check');
+  const box = document.getElementById('health-results');
+  btn.textContent = 'Checking…'; btn.disabled = true;
+  box.style.display = 'none'; box.innerHTML = '';
+  try {
+    const d = await (await fetch(`/api/presets/health?host=${activeHost}`)).json();
+    if (d.error) { toast('Could not fetch preset data'); return; }
+    const riskIcons = {high:'⚠', safe:'✓', empty:'–', unknown:'?'};
+    const summary = d.at_risk === 0
+      ? `<div class="health-summary all-safe">✓ All ${d.total} presets are safe — no cloud dependency</div>`
+      : `<div class="health-summary has-risk">⚠ ${d.at_risk} of ${d.total} preset${d.at_risk>1?'s':''} at risk — will stop working after the Bose cloud shuts down on 6 May 2026</div>`;
+    const cards = d.presets.map(p => {
+      const srcLine = p.label ? `${p.label} (${p.source})` : (p.source || 'Empty slot');
+      const sug = p.suggestion ? `<div class="health-sug">→ ${p.suggestion}</div>` : '';
+      return `<div class="health-card risk-${p.risk}">
+        <div class="health-dot"></div>
+        <div>
+          <div class="health-name">Preset ${p.id}${p.name?' — '+p.name:''}</div>
+          <div class="health-source">${srcLine}</div>
+          ${sug}
+        </div>
+      </div>`;
+    }).join('');
+    const note = d.data_source === 'backup'
+      ? '<p style="font-size:11px;color:var(--fg3);margin-bottom:8px">⚠ Speaker offline — results based on last backup</p>' : '';
+    box.innerHTML = note + summary + cards;
+    box.style.display = 'block';
+  } catch(e) { toast('Health check failed'); }
+  finally { btn.textContent = '● Health Check'; btn.disabled = false; }
 }
 
 // ── Custom stations ──────────────────────────────────────────────────────────
@@ -2854,6 +2928,47 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(data)
             else:
                 self._json({"error": "no_backup"})
+
+        elif path == "/api/presets/health":
+            host = qs.get("host", [None])[0]
+            dev  = self.server_state.get_device(host)
+            # try live fetch first, fall back to saved backup
+            presets = None
+            source_label = "live"
+            if dev:
+                try:
+                    dev.invalidate_preset_cache()
+                    presets = dev.get_presets_detail()
+                except Exception:
+                    presets = None
+            if not presets:
+                backup = self.server_state.store.load_backup(host)
+                if backup:
+                    presets = backup.get("presets", [])
+                    source_label = "backup"
+            if presets is None:
+                self._json({"error": "no_data"}); return
+            result = []
+            for p in presets:
+                src  = (p.get("source") or "").upper()
+                name = p.get("name") or ""
+                if not src or not name:
+                    result.append({"id": p.get("id",""), "name": name or f"Preset {p.get('id','')}",
+                                   "source": src, "risk": "empty", "label": "", "suggestion": ""})
+                    continue
+                if src in CLOUD_SOURCES:
+                    lbl, sug = CLOUD_SOURCES[src]
+                    result.append({"id": p.get("id",""), "name": name, "source": src,
+                                   "risk": "high", "label": lbl, "suggestion": sug})
+                elif src in SAFE_SOURCES:
+                    result.append({"id": p.get("id",""), "name": name, "source": src,
+                                   "risk": "safe", "label": src.replace("_"," ").title(), "suggestion": ""})
+                else:
+                    result.append({"id": p.get("id",""), "name": name, "source": src,
+                                   "risk": "unknown", "label": src, "suggestion": "Source type unknown — verify it will still work after the Bose cloud shutdown"})
+            at_risk = sum(1 for r in result if r["risk"] == "high")
+            self._json({"presets": result, "at_risk": at_risk, "total": len(result),
+                        "data_source": source_label})
 
         elif path == "/api/presets/backup-info":
             host = qs.get("host",[None])[0]
