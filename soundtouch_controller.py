@@ -3147,6 +3147,32 @@ input[type=range].wall-vol::-moz-range-thumb{
   font-size:13px;color:var(--fg3);letter-spacing:.05em;
   backdrop-filter:blur(2px);
 }
+.room-card{cursor:pointer}
+.room-card.selected{border-color:var(--blue);box-shadow:0 0 0 1px var(--blue),0 0 18px var(--blue-glow)}
+.room-card.selected .card-room{color:var(--blue-light)}
+
+/* ── Header preset bar ────────────────────────── */
+#preset-bar{
+  display:flex;align-items:center;gap:8px;
+  flex:1;justify-content:center;
+  padding:0 24px;
+}
+#preset-bar-label{
+  font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--fg3);white-space:nowrap;margin-right:4px;
+}
+.hdr-preset{
+  background:var(--surface2);border:1px solid var(--border);
+  color:var(--fg2);border-radius:10px;
+  padding:6px 14px;font-size:12px;font-weight:600;
+  cursor:pointer;white-space:nowrap;max-width:130px;
+  overflow:hidden;text-overflow:ellipsis;
+  transition:background .15s,border-color .15s,color .15s;
+  flex-shrink:1;
+}
+.hdr-preset:hover{background:var(--surface);color:var(--fg);border-color:var(--blue)}
+.hdr-preset:active{border-color:var(--blue-light);color:var(--blue-light)}
+.hdr-preset.empty{opacity:.3;pointer-events:none}
 </style>
 </head>
 <body>
@@ -3160,7 +3186,10 @@ input[type=range].wall-vol::-moz-range-thumb{
     </svg>
     <span id="header-title">SoundTouch</span>
   </div>
-  <div style="text-align:right">
+  <div id="preset-bar">
+    <span id="preset-bar-label" style="display:none"></span>
+  </div>
+  <div style="text-align:right;flex-shrink:0">
     <div id="clock">--:--</div>
     <div id="date-line"></div>
   </div>
@@ -3186,11 +3215,41 @@ function tickClock(){
 tickClock(); setInterval(tickClock,10000);
 
 // ── State ──────────────────────────────────────────────────────────────────
-let speakers=[], lastState={};
+let speakers=[], lastState={}, activeHost=null;
 
 async function api(url){
   try{const r=await fetch(url); return r.ok?await r.json():null;}
   catch{return null;}
+}
+
+// ── Card selection & presets ───────────────────────────────────────────────
+function selectCard(host){
+  activeHost=host;
+  document.querySelectorAll('.room-card').forEach(c=>c.classList.remove('selected'));
+  const card=document.getElementById('card-'+host.replace(/\./g,'_'));
+  if(card) card.classList.add('selected');
+  renderPresets();
+}
+
+function renderPresets(){
+  const bar=document.getElementById('preset-bar');
+  const label=document.getElementById('preset-bar-label');
+  // remove old preset buttons (keep label)
+  bar.querySelectorAll('.hdr-preset').forEach(b=>b.remove());
+  if(!activeHost){label.style.display='none'; return;}
+  const d=lastState[activeHost];
+  const sp=speakers.find(s=>s.host===activeHost);
+  if(sp){label.textContent=sp.name; label.style.display='';}
+  const presets=(d&&d.presets)||[];
+  for(let i=0;i<6;i++){
+    const nm=presets[i]?.name||'';
+    const btn=document.createElement('button');
+    btn.className='hdr-preset'+(nm?'':' empty');
+    btn.textContent=nm||`Preset ${i+1}`;
+    btn.title=nm||`Preset ${i+1}`;
+    if(nm) btn.onclick=()=>cmd(activeHost,'preset'+(i+1));
+    bar.appendChild(btn);
+  }
 }
 
 // ── Card builder ───────────────────────────────────────────────────────────
@@ -3198,6 +3257,11 @@ function buildCard(sp){
   const id=sp.host.replace(/\./g,'_');
   const card=document.createElement('div');
   card.className='room-card'; card.id='card-'+id;
+  card.addEventListener('click',e=>{
+    // ignore clicks on interactive controls
+    if(e.target.closest('button,input')) return;
+    selectCard(sp.host);
+  });
   card.innerHTML=`
     <div class="card-bg" id="bg-${id}"></div>
     <div class="card-room">${sp.name}</div>
@@ -3369,8 +3433,9 @@ function sendVol(el,host){ cmd(host,'volume',el.value); }
 async function pollOne(host){
   const d=await api('/api/state?host='+host);
   lastState[host]=d; applyCard(host,d);
+  if(host===activeHost) renderPresets();
 }
-function pollAll(){ speakers.forEach(s=>pollOne(s.host)); }
+function pollAll(){ return Promise.all(speakers.map(s=>pollOne(s.host))); }
 
 // ── Init ───────────────────────────────────────────────────────────────────
 async function init(){
@@ -3390,7 +3455,9 @@ async function init(){
     grid.appendChild(card);
   });
 
-  pollAll();
+  pollAll().then(()=>{
+    if(speakers.length) selectCard(speakers[0].host);
+  });
   setInterval(pollAll, 4000);
 }
 
