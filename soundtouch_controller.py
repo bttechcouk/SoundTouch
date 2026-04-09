@@ -2940,6 +2940,533 @@ async function deleteSceneModal(id) {
 </html>
 """
 
+WALL_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>SoundTouch — Wall Panel</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d0d0f;
+  --surface:#18181c;
+  --surface2:#222228;
+  --border:#2a2a32;
+  --fg:#e8e8f0;
+  --fg2:#a0a0b8;
+  --fg3:#5a5a72;
+  --blue:#2277ee;
+  --blue-light:#60a5fa;
+  --blue-glow:rgba(34,119,238,.35);
+  --amber:#f59e0b;
+  --amber-dim:#92600a;
+  --silver:#c8c8d8;
+  --radius:16px;
+}
+html,body{height:100%;background:var(--bg);color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  overflow:hidden}
+
+/* ── Header ───────────────────────────────────── */
+#header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:16px 28px 12px;
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;
+}
+#header-logo{display:flex;align-items:center;gap:10px}
+#header-logo svg{opacity:.7}
+#header-title{font-size:15px;font-weight:700;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--fg2)}
+#clock{font-size:28px;font-weight:300;letter-spacing:.04em;
+  font-variant-numeric:tabular-nums;color:var(--fg)}
+#date-line{font-size:11px;color:var(--fg3);text-align:right;margin-top:2px;
+  letter-spacing:.04em}
+
+/* ── Grid ─────────────────────────────────────── */
+#grid{
+  display:grid;
+  gap:16px;
+  padding:16px 20px 20px;
+  flex:1;
+  overflow:hidden;
+  /* columns set by JS based on speaker count */
+}
+body{display:flex;flex-direction:column;height:100vh}
+
+/* ── Room card ────────────────────────────────── */
+.room-card{
+  position:relative;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+  transition:border-color .3s;
+}
+.room-card.playing{border-color:rgba(34,119,238,.4)}
+
+/* blurred art backdrop */
+.card-bg{
+  position:absolute;inset:0;
+  background-size:cover;background-position:center;
+  filter:blur(32px) saturate(1.4);
+  opacity:0;
+  transition:opacity .8s,background-image .8s;
+  transform:scale(1.15);
+  pointer-events:none;
+}
+.room-card.has-art .card-bg{opacity:.18}
+
+/* card body */
+.card-inner{
+  position:relative;
+  display:flex;
+  flex:1;
+  gap:0;
+  min-height:0;
+  padding:46px 20px 12px;
+  align-items:center;
+  gap:20px;
+}
+
+/* art square */
+.card-art{
+  flex-shrink:0;
+  width:100px;height:100px;
+  border-radius:10px;
+  overflow:hidden;
+  background:var(--surface2);
+  position:relative;
+}
+.card-art img{width:100%;height:100%;object-fit:cover;display:block}
+.card-art-placeholder{
+  width:100%;height:100%;
+  display:flex;align-items:center;justify-content:center;
+}
+.card-art-placeholder svg{opacity:.25}
+
+/* eq bars inside art */
+.card-eq{
+  position:absolute;bottom:6px;right:6px;
+  display:flex;align-items:flex-end;gap:2px;
+  opacity:0;transition:opacity .3s;
+}
+.room-card.playing .card-eq{opacity:1}
+.card-eq span{
+  display:block;width:3px;border-radius:2px;
+  background:var(--blue-light);
+  animation:none;
+}
+.room-card.playing .card-eq span:nth-child(1){animation:eq 0.9s ease-in-out infinite alternate}
+.room-card.playing .card-eq span:nth-child(2){animation:eq 0.7s ease-in-out .15s infinite alternate}
+.room-card.playing .card-eq span:nth-child(3){animation:eq 1.1s ease-in-out .05s infinite alternate}
+.room-card.playing .card-eq span:nth-child(4){animation:eq 0.8s ease-in-out .25s infinite alternate}
+@keyframes eq{from{height:4px}to{height:18px}}
+
+/* info */
+.card-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.card-room{
+  position:absolute;top:14px;left:18px;
+  font-size:15px;font-weight:700;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--fg);z-index:1;
+}
+.card-track{
+  font-size:17px;font-weight:600;color:var(--fg);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.card-artist{
+  font-size:13px;color:var(--fg2);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.card-badges{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap;align-items:center}
+.badge{
+  font-size:9px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+  padding:2px 7px;border-radius:8px;white-space:nowrap;
+}
+.badge-source{color:var(--blue-light);border:1px solid rgba(96,165,250,.3);background:rgba(96,165,250,.08)}
+.badge-cloud{color:var(--amber);border:1px solid var(--amber-dim);background:rgba(245,158,11,.08)}
+.badge-group{color:var(--amber);border:1px solid var(--amber-dim);background:rgba(245,158,11,.08)}
+
+/* ── Controls row ─────────────────────────────── */
+.card-controls{
+  flex-shrink:0;
+  padding:0 20px 18px;
+  display:flex;align-items:center;
+  gap:14px;
+}
+.ctrl-btn{
+  background:none;border:none;color:var(--fg2);cursor:pointer;
+  padding:6px;border-radius:8px;
+  display:flex;align-items:center;justify-content:center;
+  transition:color .15s,background .15s;
+  flex-shrink:0;
+}
+.ctrl-btn:hover{color:var(--fg);background:var(--surface2)}
+.ctrl-btn:active{color:var(--blue-light)}
+.ctrl-btn.play-btn{
+  width:44px;height:44px;border-radius:50%;
+  background:var(--surface2);border:1px solid var(--border);
+  color:var(--fg);
+}
+.ctrl-btn.play-btn.playing{
+  background:rgba(34,119,238,.15);border-color:var(--blue);color:var(--blue-light)
+}
+.ctrl-btn.power-btn{color:var(--fg3)}
+.ctrl-btn.power-btn.playing{color:var(--blue-light)}
+.ctrl-btn.muted{color:var(--amber)}
+
+/* volume */
+.vol-wrap{flex:1;display:flex;align-items:center;gap:8px;min-width:0}
+.vol-label{font-size:10px;font-weight:700;color:var(--fg3);
+  font-variant-numeric:tabular-nums;width:26px;text-align:right;flex-shrink:0}
+input[type=range].wall-vol{
+  flex:1;height:3px;-webkit-appearance:none;appearance:none;
+  border-radius:2px;outline:none;cursor:pointer;min-width:0;
+  background:linear-gradient(to right,var(--blue) var(--vp,50%),var(--surface2) var(--vp,50%));
+}
+input[type=range].wall-vol::-webkit-slider-thumb{
+  -webkit-appearance:none;width:14px;height:14px;
+  border-radius:50%;background:var(--silver);cursor:pointer;
+  box-shadow:0 0 6px var(--blue-glow);
+}
+input[type=range].wall-vol::-moz-range-thumb{
+  width:14px;height:14px;border-radius:50%;
+  background:var(--silver);cursor:pointer;border:none;
+}
+.offline-overlay{
+  position:absolute;inset:0;
+  background:rgba(13,13,15,.6);
+  display:flex;align-items:center;justify-content:center;
+  border-radius:var(--radius);
+  font-size:13px;color:var(--fg3);letter-spacing:.05em;
+  backdrop-filter:blur(2px);
+}
+.room-card{cursor:pointer}
+.room-card.selected{border-color:var(--blue);box-shadow:0 0 0 1px var(--blue),0 0 18px var(--blue-glow)}
+.room-card.selected .card-room{color:var(--blue-light)}
+
+/* ── Header preset bar ────────────────────────── */
+#preset-bar{
+  display:flex;align-items:center;gap:8px;
+  flex:1;justify-content:center;
+  padding:0 24px;
+}
+#preset-bar-label{
+  font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--fg3);white-space:nowrap;margin-right:4px;
+}
+.hdr-preset{
+  background:var(--surface2);border:1px solid var(--border);
+  color:var(--fg2);border-radius:10px;
+  padding:6px 14px;font-size:12px;font-weight:600;
+  cursor:pointer;white-space:nowrap;max-width:130px;
+  overflow:hidden;text-overflow:ellipsis;
+  transition:background .15s,border-color .15s,color .15s;
+  flex-shrink:1;
+}
+.hdr-preset:hover{background:var(--surface);color:var(--fg);border-color:var(--blue)}
+.hdr-preset:active{border-color:var(--blue-light);color:var(--blue-light)}
+.hdr-preset.empty{opacity:.3;pointer-events:none}
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div id="header-logo">
+    <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+      <circle cx="11" cy="11" r="10" stroke="#60a5fa" stroke-width="1.5"/>
+      <circle cx="11" cy="11" r="5.5" stroke="#60a5fa" stroke-width="1.5"/>
+      <circle cx="11" cy="11" r="1.5" fill="#60a5fa"/>
+    </svg>
+    <span id="header-title">SoundTouch</span>
+  </div>
+  <div id="preset-bar">
+    <span id="preset-bar-label" style="display:none"></span>
+  </div>
+  <div style="text-align:right;flex-shrink:0">
+    <div id="clock">--:--</div>
+    <div id="date-line"></div>
+  </div>
+</div>
+
+<div id="grid"></div>
+
+<script>
+'use strict';
+const DAYS=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const MONTHS=['January','February','March','April','May','June','July',
+               'August','September','October','November','December'];
+
+// ── Clock ──────────────────────────────────────────────────────────────────
+function tickClock(){
+  const now=new Date();
+  const h=String(now.getHours()).padStart(2,'0');
+  const m=String(now.getMinutes()).padStart(2,'0');
+  document.getElementById('clock').textContent=h+':'+m;
+  document.getElementById('date-line').textContent=
+    DAYS[now.getDay()]+', '+now.getDate()+' '+MONTHS[now.getMonth()]+' '+now.getFullYear();
+}
+tickClock(); setInterval(tickClock,10000);
+
+// ── State ──────────────────────────────────────────────────────────────────
+let speakers=[], lastState={}, activeHost=null;
+
+async function api(url){
+  try{const r=await fetch(url); return r.ok?await r.json():null;}
+  catch{return null;}
+}
+
+// ── Card selection & presets ───────────────────────────────────────────────
+function selectCard(host){
+  activeHost=host;
+  document.querySelectorAll('.room-card').forEach(c=>c.classList.remove('selected'));
+  const card=document.getElementById('card-'+host.replace(/\./g,'_'));
+  if(card) card.classList.add('selected');
+  renderPresets();
+}
+
+function renderPresets(){
+  const bar=document.getElementById('preset-bar');
+  const label=document.getElementById('preset-bar-label');
+  // remove old preset buttons (keep label)
+  bar.querySelectorAll('.hdr-preset').forEach(b=>b.remove());
+  if(!activeHost){label.style.display='none'; return;}
+  const d=lastState[activeHost];
+  const sp=speakers.find(s=>s.host===activeHost);
+  if(sp){label.textContent=sp.name; label.style.display='';}
+  const presets=(d&&d.presets)||[];
+  for(let i=0;i<6;i++){
+    const nm=presets[i]?.name||'';
+    const btn=document.createElement('button');
+    btn.className='hdr-preset'+(nm?'':' empty');
+    btn.textContent=nm||`Preset ${i+1}`;
+    btn.title=nm||`Preset ${i+1}`;
+    if(nm) btn.onclick=()=>cmd(activeHost,'preset'+(i+1));
+    bar.appendChild(btn);
+  }
+}
+
+// ── Card builder ───────────────────────────────────────────────────────────
+function buildCard(sp){
+  const id=sp.host.replace(/\./g,'_');
+  const card=document.createElement('div');
+  card.className='room-card'; card.id='card-'+id;
+  card.addEventListener('click',e=>{
+    // ignore clicks on interactive controls
+    if(e.target.closest('button,input')) return;
+    selectCard(sp.host);
+  });
+  card.innerHTML=`
+    <div class="card-bg" id="bg-${id}"></div>
+    <div class="card-room">${sp.name}</div>
+    <div class="card-inner">
+      <div class="card-art" id="art-${id}">
+        <img id="artimg-${id}" src="" alt="" style="display:none">
+        <div class="card-art-placeholder" id="artph-${id}">
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+            <circle cx="20" cy="20" r="18" stroke="currentColor" stroke-width="1.5"/>
+            <circle cx="20" cy="20" r="8" stroke="currentColor" stroke-width="1.5"/>
+            <circle cx="20" cy="20" r="2.5" fill="currentColor"/>
+          </svg>
+        </div>
+        <div class="card-eq">
+          <span style="height:8px"></span><span style="height:14px"></span>
+          <span style="height:6px"></span><span style="height:11px"></span>
+        </div>
+      </div>
+      <div class="card-info">
+        <div class="card-track" id="track-${id}">—</div>
+        <div class="card-artist" id="artist-${id}"></div>
+        <div class="card-badges" id="badges-${id}"></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px;align-items:flex-end;flex-shrink:0">
+        <button class="ctrl-btn power-btn" id="power-${id}" onclick="cmd('${sp.host}','power')" title="Power">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+            <path d="M10 3v7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            <path d="M6.3 5.3A7 7 0 1 0 13.7 5.3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>
+          </svg>
+        </button>
+        <button class="ctrl-btn" id="mute-${id}" onclick="cmd('${sp.host}','mute')" title="Mute">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" id="ico-vol-${id}">
+            <polygon points="3,6 7,6 11,2 11,16 7,12 3,12" stroke="currentColor" stroke-width="1.5" fill="none"/>
+            <path d="M13 6.5c.8.8 1.3 1.9 1.3 3.1s-.5 2.3-1.3 3.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none" id="ico-vol-lines-${id}"/>
+            <line x1="13" y1="6.5" x2="15" y2="8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" id="ico-mute-x1-${id}" style="display:none"/>
+            <line x1="15" y1="6.5" x2="13" y2="8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" id="ico-mute-x2-${id}" style="display:none"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div class="card-controls">
+      <button class="ctrl-btn" onclick="cmd('${sp.host}','prev')" title="Previous">
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+          <polygon points="18,4 8,11 18,18" fill="currentColor"/>
+          <rect x="4" y="4" width="3" height="14" rx="1.5" fill="currentColor"/>
+        </svg>
+      </button>
+      <button class="ctrl-btn play-btn" id="play-${id}" onclick="cmd('${sp.host}','playpause')" title="Play/Pause">
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+          <polygon id="ico-play-${id}" points="8,5 18,11 8,17" fill="currentColor"/>
+          <g id="ico-pause-${id}" style="display:none">
+            <rect x="5" y="4" width="4" height="14" rx="2" fill="currentColor"/>
+            <rect x="13" y="4" width="4" height="14" rx="2" fill="currentColor"/>
+          </g>
+        </svg>
+      </button>
+      <button class="ctrl-btn" onclick="cmd('${sp.host}','next')" title="Next">
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+          <polygon points="4,4 14,11 4,18" fill="currentColor"/>
+          <rect x="15" y="4" width="3" height="14" rx="1.5" fill="currentColor"/>
+        </svg>
+      </button>
+      <div class="vol-wrap">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;opacity:.5">
+          <polygon points="1,5 5,5 8,2 8,12 5,9 1,9" stroke="currentColor" stroke-width="1.3" fill="none"/>
+        </svg>
+        <input type="range" class="wall-vol" id="vol-${id}"
+          min="0" max="100" value="20"
+          oninput="onVol(this,'${sp.host}')"
+          onchange="sendVol(this,'${sp.host}')">
+        <div class="vol-label" id="vollbl-${id}">20</div>
+      </div>
+    </div>
+    <div class="offline-overlay" id="offline-${id}" style="display:none">Offline</div>
+  `;
+  return card;
+}
+
+// ── Apply state to a card ──────────────────────────────────────────────────
+function applyCard(host, d){
+  const id=host.replace(/\./g,'_');
+  const card=document.getElementById('card-'+id); if(!card) return;
+  const offline=document.getElementById('offline-'+id);
+
+  if(!d || d.error){offline.style.display=''; return;}
+  offline.style.display='none';
+
+  // playing state
+  card.classList.toggle('playing', !!d.playing);
+  const playBtn=document.getElementById('play-'+id);
+  playBtn?.classList.toggle('playing',!!d.playing);
+  document.getElementById('ico-play-'+id).style.display=d.playing?'none':'';
+  document.getElementById('ico-pause-'+id).style.display=d.playing?'':'none';
+
+  // power
+  document.getElementById('power-'+id)?.classList.toggle('playing',!!d.playing);
+
+  // mute
+  const muteBtn=document.getElementById('mute-'+id);
+  muteBtn?.classList.toggle('muted',!!d.muted);
+  document.getElementById('ico-vol-lines-'+id).style.display=d.muted?'none':'';
+  document.getElementById('ico-mute-x1-'+id).style.display=d.muted?'':'none';
+  document.getElementById('ico-mute-x2-'+id).style.display=d.muted?'':'none';
+
+  // track info
+  const track=d.track||(d.source||'—');
+  document.getElementById('track-'+id).textContent=track;
+  document.getElementById('artist-'+id).textContent=d.artist||d.album||'';
+
+  // badges
+  const bEl=document.getElementById('badges-'+id);
+  let badges='';
+  if(d.source) badges+=`<span class="badge badge-source">${d.source}</span>`;
+  if(d.cloud_warning) badges+=`<span class="badge badge-cloud" title="${d.cloud_warning}">⚠ Cloud</span>`;
+  if(d.group_role==='master') badges+=`<span class="badge badge-group">Master</span>`;
+  if(d.group_role==='member') badges+=`<span class="badge badge-group">Member</span>`;
+  bEl.innerHTML=badges;
+
+  // album art
+  const img=document.getElementById('artimg-'+id);
+  const ph=document.getElementById('artph-'+id);
+  const bg=document.getElementById('bg-'+id);
+  if(d.art){
+    if(img.dataset.src!==d.art){
+      img.dataset.src=d.art;
+      const tmp=new Image();
+      tmp.onload=()=>{
+        img.src=d.art; img.style.display='block'; ph.style.display='none';
+        card.classList.add('has-art');
+        bg.style.backgroundImage=`url('${d.art}')`;
+      };
+      tmp.onerror=()=>{
+        img.style.display='none'; ph.style.display='';
+        card.classList.remove('has-art'); bg.style.backgroundImage='';
+      };
+      tmp.src=d.art;
+    }
+  } else {
+    img.style.display='none'; ph.style.display='';
+    card.classList.remove('has-art'); bg.style.backgroundImage='';
+    img.dataset.src='';
+  }
+
+  // volume
+  const sl=document.getElementById('vol-'+id);
+  const lbl=document.getElementById('vollbl-'+id);
+  if(sl && !sl.matches(':active')){
+    sl.value=d.volume;
+    const pct=(d.volume/100*100).toFixed(1)+'%';
+    sl.style.setProperty('--vp',pct);
+    lbl.textContent=d.volume;
+  }
+}
+
+// ── Commands ───────────────────────────────────────────────────────────────
+function cmd(host,action,value=''){
+  api('/api/cmd?host='+host+'&action='+action+(value?'&value='+value:''))
+    .then(()=>pollOne(host));
+}
+function onVol(el,host){
+  const pct=(el.value/100*100).toFixed(1)+'%';
+  el.style.setProperty('--vp',pct);
+  const id=host.replace(/\./g,'_');
+  document.getElementById('vollbl-'+id).textContent=el.value;
+}
+function sendVol(el,host){ cmd(host,'volume',el.value); }
+
+// ── Polling ────────────────────────────────────────────────────────────────
+async function pollOne(host){
+  const d=await api('/api/state?host='+host);
+  lastState[host]=d; applyCard(host,d);
+  if(host===activeHost) renderPresets();
+}
+function pollAll(){ return Promise.all(speakers.map(s=>pollOne(s.host))); }
+
+// ── Init ───────────────────────────────────────────────────────────────────
+async function init(){
+  speakers=await api('/api/speakers')||[];
+  const grid=document.getElementById('grid');
+
+  // responsive column count
+  const n=speakers.length;
+  const cols=n<=1?1:n<=2?2:n<=4?2:3;
+  grid.style.gridTemplateColumns=`repeat(${cols},1fr)`;
+  // rows fill viewport
+  const rows=Math.ceil(n/cols);
+  grid.style.gridTemplateRows=`repeat(${rows},1fr)`;
+
+  speakers.forEach(sp=>{
+    const card=buildCard(sp);
+    grid.appendChild(card);
+  });
+
+  pollAll().then(()=>{
+    if(speakers.length) selectCard(speakers[0].host);
+  });
+  setInterval(pollAll, 4000);
+}
+
+init();
+</script>
+</body>
+</html>
+"""
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # HTTP handler
@@ -2961,6 +3488,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path in ("/", "/index.html"):
             self._html(HTML)
+
+        elif path in ("/wall", "/wall.html", "/tab", "/panel"):
+            self._html(WALL_HTML)
 
         # ── speaker list / scan ───────────────────────────────────────────────
         elif path == "/api/speakers":
