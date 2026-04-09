@@ -2256,21 +2256,19 @@ async function searchStationStream(nameOverride) {
   try {
     const d = await (await fetch(`/api/stations/stream-search?q=${encodeURIComponent(name)}`)).json();
     if (d.error || !d.length) {
-      resultsEl.innerHTML = '<div class="sr-item" style="cursor:default;color:var(--fg3)">No results found — try a shorter name or paste the URL manually</div>';
+      resultsEl.innerHTML = '<div class="sr-item" style="cursor:default;color:var(--fg3)">No HTTP streams found on TuneIn for this station — most major stations have moved to HTTPS which SoundTouch cannot play. Try searching for a niche or community station, or paste a direct HTTP stream URL manually.</div>';
       return;
     }
-    resultsEl.innerHTML = d.map((s,i) => {
-      const warn = s.https_only ? '<span style="color:#f87171;font-size:9px"> ⚠ HTTPS — SoundTouch may not support</span>' : '';
-      return `<div class="sr-item" onclick="pickStreamResult(${i})">
+    resultsEl.innerHTML = d.map((s,i) => `
+      <div class="sr-item" onclick="pickStreamResult(${i})">
         ${s.favicon ? `<img class="sr-logo" src="${s.favicon}" onerror="this.style.display='none'">` : '<div class="sr-logo"></div>'}
         <div class="sr-info">
-          <div class="sr-name">${s.name}${warn}</div>
+          <div class="sr-name">${s.name}</div>
           <div class="sr-meta">${[s.country, s.bitrate?s.bitrate+'kbps':'', s.codec].filter(Boolean).join(' · ')}</div>
           <div class="sr-meta" style="font-size:9px;opacity:.6">${s.url}</div>
         </div>
         <div class="sr-use">Use ›</div>
-      </div>`;
-    }).join('');
+      </div>`).join('');
     window._streamResults = d;
   } catch(e) {
     resultsEl.innerHTML = '<div class="sr-item" style="cursor:default;color:var(--fg3)">Search failed</div>';
@@ -3130,20 +3128,22 @@ class Handler(BaseHTTPRequestHandler):
                         streams = [b for b in tr.json().get("body",[])
                                    if b.get("element") == "audio" and (b.get("url") or b.get("URL"))]
                         def _url(b): return b.get("url") or b.get("URL","")
-                        # Prefer HTTP — SoundTouch firmware does not support HTTPS streams
-                        http_s  = [s for s in streams if _url(s).startswith("http://")]
-                        chosen  = (http_s or streams or [None])[0]
-                        if not chosen:
-                            return None
-                        stream_url = _url(chosen)
+                        # SoundTouch firmware cannot connect to HTTPS — HTTP only
+                        # Also skip TuneIn's "not compatible" placeholder URLs
+                        def _usable(b):
+                            u = _url(b)
+                            return u.startswith("http://") and "notcompatible" not in u
+                        http_s = [s for s in streams if _usable(s)]
+                        if not http_s:
+                            return None  # no usable HTTP stream, skip this station
+                        stream_url = _url(http_s[0])
                         return {
-                            "name":       st.get("text","").strip(),
-                            "url":        stream_url,
-                            "country":    st.get("subtext",""),
-                            "bitrate":    st.get("bitrate",""),
-                            "codec":      st.get("formats",""),
-                            "favicon":    st.get("image",""),
-                            "https_only": not stream_url.startswith("http://"),
+                            "name":    st.get("text","").strip(),
+                            "url":     stream_url,
+                            "country": st.get("subtext",""),
+                            "bitrate": st.get("bitrate",""),
+                            "codec":   st.get("formats",""),
+                            "favicon": st.get("image",""),
                         }
                     except Exception:
                         return None
