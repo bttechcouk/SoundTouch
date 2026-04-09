@@ -3769,12 +3769,26 @@ def _tts_announce(devices, text, volume, web_port):
             # ── play announcement ────────────────────────────────────────────
             dev.set_volume(volume)
             time.sleep(0.5)
-            # Use desc_url (station descriptor JSON) — stationurl type expects JSON,
-            # not raw audio.  The descriptor points to the actual MP3.
             dev.select_content("LOCAL_INTERNET_RADIO", "stationurl", desc_url, "Announcement")
 
-            # Time-based wait: 128kbps MP3 ≈ 16 000 bytes/s + 2 s buffer
-            time.sleep(play_duration)
+            # Wait for speaker to actually start playing (handles standby wake-up delay).
+            # Poll up to 15 s for PLAY_STATE, then hold for the audio duration.
+            started = False
+            for _ in range(30):          # 30 × 0.5 s = 15 s max wake-up wait
+                time.sleep(0.5)
+                np2 = dev._get("/now_playing")
+                if np2 is None:
+                    break
+                ps2 = np2.get("playStatus") or np2.findtext("playStatus") or ""
+                if ps2 in ("PLAY_STATE", "BUFFERING_STATE"):
+                    started = True
+                    break
+
+            if started:
+                # Speaker is playing — wait for the audio to finish
+                time.sleep(play_duration)
+            else:
+                log.warning(f"[TTS] {dev.host} never reached PLAY_STATE — skipping wait")
 
             # ── restore ───────────────────────────────────────────────────────
             if saved_vol is not None:
