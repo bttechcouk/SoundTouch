@@ -85,6 +85,55 @@ ICON_SVG = (
     '</svg>'
 )
 
+# ── PNG icon generator (for PWA manifest + apple-touch-icon) ────────────────
+_icon_cache: dict = {}
+
+def _make_icon_png(size: int) -> bytes | None:
+    """Render a SoundTouch PNG icon using Pillow. Returns bytes or None."""
+    if size in _icon_cache:
+        return _icon_cache[size]
+    try:
+        import io
+        from PIL import Image, ImageDraw
+        s = size
+        img  = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+        d    = ImageDraw.Draw(img)
+        # Dark rounded-rect background
+        d.rounded_rectangle([0, 0, s - 1, s - 1], radius=s // 5,
+                             fill=(11, 12, 17, 255))
+        # Blue filled circle
+        pad = s // 10
+        d.ellipse([pad, pad, s - pad - 1, s - pad - 1], fill=(34, 119, 238, 255))
+        # White speaker body (rectangle)
+        cx, cy   = s // 2, s // 2
+        bw, bh   = s // 10, s // 5
+        bx       = cx - s // 8 - bw
+        d.rectangle([bx, cy - bh, bx + bw, cy + bh], fill=(255, 255, 255, 255))
+        # White speaker cone (trapezoid pointing right)
+        cone = [
+            (bx + bw, cy - bh),
+            (cx + s // 8, cy - s // 3),
+            (cx + s // 8, cy + s // 3),
+            (bx + bw, cy + bh),
+        ]
+        d.polygon(cone, fill=(255, 255, 255, 255))
+        # Sound arcs (two white arcs to the right of the cone)
+        lw = max(2, s // 40)
+        for i, r in enumerate([s // 6, s // 4]):
+            ax = cx + s // 8
+            d.arc([ax, cy - r, ax + 2 * r, cy + r],
+                  start=-50, end=50,
+                  fill=(255, 255, 255, 200 - i * 40), width=lw)
+        buf = io.BytesIO()
+        img.save(buf, "PNG", optimize=True)
+        data = buf.getvalue()
+        _icon_cache[size] = data
+        return data
+    except Exception as e:
+        log.debug(f"[ICON] PNG generation failed ({size}px): {e}")
+        _icon_cache[size] = None
+        return None
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Logging
@@ -820,10 +869,11 @@ HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SoundTouch">
 <meta name="theme-color" content="#0b0c11">
 <link rel="manifest" href="/manifest.json">
-<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <title>SoundTouch</title>
 <script>if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});</script>
 <style>
@@ -1228,6 +1278,17 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 .day-btn:has(input:checked){background:var(--blue-dim);border-color:var(--blue);color:var(--blue-light)}
 .day-btn{position:relative}
 .day-btn input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+
+/* ── PWA install banner (Android Chrome) ─────────────────── */
+#install-banner{display:none;position:fixed;bottom:0;left:50%;transform:translateX(-50%);
+  width:100%;max-width:440px;background:var(--surface2);border-top:1px solid var(--border);
+  padding:12px 16px;align-items:center;gap:10px;z-index:90;
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+#install-banner.show{display:flex}
+#install-banner .ib-icon{font-size:22px;flex-shrink:0}
+#install-banner .ib-text{flex:1;min-width:0}
+#install-banner .ib-title{font-size:13px;font-weight:700;color:var(--white)}
+#install-banner .ib-sub{font-size:11px;color:var(--fg3);margin-top:1px}
 
 /* ── Scanning overlay ────────────────────────────────────── */
 #scanning{display:none;position:fixed;inset:0;background:rgba(7,8,12,.85);
@@ -1645,6 +1706,17 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 
 </div>
 
+<!-- PWA install banner (shown by beforeinstallprompt on Android Chrome) -->
+<div id="install-banner">
+  <div class="ib-icon">&#127911;</div>
+  <div class="ib-text">
+    <div class="ib-title">Install SoundTouch</div>
+    <div class="ib-sub">Add to your home screen for instant access</div>
+  </div>
+  <button class="mc-btn primary" onclick="installPWA()" style="flex-shrink:0">Install</button>
+  <button class="mc-btn" onclick="dismissInstall()" style="flex-shrink:0;padding:6px 10px">&#10005;</button>
+</div>
+
 <!-- Scenes quick-view modal -->
 <div id="scenes-modal" class="modal-overlay" onclick="if(event.target===this)closeModal('scenes-modal')">
   <div class="modal-box">
@@ -1678,6 +1750,31 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 <script>
 // ── State ────────────────────────────────────────────────────────────────────
 let speakers=[], activeHost=null, pollTimer=null, lastArt="", lastState=null;
+
+// ── PWA install prompt ───────────────────────────────────────────────────────
+let _installPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  _installPrompt = e;
+  if (!localStorage.getItem('pwa-dismissed')) {
+    document.getElementById('install-banner')?.classList.add('show');
+  }
+});
+window.addEventListener('appinstalled', () => {
+  document.getElementById('install-banner')?.classList.remove('show');
+  _installPrompt = null;
+});
+async function installPWA() {
+  if (!_installPrompt) return;
+  _installPrompt.prompt();
+  const { outcome } = await _installPrompt.userChoice;
+  _installPrompt = null;
+  document.getElementById('install-banner')?.classList.remove('show');
+}
+function dismissInstall() {
+  document.getElementById('install-banner')?.classList.remove('show');
+  localStorage.setItem('pwa-dismissed', '1');
+}
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
@@ -2960,16 +3057,23 @@ class Handler(BaseHTTPRequestHandler):
             self.server_state.alarm_store.toggle_alarm(aid, enabled)
             self._json({"ok": True})
 
-        # ── PWA manifest + service worker + icon ──────────────────────────────
+        # ── PWA manifest + service worker + icons ─────────────────────────────
         elif path == "/manifest.json":
+            icons = [
+                {"src": "/icon.svg",     "type": "image/svg+xml",
+                 "sizes": "any",         "purpose": "any"},
+                {"src": "/icon-192.png", "type": "image/png",
+                 "sizes": "192x192",     "purpose": "any"},
+                {"src": "/icon-512.png", "type": "image/png",
+                 "sizes": "512x512",     "purpose": "maskable"},
+            ]
             manifest = {
                 "name": "SoundTouch", "short_name": "SoundTouch",
                 "description": "Bose SoundTouch local controller",
                 "start_url": "/", "display": "standalone",
                 "orientation": "portrait",
                 "background_color": "#0b0c11", "theme_color": "#0b0c11",
-                "icons": [{"src": "/icon.svg", "type": "image/svg+xml",
-                           "sizes": "any", "purpose": "any maskable"}],
+                "icons": icons,
             }
             self._respond(200, "application/manifest+json",
                           json.dumps(manifest).encode())
@@ -2980,6 +3084,17 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/icon.svg":
             self._respond(200, "image/svg+xml", ICON_SVG.encode())
+
+        elif path in ("/icon-192.png", "/icon-512.png"):
+            size = 512 if "512" in path else 192
+            data = _make_icon_png(size)
+            if data:
+                self._respond(200, "image/png", data)
+            else:
+                # Pillow unavailable — redirect to SVG
+                self.send_response(302)
+                self.send_header("Location", "/icon.svg")
+                self.end_headers()
 
         else:
             self._respond(404, "text/plain", b"Not found")
