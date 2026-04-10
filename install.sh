@@ -45,6 +45,7 @@ pip_install() {
     python3 -c "import $pkg" &>/dev/null 2>&1 || MISSING_PIP+=("$pkg")
   done
   python3 -c "import PIL" &>/dev/null 2>&1 || MISSING_PIP+=(Pillow)
+  python3 -c "import edge_tts" &>/dev/null 2>&1 || MISSING_PIP+=(edge-tts)
 
   if [ ${#MISSING_PIP[@]} -gt 0 ]; then
     echo "  → pip: ${MISSING_PIP[*]}"

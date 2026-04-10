@@ -42,10 +42,17 @@ except ImportError:
     sys.exit(1)
 
 try:
-    from gtts import gTTS as _gTTS
+    import edge_tts as _edge_tts
+    _TTS_ENGINE = "edge"
     _TTS_AVAILABLE = True
 except ImportError:
-    _TTS_AVAILABLE = False
+    try:
+        from gtts import gTTS as _gTTS
+        _TTS_ENGINE = "gtts"
+        _TTS_AVAILABLE = True
+    except ImportError:
+        _TTS_ENGINE = None
+        _TTS_AVAILABLE = False
 
 # In-memory store for TTS audio files: {audio_id: bytes}
 _tts_cache: dict = {}
@@ -3852,33 +3859,44 @@ def _tts_transform_gangster(text):
     return result
 
 
-# Map accent name → (gTTS tld, optional text transform function)
+# Map accent name → (edge-tts voice, gTTS tld fallback, optional text transform)
 _TTS_ACCENT_MAP = {
-    "british":    ("co.uk",    None),
-    "american":   ("com",      None),
-    "irish":      ("ie",       None),
-    "australian": ("com.au",   None),
-    "posh":       ("co.uk",    _tts_transform_posh),
-    "gangster":   ("co.uk",    _tts_transform_gangster),
+    "british":    ("en-GB-SoniaNeural",    "co.uk",    None),
+    "american":   ("en-US-JennyNeural",    "com",      None),
+    "irish":      ("en-IE-EmilyNeural",    "ie",       None),
+    "australian": ("en-AU-NatashaNeural",  "com.au",   None),
+    "posh":       ("en-GB-RyanNeural",     "co.uk",    _tts_transform_posh),
+    "gangster":   ("en-GB-ThomasNeural",   "co.uk",    _tts_transform_gangster),
 }
 
 
 def _tts_announce(devices, text, volume, web_port, accent="british"):
     """Generate TTS MP3, serve it, play on each device, then restore state."""
-    import io
+    import io, asyncio
     if not _TTS_AVAILABLE:
-        log.error("[TTS] gTTS not installed — run: pip3 install gtts")
+        log.error("[TTS] No TTS engine installed — run: pip3 install edge-tts")
         return
-    tld, transform = _TTS_ACCENT_MAP.get(accent, ("co.uk", None))
+    edge_voice, gtts_tld, transform = _TTS_ACCENT_MAP.get(accent, ("en-GB-SoniaNeural", "co.uk", None))
     tts_text = transform(text) if transform else text
     if transform:
         log.info(f"[TTS] accent={accent} transform: {text!r} → {tts_text!r}")
     try:
-        buf = io.BytesIO()
-        _gTTS(tts_text, lang="en", tld=tld).write_to_fp(buf)
-        mp3_bytes = buf.getvalue()
+        if _TTS_ENGINE == "edge":
+            async def _gen():
+                buf = io.BytesIO()
+                async for chunk in _edge_tts.Communicate(tts_text, edge_voice).stream():
+                    if chunk["type"] == "audio":
+                        buf.write(chunk["data"])
+                return buf.getvalue()
+            mp3_bytes = asyncio.run(_gen())
+            log.info(f"[TTS] engine=edge voice={edge_voice}")
+        else:
+            buf = io.BytesIO()
+            _gTTS(tts_text, lang="en", tld=gtts_tld).write_to_fp(buf)
+            mp3_bytes = buf.getvalue()
+            log.info(f"[TTS] engine=gtts tld={gtts_tld}")
     except Exception as e:
-        log.error(f"[TTS] gTTS generation failed: {e}")
+        log.error(f"[TTS] generation failed: {e}")
         return
 
     audio_id = _uuid.uuid4().hex
@@ -4651,7 +4669,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not text:
                     self._json({"ok": False, "error": "no text"})
                 elif not _TTS_AVAILABLE:
-                    self._json({"ok": False, "error": "gTTS not installed — run: pip3 install gtts"})
+                    self._json({"ok": False, "error": "No TTS engine installed — run: pip3 install edge-tts"})
                 else:
                     devices = [d for d in self.server_state.devices if d.host in hosts]
                     if not devices:
