@@ -1654,6 +1654,16 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
                    font-family:inherit;line-height:1.4;margin-bottom:10px"
             placeholder="e.g. Dinner is ready…"></textarea>
           <div style="font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+                      color:var(--fg3);margin-bottom:6px">Accent / Voice</div>
+          <select id="main-ann-accent" class="form-select" style="margin-bottom:12px">
+            <option value="british">🇬🇧 British</option>
+            <option value="american">🇺🇸 American</option>
+            <option value="irish">🇮🇪 Irish</option>
+            <option value="australian">🇦🇺 Australian</option>
+            <option value="posh">🎩 Posh English</option>
+            <option value="gangster">🔪 Gangster (Danny Dyer)</option>
+          </select>
+          <div style="font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
                       color:var(--fg3);margin-bottom:8px">Speakers</div>
           <div id="main-ann-speakers" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px"></div>
           <div style="font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
@@ -2721,11 +2731,12 @@ async function sendMainAnnounce() {
     .map(sp => sp.host);
   if (!hosts.length) { statusEl.textContent = 'Select at least one speaker.'; return; }
   const volume = parseInt(document.getElementById('main-ann-vol').value);
+  const accent = document.getElementById('main-ann-accent').value;
   statusEl.textContent = 'Sending…';
   try {
     const r = await fetch('/api/tts/announce', {method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({text, hosts, volume})});
+      body: JSON.stringify({text, hosts, volume, accent})});
     const d = await r.json();
     statusEl.textContent = d.ok
       ? `Announcing on ${d.speakers} speaker${d.speakers!==1?'s':''}…`
@@ -3650,13 +3661,14 @@ async function sendAnnounce(){
     .map(sp=>sp.host);
   if(!hosts.length){document.getElementById('announce-status').textContent='Select at least one speaker.';return;}
   const volume=parseInt(document.getElementById('ann-vol-slider').value);
+  const accent=document.getElementById('ann-accent').value;
   const btn=document.getElementById('ann-send-btn');
   btn.disabled=true;
   document.getElementById('announce-status').textContent='Sending…';
   try{
     const r=await fetch('/api/tts/announce',{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({text,hosts,volume})});
+      body:JSON.stringify({text,hosts,volume,accent})});
     const d=await r.json();
     if(d.ok){
       document.getElementById('announce-status').textContent=
@@ -3686,6 +3698,17 @@ document.getElementById('announce-overlay')?.addEventListener('click',e=>{
       <div class="ann-section-label">Message</div>
       <textarea id="announce-text" rows="3" placeholder="e.g. Dinner is ready…"></textarea>
       <div style="font-size:10px;color:var(--fg3);margin-top:4px">Ctrl+Enter to send</div>
+    </div>
+    <div>
+      <div class="ann-section-label">Accent / Voice</div>
+      <select id="ann-accent" class="form-select" style="margin-bottom:4px">
+        <option value="british">🇬🇧 British</option>
+        <option value="american">🇺🇸 American</option>
+        <option value="irish">🇮🇪 Irish</option>
+        <option value="australian">🇦🇺 Australian</option>
+        <option value="posh">🎩 Posh English</option>
+        <option value="gangster">🔪 Gangster (Danny Dyer)</option>
+      </select>
     </div>
     <div>
       <div class="ann-section-label">Speakers</div>
@@ -3719,15 +3742,140 @@ document.getElementById('announce-overlay')?.addEventListener('click',e=>{
 # TTS announcement engine
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _tts_announce(devices, text, volume, web_port):
+def _tts_transform_posh(text):
+    """Rewrite text to sound a bit more frightfully posh, what."""
+    import re
+    swaps = [
+        (r'\bhello\b',        'good day'),
+        (r'\bhi\b',           'good day'),
+        (r'\bhey\b',          'I say'),
+        (r'\bthanks\b',       'many thanks'),
+        (r'\bthank you\b',    'thank you ever so much'),
+        (r'\byes\b',          'quite'),
+        (r'\byeah\b',         'quite'),
+        (r'\byep\b',          'quite'),
+        (r'\bno\b',           "I'm afraid not"),
+        (r'\bnope\b',         "I'm afraid not"),
+        (r'\bgood\b',         'rather good'),
+        (r'\bgreat\b',        'splendid'),
+        (r'\bexcellent\b',    'simply marvellous'),
+        (r'\bfantastic\b',    'simply marvellous'),
+        (r'\bamazing\b',      'jolly impressive'),
+        (r'\bcool\b',         'frightfully good'),
+        (r'\bok\b',           'very well'),
+        (r'\bokay\b',         'very well'),
+        (r'\bdinner\b',       'supper'),
+        (r'\blunch\b',        'luncheon'),
+        (r'\bbreakfast\b',    'breakfast'),
+        (r'\bfood\b',         'nourishment'),
+        (r'\bcar\b',          'motor car'),
+        (r'\bhouse\b',        'residence'),
+        (r'\bhome\b',         'residence'),
+        (r'\bmoney\b',        'funds'),
+        (r'\bkids\b',         'children'),
+        (r'\bguy\b',          'chap'),
+        (r'\bguys\b',         'chaps'),
+        (r'\bman\b',          'chap'),
+        (r'\bmen\b',          'chaps'),
+        (r'\bwoman\b',        'lady'),
+        (r'\bwomen\b',        'ladies'),
+        (r'\bfriend\b',       'dear friend'),
+        (r'\bsorry\b',        'I do beg your pardon'),
+        (r'\bplease\b',       'if you would be so kind'),
+        (r'\bwant\b',         'should rather like'),
+        (r'\bneed\b',         'require'),
+        (r'\bgoing to\b',     'shall'),
+        (r'\bgonna\b',        'shall'),
+        (r'\bproblem\b',      'frightful inconvenience'),
+        (r'\bready\b',        'quite prepared'),
+    ]
+    result = text
+    for pattern, replacement in swaps:
+        result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+    return result
+
+
+def _tts_transform_gangster(text):
+    """Danny Dyer-esque East London rewrite, innit."""
+    import re
+    swaps = [
+        (r'\bhello\b',        'oi oi'),
+        (r'\bhi\b',           'alright'),
+        (r'\bhey\b',          'oi'),
+        (r'\bgood day\b',     'aight'),
+        (r'\bthank you\b',    'cheers mate'),
+        (r'\bthanks\b',       'cheers'),
+        (r'\byes\b',          'yeah mate'),
+        (r'\byep\b',          'yeah'),
+        (r'\bno\b',           'nah'),
+        (r'\bnope\b',         'nah'),
+        (r'\bgood\b',         'proper'),
+        (r'\bvery\b',         'proper'),
+        (r'\bgreat\b',        'blinding'),
+        (r'\bexcellent\b',    'blinding'),
+        (r'\bfantastic\b',    'blinding'),
+        (r'\bamazing\b',      'mental'),
+        (r'\bcool\b',         'well tasty'),
+        (r'\bok\b',           'sorted'),
+        (r'\bokay\b',         'sorted'),
+        (r'\bready\b',        'sorted'),
+        (r'\bproblem\b',      'bovver'),
+        (r'\bhouse\b',        'gaff'),
+        (r'\bhome\b',         'gaff'),
+        (r'\bmoney\b',        'dough'),
+        (r'\bcar\b',          'motor'),
+        (r'\bwife\b',         'missus'),
+        (r'\bgirlfriend\b',   'bird'),
+        (r'\bfriend\b',       'geezer'),
+        (r'\bman\b',          'geezer'),
+        (r'\bguy\b',          'geezer'),
+        (r'\bguys\b',         'geezers'),
+        (r'\bpeople\b',       'lot'),
+        (r'\bplease\b',       'do us a favour and'),
+        (r'\bsorry\b',        'my bad'),
+        (r'\byou\b',          'ya'),
+        (r'\byour\b',         'yer'),
+        (r'\bgoing to\b',     'gonna'),
+        (r'\bwant to\b',      'wanna'),
+        (r'\bneed to\b',      'gotta'),
+        (r'\bfood\b',         'grub'),
+        (r'\bdinner\b',       'grub'),
+        (r'\blunch\b',        'bit of grub'),
+        (r'\bpolice\b',       'old bill'),
+    ]
+    result = text
+    for pattern, replacement in swaps:
+        result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+    result = result.rstrip()
+    if result and not result[-1] in '.?!':
+        result += ', innit'
+    return result
+
+
+# Map accent name → (gTTS tld, optional text transform function)
+_TTS_ACCENT_MAP = {
+    "british":    ("co.uk",    None),
+    "american":   ("com",      None),
+    "irish":      ("ie",       None),
+    "australian": ("com.au",   None),
+    "posh":       ("co.uk",    _tts_transform_posh),
+    "gangster":   ("co.uk",    _tts_transform_gangster),
+}
+
+
+def _tts_announce(devices, text, volume, web_port, accent="british"):
     """Generate TTS MP3, serve it, play on each device, then restore state."""
     import io
     if not _TTS_AVAILABLE:
         log.error("[TTS] gTTS not installed — run: pip3 install gtts")
         return
+    tld, transform = _TTS_ACCENT_MAP.get(accent, ("co.uk", None))
+    tts_text = transform(text) if transform else text
+    if transform:
+        log.info(f"[TTS] accent={accent} transform: {text!r} → {tts_text!r}")
     try:
         buf = io.BytesIO()
-        _gTTS(text, lang="en", tld="co.uk").write_to_fp(buf)
+        _gTTS(tts_text, lang="en", tld=tld).write_to_fp(buf)
         mp3_bytes = buf.getvalue()
     except Exception as e:
         log.error(f"[TTS] gTTS generation failed: {e}")
@@ -4497,6 +4645,9 @@ class Handler(BaseHTTPRequestHandler):
                 text    = data.get("text", "").strip()
                 hosts   = data.get("hosts", [])
                 volume  = int(data.get("volume", 60))
+                accent  = data.get("accent", "british")
+                if accent not in _TTS_ACCENT_MAP:
+                    accent = "british"
                 if not text:
                     self._json({"ok": False, "error": "no text"})
                 elif not _TTS_AVAILABLE:
@@ -4507,7 +4658,7 @@ class Handler(BaseHTTPRequestHandler):
                         self._json({"ok": False, "error": "no matching speakers"})
                     else:
                         # Debounce: ignore duplicate within 3 seconds (lock prevents race)
-                        dedup_key = (text, ",".join(sorted(hosts)))
+                        dedup_key = (text, ",".join(sorted(hosts)), accent)
                         now = time.monotonic()
                         with _tts_lock:
                             duplicate = now - _tts_last.get(dedup_key, 0) < 3.0
@@ -4518,7 +4669,7 @@ class Handler(BaseHTTPRequestHandler):
                         else:
                             threading.Thread(
                                 target=_tts_announce,
-                                args=(devices, text, volume, self.server_state.web_port),
+                                args=(devices, text, volume, self.server_state.web_port, accent),
                                 daemon=True
                             ).start()
                             self._json({"ok": True, "speakers": len(devices)})
