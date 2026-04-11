@@ -538,7 +538,16 @@ class SoundTouchDevice:
         return result
 
     def set_zone(self, slave_devices):
-        """Create a zone with self as master and slave_devices as the slaves."""
+        """Create a zone with self as master and slave_devices as the slaves.
+
+        The firmware treats setZone as additive — it merges new members into
+        the existing zone rather than replacing it. To properly remove members
+        we must dissolve first (empty setZone) then recreate. A short pause
+        is required between the two calls; the firmware ignores a setZone
+        that arrives too quickly after a dissolve.
+        """
+        self._post("/setZone", f'<zone master="{self.device_id}"></zone>')
+        time.sleep(0.5)
         members_xml = f'<member ipaddress="{self.host}">{self.device_id}</member>'
         for d in slave_devices:
             members_xml += f'<member ipaddress="{d.host}">{d.device_id}</member>'
