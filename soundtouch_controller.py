@@ -546,18 +546,15 @@ class SoundTouchDevice:
                           f'<zone master="{self.device_id}">{members_xml}</zone>')
 
     def remove_zone(self):
-        """Dissolve the zone this speaker is master of."""
+        """Dissolve the zone this speaker is master of.
+
+        The firmware has no working removeZone/removeZoneSlaves endpoint.
+        Posting an empty <zone> body to /setZone is the only way to dissolve.
+        """
         zinfo = self.get_zone()
         if not zinfo["is_master"]:
             return True
-        slaves_xml = "".join(
-            f'<member ipaddress="{m["ip"]}">{m["id"]}</member>'
-            for m in zinfo["members"] if m["id"] != self.device_id
-        )
-        if slaves_xml:
-            return self._post("/removeZone",
-                              f'<zone master="{self.device_id}">{slaves_xml}</zone>')
-        return True
+        return self._post("/setZone", f'<zone master="{self.device_id}"></zone>')
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
