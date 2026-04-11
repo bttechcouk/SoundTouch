@@ -2489,7 +2489,7 @@ async function loadGroups() {
         </div>
         <div class="mc-actions">
           ${memberIPs.has(s.host)
-            ? `<button class="mc-btn danger" onclick="removeFromGroup('${s.host}')">Remove</button>`
+            ? `<button class="mc-btn danger" onclick="fetch('/api/cmd?host=${s.host}&action=power').then(()=>setTimeout(loadGroups,700))">Power Off</button>`
             : `<button class="mc-btn primary" onclick="addToGroup('${s.host}')">Add</button>`}
         </div>
       </div>`).join('')}
