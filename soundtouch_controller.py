@@ -549,14 +549,15 @@ class SoundTouchDevice:
         """Dissolve the zone this speaker is master of."""
         zinfo = self.get_zone()
         if not zinfo["is_master"]:
-            return
+            return True
         slaves_xml = "".join(
             f'<member ipaddress="{m["ip"]}">{m["id"]}</member>'
             for m in zinfo["members"] if m["id"] != self.device_id
         )
         if slaves_xml:
-            self._post("/removeZoneSlaves",
-                       f'<zone master="{self.device_id}">{slaves_xml}</zone>')
+            return self._post("/removeZone",
+                              f'<zone master="{self.device_id}">{slaves_xml}</zone>')
+        return True
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4096,9 +4097,9 @@ class Handler(BaseHTTPRequestHandler):
             host = qs.get("host",[None])[0]
             dev  = self.server_state.get_device(host)
             if dev:
-                dev.remove_zone()
+                ok = dev.remove_zone()
                 for d in list(self.server_state.devices): d.invalidate_zone_cache()
-                self._json({"ok":True})
+                self._json({"ok": bool(ok)})
             else:
                 self._json({"ok":False,"error":"no_device"})
 
