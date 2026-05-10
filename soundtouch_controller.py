@@ -365,6 +365,12 @@ class SoundTouchDevice:
         body = f'<ContentItem source="{source}" sourceAccount="{account}"></ContentItem>'
         self._post("/select", body)
 
+    def has_local_internet_radio(self):
+        try:
+            return any(s["source"] == "LOCAL_INTERNET_RADIO" for s in self.get_sources())
+        except Exception:
+            return True  # assume available on error so existing speakers aren't broken
+
     def set_name(self, new_name):
         self._post("/name", f"<name>{new_name}</name>")
 
@@ -667,6 +673,333 @@ class PresetStore:
                 "isRealtime":  True,
             }
         })
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DLNA / UPnP ContentDirectory server
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class DLNAServer:
+    """Minimal UPnP MediaServer so speakers without LOCAL_INTERNET_RADIO can play
+    our custom radio stations as STORED_MUSIC presets.
+
+    Responsibilities:
+      - SSDP alive/byebye multicast and M-SEARCH unicast reply (UDP 1900)
+      - /dlna/device.xml      — UPnP device description
+      - /dlna/cd.xml          — ContentDirectory SCPD
+      - /dlna/cd/control      — SOAP Browse handler (called by Handler.do_POST)
+      - /dlna/stream/<id>     — 302 redirect to the station's actual stream URL
+    """
+
+    _MCAST_ADDR     = "239.255.255.250"
+    _MCAST_PORT     = 1900
+    _ALIVE_INTERVAL = 60
+    _CACHE_CONTROL  = "max-age=1800"
+    DEVICE_TYPE     = "urn:schemas-upnp-org:device:MediaServer:1"
+    CD_SERVICE      = "urn:schemas-upnp-org:service:ContentDirectory:1"
+
+    def __init__(self, uuid, http_port, local_ip, store):
+        self.uuid      = uuid          # bare UUID string, no "uuid:" prefix
+        self.udn       = f"uuid:{uuid}"
+        self.http_port = http_port
+        self.local_ip  = local_ip
+        self.store     = store
+        self._running  = False
+        self._sock     = None
+
+    @property
+    def base_url(self):
+        return f"http://{self.local_ip}:{self.http_port}"
+
+    @property
+    def device_url(self):
+        return f"{self.base_url}/dlna/device.xml"
+
+    # ── lifecycle ─────────────────────────────────────────────────────────────
+
+    def start(self):
+        self._running = True
+        threading.Thread(target=self._run, daemon=True, name="dlna-ssdp").start()
+        log.info(f"[DLNA] SSDP started  uuid={self.uuid}  base={self.base_url}")
+
+    def stop(self):
+        self._running = False
+        if self._sock:
+            try: self._sock.close()
+            except Exception: pass
+
+    # ── SSDP internals ────────────────────────────────────────────────────────
+
+    def _nt_pairs(self):
+        return [
+            ("upnp:rootdevice",   f"{self.udn}::upnp:rootdevice"),
+            (self.udn,             self.udn),
+            (self.DEVICE_TYPE,    f"{self.udn}::{self.DEVICE_TYPE}"),
+            (self.CD_SERVICE,     f"{self.udn}::{self.CD_SERVICE}"),
+        ]
+
+    def _send_alive(self, sock):
+        for nt, usn in self._nt_pairs():
+            msg = (
+                "NOTIFY * HTTP/1.1\r\n"
+                f"HOST: {self._MCAST_ADDR}:{self._MCAST_PORT}\r\n"
+                "NTS: ssdp:alive\r\n"
+                f"NT: {nt}\r\n"
+                f"USN: {usn}\r\n"
+                f"LOCATION: {self.device_url}\r\n"
+                f"CACHE-CONTROL: {self._CACHE_CONTROL}\r\n"
+                "SERVER: Linux/1.0 UPnP/1.0 SoundTouchRadio/1.0\r\n"
+                "\r\n"
+            )
+            try: sock.sendto(msg.encode(), (self._MCAST_ADDR, self._MCAST_PORT))
+            except Exception: pass
+
+    def _send_byebye(self, sock):
+        for nt, usn in self._nt_pairs():
+            msg = (
+                "NOTIFY * HTTP/1.1\r\n"
+                f"HOST: {self._MCAST_ADDR}:{self._MCAST_PORT}\r\n"
+                "NTS: ssdp:byebye\r\n"
+                f"NT: {nt}\r\n"
+                f"USN: {usn}\r\n"
+                "\r\n"
+            )
+            try: sock.sendto(msg.encode(), (self._MCAST_ADDR, self._MCAST_PORT))
+            except Exception: pass
+
+    def _respond_msearch(self, sock, addr, st):
+        our_types = {"ssdp:all", "upnp:rootdevice", self.udn,
+                     self.DEVICE_TYPE, self.CD_SERVICE}
+        if st not in our_types:
+            return
+        pairs = self._nt_pairs() if st == "ssdp:all" else \
+                [(t, u) for t, u in self._nt_pairs() if t == st]
+        for nt, usn in pairs:
+            msg = (
+                "HTTP/1.1 200 OK\r\n"
+                f"CACHE-CONTROL: {self._CACHE_CONTROL}\r\n"
+                f"LOCATION: {self.device_url}\r\n"
+                f"ST: {nt}\r\n"
+                f"USN: {usn}\r\n"
+                "SERVER: Linux/1.0 UPnP/1.0 SoundTouchRadio/1.0\r\n"
+                f"DATE: {time.strftime('%a, %d %b %Y %H:%M:%S GMT', time.gmtime())}\r\n"
+                "\r\n"
+            )
+            try: sock.sendto(msg.encode(), addr)
+            except Exception: pass
+
+    def _run(self):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try: sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except AttributeError: pass
+            sock.bind(("", self._MCAST_PORT))
+            mreq = struct.pack("4sL", socket.inet_aton(self._MCAST_ADDR), socket.INADDR_ANY)
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            sock.settimeout(2.0)
+            self._sock = sock
+
+            self._send_alive(sock)
+            next_alive = time.monotonic() + self._ALIVE_INTERVAL
+
+            while self._running:
+                try:
+                    data, addr = sock.recvfrom(4096)
+                except socket.timeout:
+                    if time.monotonic() >= next_alive:
+                        self._send_alive(sock)
+                        next_alive = time.monotonic() + self._ALIVE_INTERVAL
+                    continue
+                try:
+                    text = data.decode("utf-8", errors="replace")
+                    if text.startswith("M-SEARCH"):
+                        m = re.search(r"ST:\s*(\S+)", text, re.IGNORECASE)
+                        if m:
+                            self._respond_msearch(sock, addr, m.group(1).strip())
+                except Exception:
+                    pass
+
+            self._send_byebye(sock)
+        except Exception as e:
+            log.error(f"[DLNA] SSDP thread error: {e}")
+        finally:
+            try:
+                if self._sock: self._sock.close()
+            except Exception:
+                pass
+
+    # ── HTTP content (called from Handler) ───────────────────────────────────
+
+    def device_xml(self):
+        return (
+            '<?xml version="1.0"?>'
+            '<root xmlns="urn:schemas-upnp-org:device-1-0">'
+            '<specVersion><major>1</major><minor>0</minor></specVersion>'
+            f'<URLBase>{self.base_url}</URLBase>'
+            '<device>'
+            f'<deviceType>{self.DEVICE_TYPE}</deviceType>'
+            '<friendlyName>SoundTouch Radio</friendlyName>'
+            '<manufacturer>SoundTouchController</manufacturer>'
+            '<modelName>Radio Station Server</modelName>'
+            f'<UDN>{self.udn}</UDN>'
+            '<serviceList><service>'
+            f'<serviceType>{self.CD_SERVICE}</serviceType>'
+            '<serviceId>urn:upnp-org:serviceId:ContentDirectory</serviceId>'
+            '<SCPDURL>/dlna/cd.xml</SCPDURL>'
+            '<controlURL>/dlna/cd/control</controlURL>'
+            '<eventSubURL>/dlna/cd/events</eventSubURL>'
+            '</service></serviceList>'
+            '</device>'
+            '</root>'
+        ).encode()
+
+    def cd_scpd_xml(self):
+        return b"""<?xml version="1.0"?>
+<scpd xmlns="urn:schemas-upnp-org:service-1-0">
+  <specVersion><major>1</major><minor>0</minor></specVersion>
+  <actionList>
+    <action>
+      <name>Browse</name>
+      <argumentList>
+        <argument><name>ObjectID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_ObjectID</relatedStateVariable></argument>
+        <argument><name>BrowseFlag</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_BrowseFlag</relatedStateVariable></argument>
+        <argument><name>Filter</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Filter</relatedStateVariable></argument>
+        <argument><name>StartingIndex</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Index</relatedStateVariable></argument>
+        <argument><name>RequestedCount</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable></argument>
+        <argument><name>SortCriteria</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_SortCriteria</relatedStateVariable></argument>
+        <argument><name>Result</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_Result</relatedStateVariable></argument>
+        <argument><name>NumberReturned</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable></argument>
+        <argument><name>TotalMatches</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable></argument>
+        <argument><name>UpdateID</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_UpdateID</relatedStateVariable></argument>
+      </argumentList>
+    </action>
+  </actionList>
+  <serviceStateTable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_ObjectID</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_Result</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_BrowseFlag</name><dataType>string</dataType>
+      <allowedValueList><allowedValue>BrowseMetadata</allowedValue><allowedValue>BrowseDirectChildren</allowedValue></allowedValueList>
+    </stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_Filter</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_SortCriteria</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_Index</name><dataType>ui4</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_Count</name><dataType>ui4</dataType></stateVariable>
+    <stateVariable sendEvents="yes"><name>SystemUpdateID</name><dataType>ui4</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_UpdateID</name><dataType>ui4</dataType></stateVariable>
+  </serviceStateTable>
+</scpd>"""
+
+    # ── DIDL-Lite helpers ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _esc(s):
+        return (s.replace("&", "&amp;").replace("<", "&lt;")
+                 .replace(">", "&gt;").replace('"', "&quot;"))
+
+    def _item_xml(self, st):
+        sid = st["id"]
+        stream_url = f"{self.base_url}/dlna/stream/{sid}"
+        return (
+            f'<item id="station/{self._esc(sid)}" parentID="0" restricted="1">'
+            f'<dc:title>{self._esc(st["name"])}</dc:title>'
+            '<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>'
+            f'<res protocolInfo="http-get:*:audio/mpeg:*">{self._esc(stream_url)}</res>'
+            '</item>'
+        )
+
+    _DIDL_NS = (
+        'xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
+        'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+        'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"'
+    )
+
+    def browse_response(self, object_id, browse_flag):
+        """Return (didl_str, number_returned, total_matches)."""
+        stations = self.store.list_stations()
+
+        if object_id == "0":
+            if browse_flag == "BrowseMetadata":
+                didl = (
+                    f'<DIDL-Lite {self._DIDL_NS}>'
+                    f'<container id="0" parentID="-1" restricted="1" childCount="{len(stations)}">'
+                    '<dc:title>Radio Stations</dc:title>'
+                    '<upnp:class>object.container</upnp:class>'
+                    '</container></DIDL-Lite>'
+                )
+                return didl, 1, 1
+            else:  # BrowseDirectChildren
+                items = "".join(self._item_xml(s) for s in stations)
+                didl = f'<DIDL-Lite {self._DIDL_NS}>{items}</DIDL-Lite>'
+                return didl, len(stations), len(stations)
+
+        if object_id.startswith("station/"):
+            sid = object_id[len("station/"):]
+            st = self.store.get_station(sid)
+            if st:
+                didl = f'<DIDL-Lite {self._DIDL_NS}>{self._item_xml(st)}</DIDL-Lite>'
+                return didl, 1, 1
+
+        empty = f'<DIDL-Lite {self._DIDL_NS}></DIDL-Lite>'
+        return empty, 0, 0
+
+    # ── SOAP ─────────────────────────────────────────────────────────────────
+
+    def handle_soap(self, body_bytes):
+        """Parse a SOAP Browse request and return the SOAP response as bytes."""
+        try:
+            xml = ET.fromstring(body_bytes)
+            ns_s = "http://schemas.xmlsoap.org/soap/envelope/"
+            ns_u = "urn:schemas-upnp-org:service:ContentDirectory:1"
+            body_el = xml.find(f"{{{ns_s}}}Body")
+            if body_el is None:
+                return self._soap_error(401, "Invalid Action")
+            browse_el = body_el.find(f"{{{ns_u}}}Browse")
+            if browse_el is None:
+                return self._soap_error(401, "Invalid Action")
+
+            object_id   = (browse_el.findtext("ObjectID",   default="0") or "0").strip()
+            browse_flag = (browse_el.findtext("BrowseFlag", default="BrowseDirectChildren") or "").strip()
+            if browse_flag not in ("BrowseMetadata", "BrowseDirectChildren"):
+                browse_flag = "BrowseDirectChildren"
+
+            didl, returned, total = self.browse_response(object_id, browse_flag)
+            log.debug(f"[DLNA] Browse({object_id!r},{browse_flag}) → {returned} item(s)")
+
+            return (
+                '<?xml version="1.0" encoding="utf-8"?>'
+                '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+                's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+                '<s:Body>'
+                '<u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">'
+                f'<Result>{self._esc(didl)}</Result>'
+                f'<NumberReturned>{returned}</NumberReturned>'
+                f'<TotalMatches>{total}</TotalMatches>'
+                '<UpdateID>1</UpdateID>'
+                '</u:BrowseResponse>'
+                '</s:Body>'
+                '</s:Envelope>'
+            ).encode("utf-8")
+
+        except Exception as e:
+            log.error(f"[DLNA] SOAP error: {e}")
+            return self._soap_error(501, "Action Failed")
+
+    @staticmethod
+    def _soap_error(code, desc):
+        return (
+            '<?xml version="1.0"?>'
+            '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
+            '<s:Body><s:Fault>'
+            '<faultcode>s:Client</faultcode>'
+            '<faultstring>UPnPError</faultstring>'
+            '<detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0">'
+            f'<errorCode>{code}</errorCode>'
+            f'<errorDescription>{desc}</errorDescription>'
+            '</UPnPError></detail>'
+            '</s:Fault></s:Body>'
+            '</s:Envelope>'
+        ).encode("utf-8")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3979,15 +4312,33 @@ class Handler(BaseHTTPRequestHandler):
             elif not data:
                 self._json({"ok":False,"error":"no_backup"})
             else:
-                count = 0
+                has_local_ir = dev.has_local_internet_radio()
+                dlna = self.server_state.dlna
+                count = 0; skipped = 0
                 for p in data.get("presets",[]):
                     pid = p.get("id","")
-                    if pid and p.get("source"):
-                        dev.store_preset(pid, p.get("name",""),
-                                         p["source"], p.get("type",""),
-                                         p.get("location",""), p.get("account",""))
+                    if not pid or not p.get("source"):
+                        continue
+                    src  = p["source"]
+                    loc  = p.get("location","")
+                    name = p.get("name","")
+                    if src == "LOCAL_INTERNET_RADIO" and not has_local_ir:
+                        # Convert to STORED_MUSIC via our embedded DLNA server
+                        station_id = loc.rstrip("/").split("/")[-1]
+                        st = self.server_state.store.get_station(station_id)
+                        if st:
+                            dev.store_preset(pid, name, "STORED_MUSIC", "tracklist",
+                                             f"station/{station_id}", dlna.udn)
+                            count += 1
+                        else:
+                            log.warning(f"[restore] no station file for {station_id!r} — skipping preset {pid}")
+                            skipped += 1
+                    else:
+                        dev.store_preset(pid, name, src, p.get("type",""),
+                                         loc, p.get("account",""))
                         count += 1
-                self._json({"ok":True,"count":count})
+                self._json({"ok":True,"count":count,"skipped":skipped,
+                            "dlna_mode": not has_local_ir})
 
         # ── custom stations ───────────────────────────────────────────────────
         elif path == "/api/stations/stream-search":
@@ -4410,6 +4761,28 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/tts/status":
             self._json({"available": _TTS_AVAILABLE})
 
+        # ── DLNA / UPnP ──────────────────────────────────────────────────────
+        elif path == "/dlna/device.xml":
+            self._respond(200, "text/xml", self.server_state.dlna.device_xml())
+
+        elif path == "/dlna/cd.xml":
+            self._respond(200, "text/xml", self.server_state.dlna.cd_scpd_xml())
+
+        elif path.startswith("/dlna/stream/"):
+            sid = path.split("/")[-1]
+            st = self.server_state.store.get_station(sid)
+            if st and st.get("stream_url"):
+                self.send_response(302)
+                self.send_header("Location", st["stream_url"])
+                self.end_headers()
+            else:
+                self._respond(404, "text/plain", b"Station not found")
+
+        elif path == "/api/dlna/info":
+            d = self.server_state.dlna
+            self._json({"udn": d.udn, "base_url": d.base_url,
+                        "device_url": d.device_url})
+
         else:
             self._respond(404, "text/plain", b"Not found")
 
@@ -4422,7 +4795,12 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/"):
             log.info(f"[API POST] {path}  body={body[:300].decode('utf-8','replace')}")
 
-        if path == "/api/stations/add":
+        if path == "/dlna/cd/control":
+            resp = self.server_state.dlna.handle_soap(body)
+            self._respond(200, 'text/xml; charset="utf-8"', resp)
+            return
+
+        elif path == "/api/stations/add":
             try:
                 data = json.loads(body)
                 name = data.get("name","").strip()
@@ -4535,6 +4913,17 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._respond(404, "text/plain", b"Not found")
 
+    def do_SUBSCRIBE(self):
+        # UPnP eventing stub — return a valid SID so the speaker doesn't retry
+        self.send_response(200)
+        self.send_header("SID", f"uuid:{_uuid.uuid4()}")
+        self.send_header("TIMEOUT", "Second-1800")
+        self.end_headers()
+
+    def do_UNSUBSCRIBE(self):
+        self.send_response(200)
+        self.end_headers()
+
     def _json(self, obj):
         payload = json.dumps(obj)
         p = urlparse(self.path).path
@@ -4570,6 +4959,19 @@ class AppState:
         self.alarm_store  = AlarmStore()
         self.scheduler    = None   # set in main() after state is created
         self.web_port     = web_port
+
+        # DLNA server — load or generate a stable UUID so the speaker can
+        # always resolve the same sourceAccount after a restart.
+        uuid_path = DATA_DIR / "dlna_uuid.txt"
+        if uuid_path.exists():
+            dlna_uuid = uuid_path.read_text().strip()
+        else:
+            dlna_uuid = str(_uuid.uuid4())
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            uuid_path.write_text(dlna_uuid)
+        local_ip = get_local_ip()
+        self.dlna = DLNAServer(dlna_uuid, web_port, local_ip, self.store)
+        self.dlna.start()
 
     def scan(self):
         log.info("Scanning network…")
