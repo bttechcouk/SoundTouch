@@ -5016,11 +5016,19 @@ class AppState:
         t.start()
 
     def _upnp_autoplay_loop(self):
-        """Watch Kitchen-like speakers (no LOCAL_INTERNET_RADIO) for UPNP+stopped state.
-        Physical preset button presses load the UPNP ContentItem but leave the speaker
-        in STOP_STATE — this thread detects that and fires AVTransport Play automatically."""
-        dlna_prefix = f"http://{get_local_ip()}:{self.web_port}/dlna/stream/"
-        last_loc = {}  # host → last location we auto-played (debounce)
+        """Watch Kitchen-like speakers (no LOCAL_INTERNET_RADIO) for UPNP preset presses.
+
+        Physical preset buttons cause two distinct speaker behaviours:
+          - UPNP + stopped: speaker loaded the ContentItem but won't auto-play it
+          - INVALID_SOURCE: speaker went straight to error (most common on first press)
+
+        For UPNP+stopped we fire AVTransport immediately.
+        For INVALID_SOURCE we fire on the *transition* into that state using the last
+        UPNP location we observed — this handles the physical-button first-press case."""
+        dlna_prefix  = f"http://{get_local_ip()}:{self.web_port}/dlna/stream/"
+        last_upnp_loc = {}   # host → most recent UPNP/dlna location seen
+        last_fired    = {}   # host → location we last sent AVTransport Play for
+        prev_source   = {}   # host → source from the previous poll cycle
         while True:
             time.sleep(2)
             with self._lock:
@@ -5034,24 +5042,37 @@ class AppState:
                     np = dev._get("/now_playing")
                     if np is None:
                         continue
-                    if np.get("source", "") != "UPNP":
-                        last_loc[dev.host] = None
-                        continue
+                    source = np.get("source", "")
                     play_status = np.get("playStatus") or np.findtext("playStatus") or ""
-                    if play_status in ("PLAY_STATE", "BUFFERING_STATE"):
-                        last_loc[dev.host] = None
-                        continue
-                    ci = np.find("ContentItem")
-                    if ci is None:
-                        continue
-                    loc = ci.get("location", "")
-                    if not loc.startswith(dlna_prefix):
-                        continue
-                    if loc == last_loc.get(dev.host):
-                        continue  # already triggered, don't fire again for same track
-                    log.info(f"[AVT-AUTO] {dev.host} UPNP+stopped → auto-play {loc}")
-                    if dev.play_via_avt(loc):
-                        last_loc[dev.host] = loc
+                    ci  = np.find("ContentItem")
+                    loc = ci.get("location", "") if ci is not None else ""
+
+                    if source == "UPNP":
+                        if loc.startswith(dlna_prefix):
+                            last_upnp_loc[dev.host] = loc
+                        if play_status in ("PLAY_STATE", "BUFFERING_STATE"):
+                            # Now playing — allow the same location to be re-triggered later
+                            last_fired.pop(dev.host, None)
+                        elif loc and loc.startswith(dlna_prefix) and loc != last_fired.get(dev.host):
+                            log.info(f"[AVT-AUTO] {dev.host} UPNP+stopped → auto-play {loc}")
+                            if dev.play_via_avt(loc):
+                                last_fired[dev.host] = loc
+
+                    elif source == "INVALID_SOURCE":
+                        # Only act on the *transition* into INVALID_SOURCE; repeated polls are skipped.
+                        # Physical preset buttons on UPNP-only speakers land here on first press.
+                        if prev_source.get(dev.host) not in (None, "INVALID_SOURCE"):
+                            target = last_upnp_loc.get(dev.host)
+                            if target and target != last_fired.get(dev.host):
+                                log.info(f"[AVT-AUTO] {dev.host} → INVALID_SOURCE, auto-play {target}")
+                                if dev.play_via_avt(target):
+                                    last_fired[dev.host] = target
+
+                    else:
+                        last_upnp_loc.pop(dev.host, None)
+                        last_fired.pop(dev.host, None)
+
+                    prev_source[dev.host] = source
                 except Exception as e:
                     log.debug(f"[AVT-AUTO] {dev.host} error: {e}")
 
