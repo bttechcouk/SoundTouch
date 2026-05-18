@@ -32,8 +32,8 @@ cd matter_bridge && npm install
 ## Service management
 
 ```bash
-systemctl --user status|restart|stop soundtouch          # web controller
-systemctl --user status|restart|stop soundtouch-matter   # Matter bridge
+systemctl --user restart|stop|status soundtouch          # web controller
+systemctl --user restart|stop|status soundtouch-matter   # Matter bridge
 journalctl --user -u soundtouch -f                       # controller live logs
 journalctl --user -u soundtouch-matter -f                # bridge live logs
 ```
@@ -42,118 +42,11 @@ journalctl --user -u soundtouch-matter -f                # bridge live logs
 
 | Port | Protocol | Purpose |
 |------|----------|---------|
-| 8888 | TCP | Web UI |
+| 8888 | TCP | Web UI and DLNA redirect endpoints |
 | 8090 | TCP | SoundTouch speaker API (outbound to speaker) |
+| 8091 | TCP | UPnP AVTransport on speaker (outbound, used for UPNP-only speakers) |
+| 1900 | UDP | SSDP multicast — DLNA server announcements |
 | 5540 | UDP | Matter protocol (Alexa smart home) |
-
-## Architecture
-
-Two processes, both must run together for Alexa integration to work.
-
-### `soundtouch_controller.py` (~4700 lines)
-
-Single-file Python app. All classes in one file.
-
-**`SoundTouchDevice` (line 209)** — HTTP REST client for a speaker's port-8090 XML API. `_get()` / `_post()` are the low-level transport; `_key()` sends remote-key presses. `state()` aggregates volume + now-playing + presets + zone role into a single dict for the web UI.
-
-Key methods:
-- `state()` — aggregates volume, now-playing, presets, and zone role (`group_role`: `"master"`, `"member"`, or `""`)
-- `get_zone()` / `set_zone()` / `remove_zone()` — multi-room zone management via `/getZone` / `/setZone` / `/removeZone`
-- `get_bass_capabilities()` / `get_bass()` / `set_bass()` — bass control via `/bassCapabilities` and `/bass`
-- `get_sources()` / `select_source()` — source switching (backend only; no UI)
-- `detail_info()` — device details from `/info` (firmware, IP, MAC, serial, model, deviceID)
-- `set_name()` — rename via `POST /name`
-
-**`PresetStore` (line 573)** — Reads/writes preset backups as JSON to `data/presets/<ip>.json` and custom station definitions to `data/stations/<id>.json`. The station server in `Handler` serves `station_descriptor()` JSON so the speaker can resolve a custom stream URL.
-
-**`SceneStore` (line 676)** — Persists named scenes as JSON to `data/scenes/<id>.json`. A scene captures the playing state of multiple speakers so it can be replayed in one action.
-
-**`AlarmStore` / `AlarmScheduler` (lines 710, 749)** — `AlarmStore` persists alarm definitions to `data/alarms.json`. `AlarmScheduler` runs a background thread that fires alarms at their scheduled time, triggering playback on configured speakers.
-
-**Discovery (line 809)** — `discover_mdns()` uses zeroconf to find `_soundtouch._tcp.local.` services. `discover_subnet_scan()` concurrently probes all 254 hosts on the local /24. Both run in parallel via `discover_all()`.
-
-**PWA assets (lines 82–120)** — Service worker (`/sw.js`), app icon SVG (`/icon.svg`), and PNG icon generator for the PWA manifest and apple-touch-icon are embedded as constants before the class definitions.
-
-**`Handler` (line 3830)** — `BaseHTTPRequestHandler` serving the web UI and a REST API under `/api/`.
-
-Key API endpoints:
-- `GET /api/state?host=` — full speaker state (volume, playing, presets, group role)
-- `GET /api/cmd?host=&action=&value=` — actions: `playpause`, `next`, `prev`, `power`, `mute`, `preset1`–`6`, `volume`, `bass`
-- `GET /api/speakers` — list of discovered speakers with `has_backup` field
-- `GET /api/scan` — trigger rediscovery
-- `GET /api/bass?host=` — bass capabilities and current level
-- `GET /api/device-info?host=` — model, firmware, IP, MAC, serial, device ID
-- `GET /api/rename?host=&name=` — rename speaker
-- `GET /api/presets/backup-all` — backup all speakers at once
-- `GET /api/presets/backup?host=` / `GET /api/presets/restore?host=` — per-speaker backup/restore
-- `GET /api/presets/health?host=` — compare live presets against backup
-- `GET /api/group?host=` — zone membership info
-- `POST /api/group/create`, `/api/group/remove`, `/api/group/party`, `/api/group/dissolve-all`, `/api/group/join`
-- `GET /api/stations` / `POST /api/stations/add` / `POST /api/stations/delete` — custom radio stations
-- `GET /api/stations/play?host=&id=` — play a custom station immediately
-- `POST /api/stations/set-preset` — assign a custom station to a preset slot
-- `GET /api/stations/stream-search` — search for a stream URL by station name
-- `GET /api/scenes` / `POST /api/scenes` / `POST /api/scenes/delete` / `POST /api/scenes/activate` — named multi-speaker scenes
-- `GET /api/alarms` / `POST /api/alarms` / `POST /api/alarms/delete` / `POST /api/alarms/toggle` — wake-up alarms
-- `POST /api/tts/announce` — generate gTTS audio and play on speakers; `GET /api/tts/status` — check gTTS availability
-- `GET /api/volume/all` — set volume on all speakers simultaneously
-- `GET /api/sources?host=` / `POST /api/select` — source listing and switching
-- `GET /api/matter/qr` — Matter bridge commissioning QR and status
-
-**`AppState` (line 4564)** — Singleton holding the discovered device list, `PresetStore`, `SceneStore`, `AlarmStore`, and `AlarmScheduler`. Passed to `Handler` via `Handler.server_state`.
-
-**`main()` (line 4640)** — Parses `--port`, `--ip`, `--daemon`. Runs a network diagnostic (`_check_network()`), starts `AppState.scan()`, then launches `ThreadingHTTPServer`.
-
-### `matter_bridge/matter_bridge.js`
-
-Node.js process using `@project-chip/matter-node.js` v0.7.5.
-
-On startup it calls `GET /api/speakers` (retrying for up to 120 s until the Python controller is ready), then `GET /api/state?host=<ip>` for each speaker to read preset names. It registers:
-- Each preset slot (1–6) per speaker as an `OnOffPluginUnitDevice`
-- A power toggle per speaker as an `OnOffPluginUnitDevice`
-- A volume control per speaker as a `DimmablePluginUnitDevice` (maps 0–254 Matter level to 0–100 speaker volume)
-
-All devices are registered inside a Matter `Aggregator` (bridge device type). When Alexa sends a command, the bridge calls `/api/cmd` on the Python controller.
-
-Key config constants at the top of `matter_bridge.js`:
-- `LABEL_FORMAT` / `POWER_FORMAT` / `VOLUME_FORMAT` — device name templates (`{preset}`, `{room}` tokens)
-- `PASSCODE` / `DISCRIMINATOR` — Matter commissioning credentials (fixed; change requires recommissioning)
-- `BRIDGE_API_PORT = 8889` — local HTTP server serving `/qr` for the web UI QR panel
-
-Commissioning state is persisted to `matter_bridge/data/matter/bridge.json`. Delete this file and restart to force recommissioning.
-
-## Web UI structure (inside `HTML` string)
-
-**Tabs:** Player, Presets, Groups, Settings  
-**Tab persistence:** active tab saved to `localStorage` and restored on load
-
-**Player tab key elements:**
-- `#art-wrap` / `#art` — album art with placeholder
-- `#track-info` — track name, artist, source badge (`#source-badge`), group role badge (`#group-badge`)
-- `#vol-row` — volume slider with nudge buttons and floating `#vol-tooltip`
-- `#transport` — play/pause, prev, next, power (`#btn-power`), mute (`#btn-mute`)
-- `#presets-grid` — 6 preset buttons rendered from poll state
-
-**Settings tab** — four collapsible panels using `toggleSection(bodyId, chevronId)`:
-1. Discover Speakers — scan button
-2. Speaker Details — device info table, rename, bass slider (`#bass-row`, shown when `bassAvailable`)
-3. Preset Backup — backup-all button
-4. Alexa Integration — how-to text + nested Commission Matter Bridge panel (`toggleQR()`)
-
-**Key JS functions:**
-- `setActive(host)` — switch active speaker; triggers poll and reloads open Settings sections
-- `pollNow()` / `schedPoll()` — 3s active-speaker poll loop
-- `bgPollAll()` — 12s background poll of all non-active speakers (updates chip playing state)
-- `applyState(d)` — applies poll response to UI (track, volume, playing state, badges, presets)
-- `loadSpeakerInfo()` — fetches `/api/device-info` and renders Settings > Speaker Details
-- `loadBass()` — fetches `/api/bass` and shows/hides bass slider in Speaker Details
-- `loadAlexaQR()` — fetches `/api/matter/qr` and updates commissioning status badge
-- `toggleSection(bodyId, chevronId)` — expand/collapse a Settings panel; triggers lazy load
-- `switchTab(name)` — switches visible page, saves to localStorage
-
-## Custom internet radio presets
-
-Edit the `LOCAL_INTERNET_RADIO` list near the top of `soundtouch_controller.py` to add hardcoded stream presets. Dynamic custom stations are saved via the web UI and stored in `data/stations/`.
 
 ## Logs
 
@@ -166,3 +59,119 @@ Python: `requests`, `zeroconf`, `Pillow` (optional — album art)
 Node.js: `@project-chip/matter-node.js` (ESM, `"type": "module"` in package.json)
 
 No test suite. No linter configuration.
+
+---
+
+## Architecture
+
+Two processes, both must run together for Alexa integration to work.
+
+### `soundtouch_controller.py` (~5200 lines)
+
+Single-file Python app. All classes in one file.
+
+**`SoundTouchDevice` (line 209)** — HTTP REST client for a speaker's port-8090 XML API. `_get()` / `_post()` are the low-level transport; `_key()` sends remote-key presses.
+
+Key methods:
+- `state()` — aggregates volume, now-playing, presets, and zone role into a dict for the web UI. Includes `_upnp_location` (ContentItem location from now_playing) which the `/api/state` handler uses to overlay station metadata for UPNP speakers.
+- `has_local_internet_radio()` (line 368) — checks `/sources` for `LOCAL_INTERNET_RADIO`. Returns `True` on error (fail-safe for normal speakers). Used to detect "Kitchen-like" speakers provisioned after Bose disabled internet radio.
+- `play_via_avt(stream_url)` (line 511) — plays a stream via UPnP AVTransport SOAP on port 8091. Used for speakers without `LOCAL_INTERNET_RADIO`. URL must be HTTP (not HTTPS); the speaker follows 302 redirects.
+- `get_zone()` / `set_zone()` / `remove_zone()` — multi-room zone management
+- `get_bass_capabilities()` / `get_bass()` / `set_bass()` — bass control
+- `detail_info()` — device details from `/info`
+- `set_name()` — rename via `POST /name`
+
+**`PresetStore` (line 624)** — Reads/writes preset backups as JSON to `data/presets/<ip>.json` and custom station definitions to `data/stations/<id>.json`. `station_descriptor()` (line 706) returns the JSON the speaker fetches to resolve a `LOCAL_INTERNET_RADIO` stream URL.
+
+**`DLNAServer` (line 727)** — Embedded UPnP MediaServer for speakers that lack `LOCAL_INTERNET_RADIO`. Runs SSDP announcements on UDP 1900 and serves:
+- `GET /dlna/device.xml` — UPnP device description
+- `GET /dlna/cd.xml` — ContentDirectory SCPD
+- `POST /dlna/cd/control` — SOAP Browse handler (returns DIDL-Lite for all custom stations)
+- `GET /dlna/stream/<id>` — HTTP 302 redirect to the real HTTPS stream URL
+
+`stream_url(station_id)` (line 760) returns the HTTP redirect URL used as the ContentItem location in UPNP presets. UUID is persisted to `data/dlna_uuid.txt`.
+
+**`SceneStore` (line 1040)** — Persists named scenes as JSON to `data/scenes/<id>.json`.
+
+**`AlarmStore` / `AlarmScheduler` (lines 1074, 1113)** — Persist alarm definitions to `data/alarms.json`; background thread fires alarms at scheduled times.
+
+**Discovery (line 1173)** — `discover_mdns()` uses zeroconf for `_soundtouch._tcp.local.`; `discover_subnet_scan()` concurrently probes all 254 hosts on the local /24. Both run in parallel via `discover_all()`.
+
+**`HTML` string (line 1279)** — The entire single-page web UI is embedded here: all HTML, CSS, and JavaScript. Tabs: Player, Presets, Groups, Settings.
+
+**`Handler` (line 4257)** — `BaseHTTPRequestHandler` serving the web UI and REST API.
+
+Key API endpoints:
+- `GET /api/state?host=` — full speaker state; overlays station name/art from `PresetStore` when `source=UPNP` and location matches `/dlna/stream/`
+- `GET /api/cmd?host=&action=&value=` — actions: `playpause`, `next`, `prev`, `power`, `mute`, `preset1`–`6`, `volume`, `bass`. Preset actions check if the preset is `UPNP` source and call `play_via_avt()` instead of sending a key press.
+- `GET /api/speakers` — discovered speakers list
+- `GET /api/scan` — trigger rediscovery
+- `GET /api/bass?host=` / `GET /api/device-info?host=` / `GET /api/rename?host=&name=`
+- `GET /api/presets/backup?host=` / `GET /api/presets/restore?host=` — restore converts `LOCAL_INTERNET_RADIO` presets to `UPNP` for Kitchen-like speakers
+- `GET /api/presets/backup-all` / `GET /api/presets/health?host=`
+- `GET /api/group?host=` / `POST /api/group/create|remove|party|dissolve-all|join`
+- `GET /api/stations` / `POST /api/stations/add|delete` / `GET /api/stations/play?host=&id=` / `POST /api/stations/set-preset` / `GET /api/stations/stream-search`
+- `GET /api/scenes` / `POST /api/scenes|scenes/delete|scenes/activate`
+- `GET /api/alarms` / `POST /api/alarms|alarms/delete|alarms/toggle`
+- `POST /api/tts/announce` / `GET /api/tts/status`
+- `GET /api/volume/all` / `GET /api/sources?host=` / `POST /api/select`
+- `GET /api/matter/qr`
+
+**`AppState` (line 5074)** — Singleton holding the device list, `PresetStore`, `SceneStore`, `AlarmStore`, `AlarmScheduler`, and `DLNAServer`. On init, starts the DLNA server and the `_upnp_autoplay_loop` daemon thread.
+
+`_upnp_autoplay_loop` (line 5098) — Polls Kitchen-like speakers every 2s. Fires `play_via_avt()` when it detects either `source=UPNP`+stopped (ContentItem has our DLNA URL) or a fresh transition into `source=INVALID_SOURCE` (the more common case when a physical preset button is pressed). Uses `prev_source`, `last_upnp_loc`, and `last_fired` dicts for debounce.
+
+**`main()` (line 5225)** — Parses `--port`, `--ip`, `--daemon`, runs `_check_network()`, starts `AppState.scan()`, launches `ThreadingHTTPServer`.
+
+### UPNP-only speakers (Kitchen-like)
+
+Some speakers (provisioned after Bose disabled internet radio) have no `LOCAL_INTERNET_RADIO` source. The controller handles these transparently:
+
+- **Playing a custom station** → `play_via_avt()` via DLNA redirect URL instead of `select_content("LOCAL_INTERNET_RADIO", ...)`
+- **Setting a preset** → stored as `source=UPNP` with `location=http://<host>:8888/dlna/stream/<id>` instead of `LOCAL_INTERNET_RADIO`
+- **Restoring presets** → `LOCAL_INTERNET_RADIO` entries in the backup are converted to `UPNP` on restore
+- **Web UI preset buttons** → `/api/cmd` detects `UPNP` source presets and calls `play_via_avt()` instead of sending a key press
+- **Physical preset buttons** → handled by `_upnp_autoplay_loop` (see known issue #44 — first press may not work reliably)
+- **`/api/state` station metadata** → name and art injected from station store when `_upnp_location` matches `/dlna/stream/`
+
+### `matter_bridge/matter_bridge.js`
+
+Node.js process using `@project-chip/matter-node.js` v0.7.5. Registers each speaker's preset slots (1–6), power toggle, and volume control as Matter devices inside an Aggregator bridge. Calls `/api/cmd` on the Python controller when Alexa sends a command.
+
+Key config constants at the top:
+- `LABEL_FORMAT` / `POWER_FORMAT` / `VOLUME_FORMAT` — device name templates (`{preset}`, `{room}` tokens)
+- `PASSCODE` / `DISCRIMINATOR` — Matter commissioning credentials (fixed; change requires recommissioning)
+- `BRIDGE_API_PORT = 8889` — local HTTP server serving `/qr` for the web UI QR panel
+
+Commissioning state is persisted to `matter_bridge/data/matter/bridge.json`. Delete this file and restart to force recommissioning.
+
+---
+
+## Web UI (inside the `HTML` string, line 1279)
+
+**Tabs:** Player, Presets, Groups, Settings. Active tab is saved to `localStorage`.
+
+**Key JS functions:**
+- `setActive(host)` — switch active speaker; triggers poll and reloads any open Settings sections
+- `pollNow()` / `schedPoll()` — 3s active-speaker poll loop
+- `bgPollAll()` — 12s background poll of all non-active speakers
+- `applyState(d)` — applies `/api/state` response to the Player UI
+- `toggleSection(bodyId, chevronId)` — expand/collapse a collapsible panel; triggers lazy-load of section data on first open
+- `switchTab(name)` — switches visible page
+
+Settings sections (all collapsible via `toggleSection`): Discover Speakers, Speaker Details (with bass slider), Radio Presets (UPNP preset list with art + play, `loadUpnpStations()`), Preset Backup, Alarms, Scenes, Announce (TTS), Alexa Integration (Matter QR). When adding a new Settings section, register its lazy-load function in both `toggleSection()` and `setActive()`.
+
+## Data directory
+
+```
+data/
+  presets/<ip>.json     # per-speaker preset backups
+  stations/<id>.json    # custom station definitions (name, stream_url, art_url)
+  scenes/<id>.json      # named multi-speaker scenes
+  alarms.json           # alarm definitions
+  dlna_uuid.txt         # persistent UUID for the embedded DLNA server
+```
+
+## Custom internet radio presets
+
+Edit the `LOCAL_INTERNET_RADIO` list near the top of `soundtouch_controller.py` to add hardcoded stream presets. Dynamic custom stations are added via the web UI (Presets tab → Custom Radio Stations) and stored in `data/stations/`.
