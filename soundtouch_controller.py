@@ -4256,7 +4256,16 @@ class Handler(BaseHTTPRequestHandler):
                 elif action=="volume" and value: dev.set_volume(value); ok=True
                 elif action=="bass"   and value: dev.set_bass(value);   ok=True
                 elif action.startswith("preset"):
-                    dev.preset(int(action.replace("preset",""))); ok=True
+                    n = int(action.replace("preset",""))
+                    # UPNP presets: key press loads the ContentItem but the speaker
+                    # waits for an external AVTransport Play to start audio.
+                    # Detect this case from the cached preset list and use AVTransport.
+                    presets = dev.get_presets_detail()
+                    p = next((x for x in presets if x.get("id") == str(n)), None)
+                    if p and p.get("source") == "UPNP" and p.get("location",""):
+                        ok = dev.play_via_avt(p["location"])
+                    else:
+                        dev.preset(n); ok=True
             self._json({"ok":ok})
 
         # ── preset backup / restore ───────────────────────────────────────────
