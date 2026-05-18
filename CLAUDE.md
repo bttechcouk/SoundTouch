@@ -50,11 +50,11 @@ journalctl --user -u soundtouch-matter -f                # bridge live logs
 
 Two processes, both must run together for Alexa integration to work.
 
-### `soundtouch_controller.py` (~2250 lines)
+### `soundtouch_controller.py` (~4700 lines)
 
 Single-file Python app. All classes in one file.
 
-**`SoundTouchDevice` (line 89)** — HTTP REST client for a speaker's port-8090 XML API. `_get()` / `_post()` are the low-level transport; `_key()` sends remote-key presses. `state()` aggregates volume + now-playing + presets + zone role into a single dict for the web UI.
+**`SoundTouchDevice` (line 209)** — HTTP REST client for a speaker's port-8090 XML API. `_get()` / `_post()` are the low-level transport; `_key()` sends remote-key presses. `state()` aggregates volume + now-playing + presets + zone role into a single dict for the web UI.
 
 Key methods:
 - `state()` — aggregates volume, now-playing, presets, and zone role (`group_role`: `"master"`, `"member"`, or `""`)
@@ -64,13 +64,17 @@ Key methods:
 - `detail_info()` — device details from `/info` (firmware, IP, MAC, serial, model, deviceID)
 - `set_name()` — rename via `POST /name`
 
-**`PresetStore` (line 383)** — Reads/writes preset backups as JSON to `data/presets/<ip>.json` and custom station definitions to `data/stations/<id>.json`. The station server in `Handler` serves `station_descriptor()` JSON so the speaker can resolve a custom stream URL.
+**`PresetStore` (line 573)** — Reads/writes preset backups as JSON to `data/presets/<ip>.json` and custom station definitions to `data/stations/<id>.json`. The station server in `Handler` serves `station_descriptor()` JSON so the speaker can resolve a custom stream URL.
 
-**Discovery (line 493)** — `discover_mdns()` uses zeroconf to find `_soundtouch._tcp.local.` services. `discover_subnet_scan()` concurrently probes all 254 hosts on the local /24. Both run in parallel via `discover_all()`.
+**`SceneStore` (line 676)** — Persists named scenes as JSON to `data/scenes/<id>.json`. A scene captures the playing state of multiple speakers so it can be replayed in one action.
 
-**`HTML` string (line 599)** — The entire single-page web UI is embedded as a Python string. It contains all HTML, CSS, and JavaScript. Tabs: Player, Presets, Groups, Settings.
+**`AlarmStore` / `AlarmScheduler` (lines 710, 749)** — `AlarmStore` persists alarm definitions to `data/alarms.json`. `AlarmScheduler` runs a background thread that fires alarms at their scheduled time, triggering playback on configured speakers.
 
-**`Handler` (line 1773)** — `BaseHTTPRequestHandler` serving the web UI and a REST API under `/api/`.
+**Discovery (line 809)** — `discover_mdns()` uses zeroconf to find `_soundtouch._tcp.local.` services. `discover_subnet_scan()` concurrently probes all 254 hosts on the local /24. Both run in parallel via `discover_all()`.
+
+**PWA assets (lines 82–120)** — Service worker (`/sw.js`), app icon SVG (`/icon.svg`), and PNG icon generator for the PWA manifest and apple-touch-icon are embedded as constants before the class definitions.
+
+**`Handler` (line 3830)** — `BaseHTTPRequestHandler` serving the web UI and a REST API under `/api/`.
 
 Key API endpoints:
 - `GET /api/state?host=` — full speaker state (volume, playing, presets, group role)
@@ -82,14 +86,23 @@ Key API endpoints:
 - `GET /api/rename?host=&name=` — rename speaker
 - `GET /api/presets/backup-all` — backup all speakers at once
 - `GET /api/presets/backup?host=` / `GET /api/presets/restore?host=` — per-speaker backup/restore
+- `GET /api/presets/health?host=` — compare live presets against backup
 - `GET /api/group?host=` — zone membership info
 - `POST /api/group/create`, `/api/group/remove`, `/api/group/party`, `/api/group/dissolve-all`, `/api/group/join`
-- `GET /api/stations` / `POST /api/stations` / `DELETE /api/stations/<id>` — custom radio stations
+- `GET /api/stations` / `POST /api/stations/add` / `POST /api/stations/delete` — custom radio stations
+- `GET /api/stations/play?host=&id=` — play a custom station immediately
+- `POST /api/stations/set-preset` — assign a custom station to a preset slot
+- `GET /api/stations/stream-search` — search for a stream URL by station name
+- `GET /api/scenes` / `POST /api/scenes` / `POST /api/scenes/delete` / `POST /api/scenes/activate` — named multi-speaker scenes
+- `GET /api/alarms` / `POST /api/alarms` / `POST /api/alarms/delete` / `POST /api/alarms/toggle` — wake-up alarms
+- `POST /api/tts/announce` — generate gTTS audio and play on speakers; `GET /api/tts/status` — check gTTS availability
+- `GET /api/volume/all` — set volume on all speakers simultaneously
+- `GET /api/sources?host=` / `POST /api/select` — source listing and switching
 - `GET /api/matter/qr` — Matter bridge commissioning QR and status
 
-**`AppState` (line 2155)** — Singleton holding the discovered device list and the `PresetStore`. Passed to `Handler` via `Handler.server_state`.
+**`AppState` (line 4564)** — Singleton holding the discovered device list, `PresetStore`, `SceneStore`, `AlarmStore`, and `AlarmScheduler`. Passed to `Handler` via `Handler.server_state`.
 
-**`main()` (line 2226)** — Parses `--port`, `--ip`, `--daemon`. Runs a network diagnostic (`_check_network()`), starts `AppState.scan()`, then launches `ThreadingHTTPServer`.
+**`main()` (line 4640)** — Parses `--port`, `--ip`, `--daemon`. Runs a network diagnostic (`_check_network()`), starts `AppState.scan()`, then launches `ThreadingHTTPServer`.
 
 ### `matter_bridge/matter_bridge.js`
 

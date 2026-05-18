@@ -5011,6 +5011,50 @@ class AppState:
         self.dlna = DLNAServer(dlna_uuid, web_port, get_local_ip(), self.store)
         self.dlna.start()
 
+        self._kitchen_like = {}  # host → bool, cached after first check
+        t = threading.Thread(target=self._upnp_autoplay_loop, daemon=True)
+        t.start()
+
+    def _upnp_autoplay_loop(self):
+        """Watch Kitchen-like speakers (no LOCAL_INTERNET_RADIO) for UPNP+stopped state.
+        Physical preset button presses load the UPNP ContentItem but leave the speaker
+        in STOP_STATE — this thread detects that and fires AVTransport Play automatically."""
+        dlna_prefix = f"http://{get_local_ip()}:{self.web_port}/dlna/stream/"
+        last_loc = {}  # host → last location we auto-played (debounce)
+        while True:
+            time.sleep(2)
+            with self._lock:
+                devices = list(self.devices)
+            for dev in devices:
+                try:
+                    if dev.host not in self._kitchen_like:
+                        self._kitchen_like[dev.host] = not dev.has_local_internet_radio()
+                    if not self._kitchen_like[dev.host]:
+                        continue
+                    np = dev._get("/now_playing")
+                    if np is None:
+                        continue
+                    if np.get("source", "") != "UPNP":
+                        last_loc[dev.host] = None
+                        continue
+                    play_status = np.get("playStatus") or np.findtext("playStatus") or ""
+                    if play_status in ("PLAY_STATE", "BUFFERING_STATE"):
+                        last_loc[dev.host] = None
+                        continue
+                    ci = np.find("ContentItem")
+                    if ci is None:
+                        continue
+                    loc = ci.get("location", "")
+                    if not loc.startswith(dlna_prefix):
+                        continue
+                    if loc == last_loc.get(dev.host):
+                        continue  # already triggered, don't fire again for same track
+                    log.info(f"[AVT-AUTO] {dev.host} UPNP+stopped → auto-play {loc}")
+                    if dev.play_via_avt(loc):
+                        last_loc[dev.host] = loc
+                except Exception as e:
+                    log.debug(f"[AVT-AUTO] {dev.host} error: {e}")
+
     def scan(self):
         log.info("Scanning network…")
         found = discover_all(timeout=3)
