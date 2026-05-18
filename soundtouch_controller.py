@@ -505,6 +505,48 @@ class SoundTouchDevice:
         )
         return self._post("/select", xml)
 
+    def play_via_avt(self, stream_url):
+        """Play a stream URL via UPnP AVTransport (port 8091).
+        Used for speakers that lack LOCAL_INTERNET_RADIO. The URL must be HTTP
+        (not HTTPS) — the speaker follows redirects but rejects https:// URIs."""
+        avt = f"http://{self.host}:8091/AVTransport/Control"
+        esc = stream_url.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        set_soap = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+            's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+            '<s:Body><u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
+            '<InstanceID>0</InstanceID>'
+            f'<CurrentURI>{esc}</CurrentURI>'
+            '<CurrentURIMetaData></CurrentURIMetaData>'
+            '</u:SetAVTransportURI></s:Body></s:Envelope>'
+        )
+        play_soap = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+            's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+            '<s:Body><u:Play xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
+            '<InstanceID>0</InstanceID><Speed>1</Speed>'
+            '</u:Play></s:Body></s:Envelope>'
+        )
+        h_set  = {"Content-Type": 'text/xml; charset="utf-8"',
+                  "SOAPAction": '"urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI"'}
+        h_play = {"Content-Type": 'text/xml; charset="utf-8"',
+                  "SOAPAction": '"urn:schemas-upnp-org:service:AVTransport:1#Play"'}
+        try:
+            r = self._session.post(avt, data=set_soap.encode(), headers=h_set, timeout=4)
+            if r.status_code != 200:
+                log.warning(f"[AVT] SetAVTransportURI failed {r.status_code}: {r.text[:200]}")
+                return False
+            r = self._session.post(avt, data=play_soap.encode(), headers=h_play, timeout=4)
+            ok = r.status_code == 200
+            if not ok:
+                log.warning(f"[AVT] Play failed {r.status_code}: {r.text[:200]}")
+            return ok
+        except Exception as e:
+            log.warning(f"[AVT] Error: {e}")
+            return False
+
     # ── group / multi-room ─────────────────────────────────────────────────────
     def invalidate_zone_cache(self):
         """Force the next get_zone() call to re-fetch from the speaker."""
@@ -4309,12 +4351,12 @@ class Handler(BaseHTTPRequestHandler):
                     name = p.get("name","")
                     loc  = p.get("location","")
                     if src == "LOCAL_INTERNET_RADIO" and not has_local_ir:
-                        # Speaker lacks LOCAL_INTERNET_RADIO — play via our DLNA server
+                        # Speaker lacks LOCAL_INTERNET_RADIO — store as UPNP preset
                         station_id = loc.rstrip("/").split("/")[-1]
                         st = self.server_state.store.get_station(station_id)
                         if st:
-                            dev.store_preset(pid, name, "STORED_MUSIC", "tracklist",
-                                             dlna.stream_url(station_id), dlna.udn)
+                            dev.store_preset(pid, name, "UPNP", "",
+                                             dlna.stream_url(station_id), "UPnPUserName")
                             count += 1
                         else:
                             log.warning(f"[restore] no station for {station_id!r} — skipping preset {pid}")
@@ -4394,14 +4436,13 @@ class Handler(BaseHTTPRequestHandler):
             dev  = self.server_state.get_device(host)
             st   = self.server_state.store.get_station(sid)
             if dev and st:
-                dlna = self.server_state.dlna
                 if dev.has_local_internet_radio():
                     local_ip = get_local_ip()
                     loc = f"http://{local_ip}:{self.server_state.web_port}/api/station-desc/{sid}"
                     dev.select_content("LOCAL_INTERNET_RADIO", "stationurl", loc, st["name"])
                 else:
-                    dev.select_content("STORED_MUSIC", "tracklist",
-                                       dlna.stream_url(sid), st["name"], dlna.udn)
+                    # Speaker lacks LOCAL_INTERNET_RADIO — push via UPnP AVTransport
+                    dev.play_via_avt(self.server_state.dlna.stream_url(sid))
                 self._json({"ok":True})
             else:
                 self._json({"ok":False})
@@ -4413,14 +4454,14 @@ class Handler(BaseHTTPRequestHandler):
             dev  = self.server_state.get_device(host)
             st   = self.server_state.store.get_station(sid)
             if dev and st:
-                dlna = self.server_state.dlna
                 if dev.has_local_internet_radio():
                     local_ip = get_local_ip()
                     loc = f"http://{local_ip}:{self.server_state.web_port}/api/station-desc/{sid}"
                     dev.store_preset(slot, st["name"], "LOCAL_INTERNET_RADIO", "stationurl", loc)
                 else:
-                    dev.store_preset(slot, st["name"], "STORED_MUSIC", "tracklist",
-                                     dlna.stream_url(sid), dlna.udn)
+                    # Store as UPNP preset pointing at our HTTP stream redirect
+                    dev.store_preset(slot, st["name"], "UPNP", "",
+                                     self.server_state.dlna.stream_url(sid), "UPnPUserName")
                 self._json({"ok":True})
             else:
                 self._json({"ok":False})
