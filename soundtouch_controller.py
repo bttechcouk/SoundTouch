@@ -409,6 +409,9 @@ class SoundTouchDevice:
                 el = np.find(tag)
                 if el is not None and el.text:
                     d[key] = el.text
+            ci = np.find("ContentItem")
+            if ci is not None:
+                d["_upnp_location"] = ci.get("location", "")
         # cloud source warning
         src_key = d.get("source", "").upper()
         if src_key in CLOUD_SOURCES:
@@ -4239,7 +4242,21 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/state":
             host = qs.get("host",[None])[0]
             dev  = self.server_state.get_device(host)
-            self._json(dev.state() if dev else {"error":"no_device"})
+            if not dev:
+                self._json({"error": "no_device"})
+            else:
+                st = dev.state()
+                loc = st.pop("_upnp_location", "")
+                dlna_pfx = f"http://{get_local_ip()}:{self.server_state.web_port}/dlna/stream/"
+                if loc.startswith(dlna_pfx):
+                    sid = loc.rstrip("/").split("/")[-1]
+                    station = self.server_state.store.get_station(sid)
+                    if station:
+                        if not st.get("track"):
+                            st["track"] = station.get("name", "")
+                        if not st.get("art"):
+                            st["art"] = station.get("art_url", "")
+                self._json(st)
 
         elif path == "/api/cmd":
             host   = qs.get("host",[None])[0]
