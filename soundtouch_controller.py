@@ -1927,6 +1927,19 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
         </div>
       </div>
 
+      <!-- UPNP Radio Presets -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-upnp-stations','chev-upnp-stations')">
+          <span class="title">Radio Presets</span>
+          <span id="chev-upnp-stations" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-upnp-stations" class="qr-body" style="display:none">
+          <div id="upnp-stations-list">
+            <p style="font-size:12px;color:var(--fg3)">Select a speaker to view its stored radio presets.</p>
+          </div>
+        </div>
+      </div>
+
       <!-- Preset Backup -->
       <div class="qr-section">
         <div class="qr-collapse-hdr" onclick="toggleSection('sec-backup','chev-backup')">
@@ -2374,6 +2387,8 @@ function setActive(h) {
   if (tab === 'settings') {
     const sec = document.getElementById('sec-speaker');
     if (sec && sec.style.display !== 'none') loadSpeakerInfo();
+    const secU = document.getElementById('sec-upnp-stations');
+    if (secU && secU.style.display !== 'none') loadUpnpStations();
   }
 }
 
@@ -3025,6 +3040,53 @@ async function loadSpeakerInfo() {
   }
 }
 
+// ── Settings — Radio Presets (UPNP speakers) ──────────────────────────────────
+async function loadUpnpStations() {
+  const el = document.getElementById('upnp-stations-list');
+  if (!el) return;
+  if (!activeHost) {
+    el.innerHTML = '<p style="font-size:12px;color:var(--fg3)">Select a speaker to view its stored radio presets.</p>';
+    return;
+  }
+  el.innerHTML = '<p style="font-size:12px;color:var(--fg3)">Loading…</p>';
+  try {
+    const [stateData, allStations] = await Promise.all([
+      fetch('/api/state?host=' + activeHost).then(r => r.json()),
+      fetch('/api/stations').then(r => r.json())
+    ]);
+    const stationMap = {};
+    allStations.forEach(s => { stationMap[s.id] = s; });
+    const upnpPresets = (stateData.presets || []).filter(p =>
+      p.source === 'UPNP' && p.location && p.location.includes('/dlna/stream/')
+    );
+    if (!upnpPresets.length) {
+      el.innerHTML = '<p style="font-size:12px;color:var(--fg3)">No radio presets stored on this speaker.</p>';
+      return;
+    }
+    el.innerHTML = upnpPresets.map(p => {
+      const sid     = p.location.split('/').pop();
+      const station = stationMap[sid] || {};
+      const art     = station.art_url || '';
+      const name    = p.name || station.name || sid;
+      const artHtml = art
+        ? `<img src="${art}" alt="" style="width:44px;height:44px;border-radius:8px;object-fit:cover;flex-shrink:0" onerror="this.style.display='none'">`
+        : `<div style="width:44px;height:44px;border-radius:8px;background:var(--surface2);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:18px">&#127925;</div>`;
+      return `<div class="manage-card">
+        ${artHtml}
+        <div class="mc-left">
+          <div class="mc-name">${name}</div>
+          <div class="mc-meta">Preset ${p.id}</div>
+        </div>
+        <div class="mc-actions">
+          <button class="mc-btn primary" onclick="playStation('${sid}')">Play</button>
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    el.innerHTML = '<p style="font-size:12px;color:var(--fg3)">Could not load radio presets.</p>';
+  }
+}
+
 // ── Settings — Alexa / Matter QR ─────────────────────────────────────────────
 async function loadAlexaQR() {
   const box    = document.getElementById('qr-box');
@@ -3059,6 +3121,7 @@ function toggleSection(bodyId, chevronId) {
   if (opening && bodyId === 'sec-speaker')       loadSpeakerInfo();
   if (opening && bodyId === 'sec-alexa')         loadAlexaQR();
   if (opening && bodyId === 'sec-manage-backup') loadBackupInfo();
+  if (opening && bodyId === 'sec-upnp-stations')  loadUpnpStations();
   if (opening && bodyId === 'sec-stations')      loadStations();
   if (opening && bodyId === 'sec-scenes')        loadScenes();
   if (opening && bodyId === 'sec-alarms')        loadAlarms();
