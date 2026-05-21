@@ -5109,6 +5109,7 @@ class AppState:
         last_upnp_loc = {}   # host → most recent UPNP/dlna location seen
         last_fired    = {}   # host → location we last sent AVTransport Play for
         prev_source   = {}   # host → source from the previous poll cycle
+        inv_retry     = {}   # host → location to retry once if still INVALID_SOURCE next poll
         while True:
             time.sleep(2)
             with self._lock:
@@ -5133,24 +5134,36 @@ class AppState:
                         if play_status in ("PLAY_STATE", "BUFFERING_STATE"):
                             # Now playing — allow the same location to be re-triggered later
                             last_fired.pop(dev.host, None)
+                            inv_retry.pop(dev.host, None)
                         elif loc and loc.startswith(dlna_prefix) and loc != last_fired.get(dev.host):
                             log.info(f"[AVT-AUTO] {dev.host} UPNP+stopped → auto-play {loc}")
                             if dev.play_via_avt(loc):
                                 last_fired[dev.host] = loc
 
                     elif source == "INVALID_SOURCE":
-                        # Only act on the *transition* into INVALID_SOURCE; repeated polls are skipped.
-                        # Physical preset buttons on UPNP-only speakers land here on first press.
-                        if prev_source.get(dev.host) not in (None, "INVALID_SOURCE"):
+                        is_transition = prev_source.get(dev.host) not in (None, "INVALID_SOURCE")
+                        if is_transition:
+                            # Fresh transition into INVALID_SOURCE — physical preset button pressed.
+                            # Delay 1.5 s before sending AVTransport: the speaker's renderer silently
+                            # discards Play commands issued immediately after entering this state.
                             target = last_upnp_loc.get(dev.host)
-                            if target and target != last_fired.get(dev.host):
-                                log.info(f"[AVT-AUTO] {dev.host} → INVALID_SOURCE, auto-play {target}")
-                                if dev.play_via_avt(target):
-                                    last_fired[dev.host] = target
+                            if target:
+                                log.info(f"[AVT-AUTO] {dev.host} → INVALID_SOURCE, waiting 1.5 s for renderer")
+                                time.sleep(1.5)
+                                log.info(f"[AVT-AUTO] {dev.host} auto-play {target}")
+                                dev.play_via_avt(target)
+                                inv_retry[dev.host] = target  # allow one retry next poll if still stuck
+                        elif dev.host in inv_retry:
+                            # Still in INVALID_SOURCE after first attempt — retry once.
+                            target = inv_retry.pop(dev.host)
+                            log.info(f"[AVT-AUTO] {dev.host} INVALID_SOURCE retry → {target}")
+                            dev.play_via_avt(target)
+                            last_fired[dev.host] = target
 
                     else:
                         last_upnp_loc.pop(dev.host, None)
                         last_fired.pop(dev.host, None)
+                        inv_retry.pop(dev.host, None)
 
                     prev_source[dev.host] = source
                 except Exception as e:
