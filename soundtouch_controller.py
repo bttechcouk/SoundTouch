@@ -19,6 +19,7 @@ Usage:
 
 import argparse
 import concurrent.futures
+import ipaddress
 import json
 import logging
 import os
@@ -629,6 +630,7 @@ class PresetStore:
         self.stations_dir = pathlib.Path(stations_dir)
         self.presets_dir.mkdir(parents=True, exist_ok=True)
         self.stations_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()   # serialise concurrent writers
 
     # ── per-speaker preset backup ─────────────────────────────────────────────
     def _speaker_file(self, host):
@@ -642,7 +644,8 @@ class PresetStore:
             "backed_up":  time.strftime("%Y-%m-%dT%H:%M:%S"),
             "presets":    presets,
         }
-        path.write_text(json.dumps(data, indent=2))
+        with self._lock:
+            _atomic_write(path, json.dumps(data, indent=2))
         log.info(f"Backed up {len(presets)} presets for {host}")
         return data
 
@@ -655,7 +658,8 @@ class PresetStore:
     def backup_presets_raw(self, host, data):
         """Save pre-validated backup data (e.g. after user editing)."""
         path = self._speaker_file(host)
-        path.write_text(json.dumps(data, indent=2))
+        with self._lock:
+            _atomic_write(path, json.dumps(data, indent=2))
         log.info(f"[BACKUP] Saved edited backup for {host}")
 
     def list_backups(self):
@@ -678,14 +682,16 @@ class PresetStore:
             "art_url":    art_url,
         }
         path = self.stations_dir / f"{station_id}.json"
-        path.write_text(json.dumps(data, indent=2))
+        with self._lock:
+            _atomic_write(path, json.dumps(data, indent=2))
         return data
 
     def delete_station(self, station_id):
         path = self.stations_dir / f"{station_id}.json"
-        if path.exists():
-            path.unlink()
-            return True
+        with self._lock:
+            if path.exists():
+                path.unlink()
+                return True
         return False
 
     def list_stations(self):
@@ -1043,20 +1049,23 @@ class SceneStore:
     def __init__(self, scenes_dir=SCENES_DIR):
         self.scenes_dir = pathlib.Path(scenes_dir)
         self.scenes_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()   # serialise concurrent writers
 
     def _path(self, scene_id):
         return self.scenes_dir / f"{scene_id}.json"
 
     def save(self, scene_id, data):
-        self._path(scene_id).write_text(json.dumps(data, indent=2))
+        with self._lock:
+            _atomic_write(self._path(scene_id), json.dumps(data, indent=2))
 
     def load(self, scene_id):
         p = self._path(scene_id)
         return json.loads(p.read_text()) if p.exists() else None
 
     def delete(self, scene_id):
-        p = self._path(scene_id)
-        if p.exists(): p.unlink(); return True
+        with self._lock:
+            p = self._path(scene_id)
+            if p.exists(): p.unlink(); return True
         return False
 
     def list_scenes(self):
@@ -1084,8 +1093,7 @@ class AlarmStore:
         except Exception: return []
 
     def _save(self, alarms):
-        self._file.parent.mkdir(parents=True, exist_ok=True)
-        self._file.write_text(json.dumps(alarms, indent=2))
+        _atomic_write(self._file, json.dumps(alarms, indent=2))
 
     def list_alarms(self):
         with self._lock: return list(self._load())
@@ -1229,6 +1237,42 @@ def get_local_ip():
         ip = s.getsockname()[0]; s.close(); return ip
     except Exception:
         return "127.0.0.1"
+
+
+def _atomic_write(path, text):
+    """Write text to `path` atomically: write to a temp file then os.replace().
+    A crash mid-write can never leave a truncated/corrupt target file."""
+    path = pathlib.Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)   # atomic on POSIX
+
+
+def _is_local_hostname(hostname):
+    """True if `hostname` (no port) is safe to serve: an IP literal, loopback, or
+    an mDNS .local name. DNS-rebinding attacks rely on an attacker-controlled DNS
+    *name* resolving to our LAN IP, so rejecting arbitrary names defeats them."""
+    if not hostname:
+        return True                       # non-browser clients (UPnP, curl) may omit it
+    hostname = hostname.lower()
+    if hostname == "localhost" or hostname.endswith((".localhost", ".local")):
+        return True
+    try:
+        ipaddress.ip_address(hostname)    # any IPv4/IPv6 literal is rebinding-proof
+        return True
+    except ValueError:
+        return False
+
+
+def _host_header_hostname(host_header):
+    """Extract the bare hostname from a Host header value (strip port / IPv6 brackets)."""
+    h = (host_header or "").strip()
+    if h.startswith("["):                 # [::1] or [::1]:8888
+        return h[1:].split("]")[0]
+    if h.count(":") == 1:                 # host:port (IPv4 or name)
+        return h.split(":")[0]
+    return h                              # bare host, or bracketless IPv6
 
 
 def _check_network(web_port):
@@ -4259,7 +4303,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *_): pass   # silence the default access log
 
+    def _request_allowed(self):
+        """DNS-rebinding / cross-origin guard. Rejects requests whose Host (or, when
+        present, Origin) is an arbitrary DNS name rather than an IP literal, loopback,
+        or .local mDNS name. Speakers reach our DLNA endpoints via IP, so they pass."""
+        if not _is_local_hostname(_host_header_hostname(self.headers.get("Host", ""))):
+            return False
+        origin = self.headers.get("Origin")
+        if origin and not _is_local_hostname(urlparse(origin).hostname or ""):
+            return False
+        return True
+
     def do_GET(self):
+        if not self._request_allowed():
+            self._respond(403, "text/plain", b"Forbidden: host not allowed")
+            return
         p    = urlparse(self.path)
         path = p.path
         qs   = parse_qs(p.query)
@@ -4908,6 +4966,9 @@ class Handler(BaseHTTPRequestHandler):
             self._respond(404, "text/plain", b"Not found")
 
     def do_POST(self):
+        if not self._request_allowed():
+            self._respond(403, "text/plain", b"Forbidden: host not allowed")
+            return
         p    = urlparse(self.path)
         path = p.path
         qs   = parse_qs(p.query)
@@ -5306,7 +5367,9 @@ Examples:
     else:
         print(f"  SoundTouch Controller running — {url}")
 
-    server = HTTPServer(("0.0.0.0", args.port), Handler)
+    # ThreadingHTTPServer: each request runs on its own thread so a slow/offline
+    # speaker (blocking 4s _get/_post) can't stall the UI for every other client.
+    server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
