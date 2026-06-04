@@ -66,9 +66,9 @@ No test suite. No linter configuration.
 
 Two processes, both must run together for Alexa integration to work.
 
-### `soundtouch_controller.py` (~5200 lines)
+### `soundtouch_controller.py` (~2500 lines)
 
-Single-file Python app. All classes in one file.
+Python app — all backend classes in one file. The web UI lives separately in `web/` (see below).
 
 **`SoundTouchDevice` (line 209)** — HTTP REST client for a speaker's port-8090 XML API. `_get()` / `_post()` are the low-level transport; `_key()` sends remote-key presses.
 
@@ -97,7 +97,7 @@ Key methods:
 
 **Discovery (line 1173)** — `discover_mdns()` uses zeroconf for `_soundtouch._tcp.local.`; `discover_subnet_scan()` concurrently probes all 254 hosts on the local /24. Both run in parallel via `discover_all()`.
 
-**`HTML` string (line 1279)** — The entire single-page web UI is embedded here: all HTML, CSS, and JavaScript. Tabs: Player, Presets, Groups, Settings.
+**Web UI assets (`web/` directory)** — The single-page web UI lives in `web/` and is served from disk (cached) by `web_asset()` / `Handler._web()`: `web/index.html` (markup), `web/app.css` (styles), `web/app.js` (logic), plus `web/wall.html` (kiosk panel) and `web/sw.js` (service worker). Tabs: Player, Presets, Groups, Settings. Editing the UI no longer means editing a Python string.
 
 **`Handler` (line 4257)** — `BaseHTTPRequestHandler` serving the web UI and REST API.
 
@@ -147,7 +147,7 @@ Commissioning state is persisted to `matter_bridge/data/matter/bridge.json`. Del
 
 ---
 
-## Web UI (inside the `HTML` string, line 1279)
+## Web UI (`web/` directory — `index.html`, `app.css`, `app.js`)
 
 **Tabs:** Player, Presets, Groups, Settings. Active tab is saved to `localStorage`.
 

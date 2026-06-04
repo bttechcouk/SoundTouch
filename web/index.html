@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SoundTouch">
+<meta name="theme-color" content="#0b0c11">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<title>SoundTouch</title>
+<script>if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});</script>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- Presets dropdown panel (sits at top of #app, slides down over content) -->
+  <div id="presets-backdrop" onclick="closePresets()"></div>
+  <div id="presets-clip">
+    <div id="presets-panel">
+      <div id="presets-panel-inner">
+        <div id="presets-panel-label">Presets</div>
+        <div id="presets-grid"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Header -->
+  <header style="position:relative;z-index:51">
+    <div class="logo"><div class="logo-stripe"></div><span class="logo-txt">SOUNDTOUCH</span></div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="icon-btn" onclick="openScenesModal()" title="Scenes">&#9654;</button>
+      <button class="icon-btn" onclick="openAlarmsModal()" title="Alarms">&#9201;</button>
+      <button id="preset-toggle" onclick="togglePresets()">
+        Presets <span class="arrow">▼</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Tabs -->
+  <div id="tabs">
+    <div class="tab active" data-tab="player"   onclick="switchTab('player')">Player</div>
+    <div class="tab"        data-tab="manage"   onclick="switchTab('manage')">Presets</div>
+    <div class="tab"        data-tab="groups"   onclick="switchTab('groups')">Groups</div>
+    <div class="tab"        data-tab="settings" onclick="switchTab('settings')">Settings</div>
+  </div>
+
+  <!-- Speaker chips -->
+  <div id="rooms-section">
+    <div class="section-label">Speakers</div>
+    <div id="rooms-list"><div id="no-speakers">Scanning…</div></div>
+  </div>
+
+  <!-- ═══ PAGE: Player ═══ -->
+  <div id="page-player" class="page visible" style="padding:0 20px">
+
+    <div id="art-wrap">
+      <img id="art-glow" src="" alt="" aria-hidden="true">
+      <img id="art" src="" alt="" class="hidden">
+      <div id="art-placeholder">&#9835;</div>
+    </div>
+
+    <div id="track-info">
+      <div id="track-text">
+        <div id="track-name"><span>—</span></div>
+        <div id="track-artist"></div>
+      </div>
+      <div class="eq-bars" id="eq-bars">
+        <div class="eq-bar"></div><div class="eq-bar"></div><div class="eq-bar"></div>
+        <div class="eq-bar"></div><div class="eq-bar"></div>
+      </div>
+      <div id="group-badge" style="display:none"></div>
+      <div id="source-badge" style="display:none"></div>
+    </div>
+    <div id="cloud-warn" style="display:none"></div>
+
+    <div id="vol-row">
+      <span class="vol-icon vol-btn" onclick="nudgeVol(-1)">&#128264;</span>
+      <div id="vol-track">
+        <div id="vol-tooltip">20</div>
+        <input type="range" id="vol-slider" min="0" max="100" value="20"
+               oninput="onVolInput(this.value)" onchange="sendVol(this.value)">
+      </div>
+      <span class="vol-icon vol-btn" onclick="nudgeVol(1)">&#128266;</span>
+    </div>
+
+    <div id="transport">
+      <button class="t-btn t-btn-sm" onclick="cmd('prev',this,event)" title="Previous">
+        <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+          <polygon points="28,8 14,18 28,28" fill="currentColor"/>
+          <rect x="8" y="8" width="4" height="20" rx="2" fill="currentColor"/>
+        </svg>
+      </button>
+      <button class="t-btn" id="btn-play" onclick="cmd('playpause',this,event)">
+        <svg id="ico-play" width="30" height="30" viewBox="0 0 32 32">
+          <polygon points="8,4 28,16 8,28" fill="currentColor"/>
+        </svg>
+        <svg id="ico-pause" width="30" height="30" viewBox="0 0 32 32" style="display:none">
+          <rect x="5" y="4" width="8" height="24" rx="2" fill="currentColor"/>
+          <rect x="19" y="4" width="8" height="24" rx="2" fill="currentColor"/>
+        </svg>
+      </button>
+      <button class="t-btn t-btn-sm" onclick="cmd('next',this,event)" title="Next">
+        <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+          <polygon points="8,8 22,18 8,28" fill="currentColor"/>
+          <rect x="24" y="8" width="4" height="20" rx="2" fill="currentColor"/>
+        </svg>
+      </button>
+    </div>
+
+    <div id="power-row">
+      <button id="btn-power" onclick="cmd('power',this,event)" style="position:relative">
+        <svg width="15" height="15" viewBox="0 0 16 16">
+          <path d="M8 1v6M4.5 3.5A5 5 0 1 0 11.5 3.5" stroke="currentColor"
+                stroke-width="1.6" stroke-linecap="round" fill="none"/>
+        </svg>
+        Power
+      </button>
+      <button id="btn-mute" onclick="cmd('mute',this,event)" style="position:relative">
+        <svg width="15" height="15" viewBox="0 0 16 16">
+          <path d="M2 5.5h2.5L8 2v12l-3.5-3.5H2z" fill="currentColor"/>
+          <path id="ico-mute-lines" d="M10 6a3 3 0 0 1 0 4M11.5 4a5 5 0 0 1 0 8"
+                stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/>
+          <path id="ico-mute-cross" d="M10 6l3 4M13 6l-3 4"
+                stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+                fill="none" style="display:none"/>
+        </svg>
+        Mute
+      </button>
+    </div>
+
+  </div>
+
+  <!-- ═══ PAGE: Groups ═══ -->
+  <div id="page-groups" class="page">
+    <div class="manage-section">
+      <h2>Multi-Room Groups</h2>
+      <p style="font-size:12px;color:var(--fg3);margin-bottom:14px">
+        Group speakers together so they all play the same audio in sync.
+        The active speaker becomes the group master.
+      </p>
+      <div id="group-status"></div>
+      <div id="group-builder"></div>
+
+      <!-- All-speaker volume -->
+      <div id="all-vol-row">
+        <div id="all-vol-label">All Speakers Volume</div>
+        <div id="all-vol-inner">
+          <span class="vol-icon vol-btn" onclick="nudgeAllVol(-1)">&#128264;</span>
+          <div id="all-vol-track">
+            <div id="all-vol-tip">50</div>
+            <input type="range" id="all-vol-slider" min="0" max="100" value="50"
+                   oninput="onAllVolInput(this.value)" onchange="sendAllVol(this.value)">
+          </div>
+          <span class="vol-icon vol-btn" onclick="nudgeAllVol(1)">&#128266;</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ PAGE: Settings ═══ -->
+  <div id="page-settings" class="page">
+    <div class="manage-section">
+
+      <!-- Discover Speakers -->
+      <div class="qr-section" style="margin-top:0">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-discover','chev-discover')">
+          <span class="title">Discover Speakers</span>
+          <span id="chev-discover" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-discover" class="qr-body" style="display:none">
+          <p style="font-size:12px;color:var(--fg3);margin-bottom:10px">
+            Scan the local network to find all SoundTouch speakers.
+          </p>
+          <button id="scan-btn" onclick="rescan()">Scan for Speakers</button>
+        </div>
+      </div>
+
+      <!-- Speaker Details -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-speaker','chev-speaker')">
+          <span class="title">Speaker Details</span>
+          <span id="chev-speaker" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-speaker" class="qr-body" style="display:none">
+          <div id="speaker-info">
+            <p style="font-size:12px;color:var(--fg3)">Select a speaker to view its details.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- UPNP Radio Presets -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-upnp-stations','chev-upnp-stations')">
+          <span class="title">Radio Presets</span>
+          <span id="chev-upnp-stations" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-upnp-stations" class="qr-body" style="display:none">
+          <div id="upnp-stations-list">
+            <p style="font-size:12px;color:var(--fg3)">Select a speaker to view its stored radio presets.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Preset Backup -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-backup','chev-backup')">
+          <span class="title">Preset Backup</span>
+          <span id="chev-backup" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-backup" class="qr-body" style="display:none">
+          <p style="font-size:12px;color:var(--fg3);margin-bottom:10px">
+            Back up all speakers in one click. Speakers with no backup show ⚠ on their chip.
+            Critical before the Bose cloud shuts down on 6 May 2026.
+          </p>
+          <button class="mc-btn primary" onclick="backupAll()">Backup All Speakers</button>
+          <span id="backup-all-status" style="font-size:12px;color:var(--fg3);margin-left:10px"></span>
+        </div>
+      </div>
+
+      <!-- Alarms -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-alarms','chev-alarms')">
+          <span class="title">Alarms</span>
+          <span id="chev-alarms" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-alarms" class="qr-body" style="display:none">
+          <p style="font-size:12px;color:var(--fg3);margin-bottom:12px">
+            Schedule a speaker to start playing a preset at a set time.
+          </p>
+          <div id="alarms-list"></div>
+          <div class="add-form" style="margin:10px 0 0">
+            <label>Speaker</label>
+            <select id="alarm-speaker-select" class="form-select">
+              <option value="">Select a speaker…</option>
+            </select>
+            <label>Name (optional)</label>
+            <input id="alarm-name" placeholder="Morning Radio">
+            <label>Time</label>
+            <input id="alarm-time" type="time" value="07:00">
+            <label>Preset (1–6)</label>
+            <input id="alarm-preset" type="number" min="1" max="6" value="1">
+            <label>Volume (optional — leave blank to keep current)</label>
+            <input id="alarm-vol" type="number" min="0" max="100" placeholder="0–100">
+            <label>Days</label>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+              <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="0" checked>Mon</label>
+              <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="1" checked>Tue</label>
+              <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="2" checked>Wed</label>
+              <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="3" checked>Thu</label>
+              <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="4" checked>Fri</label>
+              <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="5">Sat</label>
+              <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="6">Sun</label>
+            </div>
+            <div class="form-row">
+              <button class="mc-btn primary" onclick="addAlarm()">Add Alarm</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Scenes -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-scenes','chev-scenes')">
+          <span class="title">Scenes</span>
+          <span id="chev-scenes" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-scenes" class="qr-body" style="display:none">
+          <p style="font-size:12px;color:var(--fg3);margin-bottom:12px">
+            Save the current speaker group, volumes, and a preset as a named scene.
+            One tap replays everything exactly.
+          </p>
+          <div id="scenes-list"></div>
+          <div class="add-form" style="margin:10px 0 0">
+            <label>Scene Name</label>
+            <input id="scene-name-input" placeholder="e.g. Morning, Party, Bedtime">
+            <label>Preset to play (1–6)</label>
+            <input id="scene-preset-input" type="number" min="1" max="6" value="1">
+            <div class="form-row">
+              <button class="mc-btn primary" onclick="saveScene()">Save Scene</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Announce -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-announce','chev-announce')">
+          <span class="title">Send Announcement</span>
+          <span id="chev-announce" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-announce" class="qr-body" style="display:none">
+          <p style="font-size:12px;color:var(--fg2);margin-bottom:12px;line-height:1.5">
+            Speak a message through one or more speakers. Playback is paused,
+            the announcement plays, then resumes automatically.
+          </p>
+          <textarea id="main-ann-text" rows="3"
+            style="width:100%;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);
+                   border-radius:8px;color:var(--fg);font-size:14px;resize:none;outline:none;
+                   font-family:inherit;line-height:1.4;margin-bottom:10px"
+            placeholder="e.g. Dinner is ready…"></textarea>
+          <div style="font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+                      color:var(--fg3);margin-bottom:8px">Speakers</div>
+          <div id="main-ann-speakers" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px"></div>
+          <div style="font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+                      color:var(--fg3);margin-bottom:6px">Volume</div>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+            <input type="range" id="main-ann-vol" min="10" max="100" value="60"
+              style="flex:1;height:3px;-webkit-appearance:none;appearance:none;border-radius:2px;
+                     outline:none;cursor:pointer;
+                     background:linear-gradient(to right,var(--blue) 55.6%,var(--surface2) 55.6%)"
+              oninput="this.style.background='linear-gradient(to right,var(--blue) '+((this.value-this.min)/(this.max-this.min)*100).toFixed(1)+'%,var(--surface2) '+((this.value-this.min)/(this.max-this.min)*100).toFixed(1)+'%)'">
+            <span id="main-ann-vol-lbl" style="font-size:12px;font-weight:700;color:var(--fg2);width:26px;text-align:right">60</span>
+          </div>
+          <div id="main-ann-status" style="font-size:12px;color:var(--amber);min-height:16px;margin-bottom:8px"></div>
+          <button class="mc-btn primary" onclick="sendMainAnnounce()">Send Announcement</button>
+        </div>
+      </div>
+
+      <!-- Alexa Integration -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-alexa','chev-alexa')">
+          <span class="title">Alexa Integration</span>
+          <span id="chev-alexa" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-alexa" class="qr-body" style="display:none">
+          <div class="alexa-hint">
+            <strong>How it works:</strong> A separate Matter bridge process runs alongside
+            this app, exposing each speaker preset and power toggle as a Matter On/Off
+            device — <strong>no cloud, no account linking.</strong><br><br>
+            <strong>Step 1 —</strong> Scan for speakers above<br>
+            <strong>Step 2 —</strong> Commission the Matter bridge once in the Alexa app:<br>
+            &nbsp;&nbsp;Add Device → Other → Matter → expand panel below and scan QR<br>
+            <strong>Step 3 —</strong> Use phrases like:<br>
+            &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on KISSTORY in Kitchen Bose</span><br>
+            &nbsp;&nbsp;<span class="alexa-phrase">Alexa, turn on Kitchen Bose power</span><br>
+            &nbsp;&nbsp;<span class="alexa-phrase">Alexa, set Kitchen Bose volume to 40%</span><br><br>
+            <strong>Bridge logs:</strong>
+            <span class="alexa-phrase">journalctl --user -u soundtouch-matter -f</span>
+          </div>
+
+          <div class="qr-section" style="margin-top:12px">
+            <div class="qr-collapse-hdr" onclick="toggleQR()">
+              <span class="title">Commission Matter Bridge</span>
+              <span id="qr-status-badge" class="qr-collapse-badge warn">checking…</span>
+              <span id="qr-chevron" class="qr-chevron">&#9660;</span>
+            </div>
+            <div id="qr-body" class="qr-body" style="display:none">
+              <div id="qr-box" class="qr-box">Loading…</div>
+              <div id="qr-manual" class="qr-manual"></div>
+              <div id="qr-status" class="qr-status" style="margin-top:8px"></div>
+              <button class="qr-refresh" onclick="loadAlexaQR()">Refresh</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ═══ PAGE: Manage Presets ═══ -->
+  <div id="page-manage" class="page">
+    <div class="manage-section">
+
+      <!-- How to set a preset -->
+      <div class="qr-section" style="margin-top:0">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-preset-howto','chev-preset-howto')">
+          <span class="title">How to Set a Preset</span>
+          <span id="chev-preset-howto" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-preset-howto" class="qr-body" style="display:none">
+          <div class="alexa-hint">
+            Presets are saved directly on the speaker — each button (1–6) remembers
+            whatever was playing when you held it down.<br><br>
+            <strong>Step 1 —</strong> Start playing the station, playlist, or source you want to save.<br>
+            <strong>Step 2 —</strong> On the speaker itself, <strong>press and hold</strong> the preset
+            button (1–6) for about 3 seconds until you hear a chime.<br>
+            <strong>Step 3 —</strong> The button is now saved. Press it briefly at any time to play
+            that station again.<br><br>
+            <strong>Tip —</strong> If you use Custom Radio Stations (see below), play the station
+            from the Presets tab first so it is the active source, then hold the preset button on
+            the speaker to save it.<br><br>
+            <strong>After saving —</strong> Click <em>Backup Now</em> below to save a local copy
+            so your presets survive the Bose cloud shutdown on 6 May 2026.
+          </div>
+        </div>
+      </div>
+
+      <!-- Preset Backup -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-manage-backup','chev-manage-backup')">
+          <span class="title">Preset Backup</span>
+          <span id="chev-manage-backup" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-manage-backup" class="qr-body" style="display:none">
+          <p id="backup-info" style="font-size:12px;color:var(--fg3);margin-bottom:12px">
+            Back up your current presets locally so they survive the Bose cloud shutdown.
+          </p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="mc-btn primary" onclick="backupPresets()">Backup Now</button>
+            <button class="mc-btn" onclick="restorePresets()">Restore to Speaker</button>
+            <button class="mc-btn" onclick="openBackupEditor()">Open / Edit JSON</button>
+            <button class="mc-btn" onclick="checkPresetHealth()" id="btn-health-check">&#9679; Health Check</button>
+          </div>
+          <div id="backup-status" style="font-size:12px;color:var(--fg3);margin-top:10px"></div>
+          <div id="backup-list" style="margin-top:12px"></div>
+          <div id="health-results" style="margin-top:12px;display:none"></div>
+        </div>
+      </div>
+
+      <!-- Custom Radio Stations -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-stations','chev-stations')">
+          <span class="title">Custom Radio Stations</span>
+          <span id="chev-stations" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-stations" class="qr-body" style="display:none">
+          <p style="font-size:12px;color:var(--fg3);margin-bottom:12px">
+            Add your own internet radio streams. These are served locally and don't need the Bose cloud.
+          </p>
+
+          <!-- How to add a custom station -->
+          <div class="qr-section" style="margin-top:0;margin-bottom:14px">
+            <div class="qr-collapse-hdr" onclick="toggleSection('sec-station-howto','chev-station-howto')">
+              <span class="title">How to add a Custom Station</span>
+              <span id="chev-station-howto" class="qr-chevron">&#9660;</span>
+            </div>
+            <div id="sec-station-howto" class="qr-body" style="display:none">
+              <div class="alexa-hint">
+                Custom stations let you play any internet radio stream that has a direct
+                HTTP audio URL — no Bose cloud required.<br><br>
+                <strong>Step 1 —</strong> Find a direct stream URL for the station.
+                Most public broadcasters publish these; search for
+                <em>"[station name] stream URL m3u"</em> to find one.<br>
+                <strong>Step 2 —</strong> Enter a name, paste the URL, and optionally
+                add an album art URL below, then click <em>Add Station</em>.<br>
+                <strong>Step 3 —</strong> The station will appear in the list. Click
+                <em>Play</em> to start it on the active speaker.<br>
+                <strong>Step 4 —</strong> While it's playing, hold a preset button
+                on the speaker to save it — see <em>How to Set a Preset</em> above.<br><br>
+                <strong>Note —</strong> Stream URLs must start with <code>http://</code>
+                (not https) as the SoundTouch firmware does not support TLS streams.
+              </div>
+            </div>
+          </div>
+
+          <!-- Add station form -->
+          <div class="add-form" id="add-form">
+            <label>Station Name</label>
+            <input id="st-name" placeholder="e.g. BBC Radio 1">
+            <label>Stream URL (HTTP)</label>
+            <div style="display:flex;gap:6px;align-items:center">
+              <input id="st-url" placeholder="http://stream.live.vc.bbcmedia.co.uk/bbc_radio_one" style="flex:1">
+              <button class="mc-btn" onclick="searchStationStream()" title="Search RadioBrowser for a direct stream URL" style="white-space:nowrap">&#128269; Find stream</button>
+            </div>
+            <div id="st-search-results" style="display:none"></div>
+            <label>Album Art URL (optional)</label>
+            <input id="st-art" placeholder="https://example.com/logo.png">
+            <div class="form-row">
+              <button class="mc-btn primary" onclick="addStation()">Add Station</button>
+            </div>
+          </div>
+
+          <div id="stations-list"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<!-- PWA install banner (shown by beforeinstallprompt on Android Chrome) -->
+<div id="install-banner">
+  <div class="ib-icon">&#127911;</div>
+  <div class="ib-text">
+    <div class="ib-title">Install SoundTouch</div>
+    <div class="ib-sub">Add to your home screen for instant access</div>
+  </div>
+  <button class="mc-btn primary" onclick="installPWA()" style="flex-shrink:0">Install</button>
+  <button class="mc-btn" onclick="dismissInstall()" style="flex-shrink:0;padding:6px 10px">&#10005;</button>
+</div>
+
+<!-- Backup JSON editor modal -->
+<div id="backup-json-modal" class="modal-overlay" onclick="if(event.target===this)closeModal('backup-json-modal')">
+  <div class="modal-box" style="max-width:500px;width:96%">
+    <div class="modal-hdr">
+      <span id="backup-json-title">Preset Backup JSON</span>
+      <button class="mc-btn" onclick="closeModal('backup-json-modal')">&#10005;</button>
+    </div>
+    <p style="font-size:11px;color:var(--fg3);margin-bottom:10px">
+      Edit the JSON below. Changes are validated before saving. Use <em>Save &amp; Restore</em>
+      to write edits directly to the speaker.
+    </p>
+    <textarea id="backup-json-editor" spellcheck="false"
+      style="width:100%;height:320px;background:var(--surface2);border:1px solid var(--border);
+             color:var(--fg);font-family:monospace;font-size:11px;padding:10px 12px;
+             border-radius:8px;resize:vertical;outline:none;line-height:1.6;
+             tab-size:2"></textarea>
+    <div id="backup-json-error"
+      style="display:none;font-size:11px;color:#ef4444;margin-top:7px;
+             background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);
+             border-radius:6px;padding:6px 10px"></div>
+    <div class="form-row" style="margin-top:12px;flex-wrap:wrap;gap:8px">
+      <button class="mc-btn primary" onclick="saveBackupJson()">Save Changes</button>
+      <button class="mc-btn primary" onclick="saveAndRestoreJson()">Save &amp; Restore to Speaker</button>
+      <button class="mc-btn" onclick="closeModal('backup-json-modal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Scenes quick-view modal -->
+<div id="scenes-modal" class="modal-overlay" onclick="if(event.target===this)closeModal('scenes-modal')">
+  <div class="modal-box">
+    <div class="modal-hdr">
+      <span>Scenes</span>
+      <button class="mc-btn" onclick="closeModal('scenes-modal')">&#10005;</button>
+    </div>
+    <div id="scenes-modal-body"><p style="font-size:12px;color:var(--fg3)">Loading…</p></div>
+  </div>
+</div>
+
+<!-- Alarms quick-view modal -->
+<div id="alarms-modal" class="modal-overlay" onclick="if(event.target===this)closeModal('alarms-modal')">
+  <div class="modal-box">
+    <div class="modal-hdr">
+      <span>Alarms</span>
+      <button class="mc-btn" onclick="closeModal('alarms-modal')">&#10005;</button>
+    </div>
+    <div id="alarms-modal-body"><p style="font-size:12px;color:var(--fg3)">Loading…</p></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<div id="scanning">
+  <div class="scan-box">
+    <span class="scan-spinner">&#8635;</span>
+    <div class="scan-label" id="scan-label">Scanning…</div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
