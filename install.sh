@@ -5,8 +5,11 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_FILE="$SCRIPT_DIR/soundtouch_controller.py"
 SERVICE_SRC="$SCRIPT_DIR/soundtouch.service"
+MATTER_SERVICE_SRC="$SCRIPT_DIR/soundtouch-matter.service"
+MATTER_DIR="$SCRIPT_DIR/matter_bridge"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 LOCAL_IP="$(hostname -I | awk '{print $1}')"
+MATTER_READY=false   # set true once Node.js + npm deps are in place
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  SoundTouch Controller — Installer"
@@ -61,6 +64,44 @@ echo "✓  Packages installed"
 chmod +x "$APP_FILE"
 echo "✓  Script is executable"
 
+# 4b. Node.js + Matter bridge dependencies (Alexa smart home integration)
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Matter bridge (Alexa) — Node.js setup"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+NODE_BIN=""
+NODE_OK=false
+if command -v node &>/dev/null; then
+  NODE_BIN="$(command -v node)"
+  NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+  if [ "${NODE_MAJOR:-0}" -ge 20 ] 2>/dev/null; then
+    NODE_OK=true
+    echo "✓  Node.js: $(node --version)"
+  else
+    echo "⚠  Node.js $(node --version) found, but the Matter bridge needs v20 LTS or newer."
+  fi
+else
+  echo "⚠  Node.js not found — the Matter bridge (Alexa integration) will not run."
+fi
+
+if [ "$NODE_OK" = true ] && [ -d "$MATTER_DIR" ]; then
+  echo "→  Installing Matter bridge npm packages…"
+  if ( cd "$MATTER_DIR" && npm install --no-fund --no-audit ); then
+    echo "✓  Matter bridge dependencies installed"
+    MATTER_READY=true
+  else
+    echo "⚠  npm install failed in $MATTER_DIR — the Matter bridge may not start."
+  fi
+elif [ "$NODE_OK" = false ]; then
+  echo ""
+  echo "  To enable the Matter / Alexa bridge, install Node.js 20 LTS then re-run:"
+  echo "    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -"
+  echo "    sudo apt-get install -y nodejs"
+  echo ""
+  echo "  (The SoundTouch web controller works fine without it.)"
+fi
+
 # 5. Firewall (ufw) — open required ports
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -69,9 +110,8 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 # Ports we need:
 #   8888/tcp  — SoundTouch web UI
-#   1900/udp  — SSDP multicast (Alexa device discovery)
-#   8082/tcp  — Hue bridge emulator (Alexa smart home control)
-#   80/tcp    — Alexa hardcodes port 80 for Hue bridge HTTP (redirected via iptables → 8082)
+#   1900/udp  — SSDP multicast (DLNA server announcements)
+#   5540/udp  — Matter protocol (Alexa smart home)
 
 UFW_ACTIVE=false
 if command -v ufw &>/dev/null && sudo ufw status 2>/dev/null | grep -q "Status: active"; then
@@ -80,10 +120,9 @@ fi
 
 if [ "$UFW_ACTIVE" = true ]; then
   echo "  ufw is active — opening required ports…"
-  sudo ufw allow 8888/tcp        comment 'SoundTouch web UI'          2>/dev/null && echo "  ✓  8888/tcp        (web UI)"
-  sudo ufw allow 1900/udp        comment 'SoundTouch SSDP/Alexa'      2>/dev/null && echo "  ✓  1900/udp        (SSDP discovery)"
-  sudo ufw allow 49152:49172/tcp comment 'SoundTouch WeMo devices'    2>/dev/null && echo "  ✓  49152:49172/tcp (Alexa WeMo device ports)"
-  sudo ufw allow 80/tcp          comment 'SoundTouch Alexa port 80'   2>/dev/null && echo "  ✓  80/tcp          (Alexa port 80 redirect)"
+  sudo ufw allow 8888/tcp comment 'SoundTouch web UI'        2>/dev/null && echo "  ✓  8888/tcp  (web UI)"
+  sudo ufw allow 1900/udp comment 'SoundTouch SSDP/DLNA'     2>/dev/null && echo "  ✓  1900/udp  (SSDP / DLNA discovery)"
+  sudo ufw allow 5540/udp comment 'SoundTouch Matter bridge' 2>/dev/null && echo "  ✓  5540/udp  (Matter / Alexa)"
   sudo ufw reload 2>/dev/null && echo "  ✓  ufw reloaded"
 else
   if ! command -v ufw &>/dev/null; then
@@ -95,60 +134,15 @@ else
   echo "  If you enable ufw later, run these commands:"
   echo "    sudo ufw allow 8888/tcp"
   echo "    sudo ufw allow 1900/udp"
-  echo "    sudo ufw allow 49152:49172/tcp"
-  echo "    sudo ufw allow 80/tcp"
-fi
-
-# 5b. iptables port 80 → 8082 redirect for Alexa Hue bridge
-#
-# Amazon Echo firmware ignores the port in the SSDP LOCATION header and always
-# probes port 80 for the Hue bridge HTTP API.  We redirect inbound port 80 TCP
-# to 8082 (where the bridge actually listens) using an iptables NAT rule.
-# The rule is made persistent via iptables-persistent / netfilter-persistent.
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Alexa port 80 → 8082 redirect"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-RULE_EXISTS=false
-if sudo iptables -t nat -C PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8082 2>/dev/null; then
-  RULE_EXISTS=true
-fi
-
-if [ "$RULE_EXISTS" = true ]; then
-  echo "  ✓  iptables redirect already in place (port 80 → 8082)"
-else
-  if sudo iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8082 2>/dev/null; then
-    echo "  ✓  iptables: added port 80 → 8082 redirect"
-
-    # Persist the rule across reboots
-    if command -v netfilter-persistent &>/dev/null; then
-      sudo netfilter-persistent save 2>/dev/null && echo "  ✓  Rule saved via netfilter-persistent"
-    elif command -v iptables-save &>/dev/null; then
-      # Fall back to saving rules file directly if iptables-persistent is installed
-      RULES_FILE=/etc/iptables/rules.v4
-      if [ -f "$RULES_FILE" ]; then
-        sudo iptables-save | sudo tee "$RULES_FILE" > /dev/null && echo "  ✓  Rule saved to $RULES_FILE"
-      else
-        echo "  ⚠  Rule added for this session but NOT persistent across reboots."
-        echo "     Install iptables-persistent to make it permanent:"
-        echo "       sudo apt-get install -y iptables-persistent"
-        echo "     Then re-run this installer."
-      fi
-    fi
-  else
-    echo "  ⚠  Could not add iptables redirect (try running install.sh with sudo)"
-    echo "     Run this manually to fix Alexa discovery:"
-    echo "       sudo iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8082"
-  fi
+  echo "    sudo ufw allow 5540/udp"
 fi
 
 # Also check for avahi-daemon (it also binds to port 1900 for mDNS/SSDP)
 if systemctl is-active --quiet avahi-daemon 2>/dev/null; then
   echo ""
   echo "  ⚠  avahi-daemon is running and shares port 1900."
-  echo "     Alexa discovery should still work (both processes receive"
-  echo "     multicast packets) but if discovery fails, try:"
+  echo "     DLNA/SSDP discovery should still work (both processes receive"
+  echo "     multicast packets) but if it fails, try:"
   echo "     sudo systemctl stop avahi-daemon"
 fi
 
@@ -180,8 +174,21 @@ if [[ "$INSTALL_SERVICE" =~ ^[Yy]$ ]]; then
 
   systemctl --user daemon-reload
   systemctl --user enable --now soundtouch.service
+  echo "✓  Controller service installed and started"
 
-  echo "✓  Service installed and started"
+  # Matter bridge service — only if Node.js deps were installed in step 4b.
+  if [ "$MATTER_READY" = true ] && [ -f "$MATTER_SERVICE_SRC" ]; then
+    sed \
+      -e "s|^WorkingDirectory=.*|WorkingDirectory=$MATTER_DIR|" \
+      -e "s|^ExecStart=.*|ExecStart=$NODE_BIN matter_bridge.js|" \
+      "$MATTER_SERVICE_SRC" > "$SYSTEMD_USER_DIR/soundtouch-matter.service"
+    systemctl --user daemon-reload
+    systemctl --user enable --now soundtouch-matter.service
+    echo "✓  Matter bridge service installed and started"
+  elif [ -f "$MATTER_SERVICE_SRC" ]; then
+    echo "ℹ  Skipped Matter bridge service (Node.js 20+ / npm deps not installed)."
+  fi
+
   echo ""
   echo "  Useful commands:"
   echo "    systemctl --user status  soundtouch   # check status"
@@ -189,6 +196,9 @@ if [[ "$INSTALL_SERVICE" =~ ^[Yy]$ ]]; then
   echo "    systemctl --user start   soundtouch   # start"
   echo "    systemctl --user restart soundtouch   # restart"
   echo "    journalctl --user -u soundtouch -f    # live logs"
+  if [ "$MATTER_READY" = true ]; then
+    echo "    journalctl --user -u soundtouch-matter -f   # Matter bridge logs"
+  fi
 else
   echo "  Skipping service install."
   echo ""

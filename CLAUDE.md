@@ -20,10 +20,13 @@ cd matter_bridge && node matter_bridge.js           # Matter bridge (Alexa integ
 ## Installation
 
 ```bash
-bash install.sh   # installs Python deps, opens firewall ports, optional systemd services
+bash install.sh   # Python deps, firewall ports (8888/tcp, 1900/udp, 5540/udp),
+                  # Matter bridge npm install, optional systemd services
 ```
 
-Node.js 20 LTS+ is required for the Matter bridge. If not present:
+The installer detects Node.js 20 LTS+ and runs `npm install` in `matter_bridge/`
+automatically. If Node.js is missing it prints install instructions and continues
+(the web controller works without it). To install Node.js manually:
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-get install -y nodejs
 cd matter_bridge && npm install
