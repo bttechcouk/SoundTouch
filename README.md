@@ -4,7 +4,7 @@ A lightweight web-based controller for **Bose SoundTouch** speakers on your loca
 
 A companion **Matter bridge** exposes every speaker preset, power toggle, and volume control as Matter devices, enabling full Alexa voice control with no account linking and no cloud.
 
-> **Note:** Bose is shutting down the SoundTouch cloud service on **6 May 2026**. This project gives your speakers a local-only future — no Bose account needed, no internet required.
+> **Note:** Bose shut down the SoundTouch cloud service on **6 May 2026**. This project gives your speakers a local-only future — no Bose account needed, no internet required.
 
 ---
 
@@ -30,12 +30,16 @@ A companion **Matter bridge** exposes every speaker preset, power toggle, and vo
 **Settings Tab** (collapsible sections)
 - *Discover Speakers* — trigger a network scan
 - *Speaker Details* — model, firmware, IP, MAC, serial, device ID; rename the speaker; bass level control (where supported)
+- *Radio Presets* — browse the internet radio presets stored on the selected speaker, with station art and a Play button
 - *Preset Backup* — back up all speaker presets to local JSON in one click; chips show ⚠ for speakers with no backup
+- *Alarms* — scheduled wake-up alarms per speaker
+- *Scenes* — save and recall multi-speaker playback scenes in one action
+- *Announce* — text-to-speech announcements pushed to selected speakers
 - *Alexa Integration* — setup guide and collapsible Matter commissioning QR panel with live status
 
 **Presets Tab**
 - Back up and restore individual speaker presets
-- Add custom internet radio streams via the web UI or `LOCAL_INTERNET_RADIO` in the source
+- Add custom internet radio streams via the web UI; streams are served locally and work on all speakers including those provisioned after Bose disabled internet radio
 
 **Groups Tab**
 - Group speakers together to play the same audio in sync
@@ -59,8 +63,10 @@ A companion **Matter bridge** exposes every speaker preset, power toggle, and vo
 Browser / iPhone
       │  HTTP :8888
       ▼
-soundtouch_controller.py   ←──────── REST API ──────────→  Bose SoundTouch speakers
-      │                                                        (port 8090, XML)
+soundtouch_controller.py   ←── REST API (port 8090, XML) ──→  Bose SoundTouch speakers
+      │  embedded DLNA server       ↑ UPnP AVTransport (port 8091)
+      │  SSDP :1900, HTTP :8888     └── used for speakers without LOCAL_INTERNET_RADIO
+      │
       │  HTTP :8888/api/*
       ▼
 matter_bridge/matter_bridge.js
@@ -117,8 +123,10 @@ Or manage both as systemd user services (see below).
 
 | Port | Protocol | Purpose |
 |------|----------|---------|
-| 8888 | TCP | Web UI |
+| 8888 | TCP | Web UI and DLNA redirect endpoints |
 | 8090 | TCP | SoundTouch speaker API (outbound) |
+| 8091 | TCP | UPnP AVTransport on speaker (outbound, for speakers without LOCAL_INTERNET_RADIO) |
+| 1900 | UDP | SSDP multicast — DLNA server announcements |
 | 5540 | UDP | Matter protocol (Alexa smart home) |
 
 ---
@@ -233,7 +241,7 @@ systemctl --user start soundtouch-matter
 
 ## Preset Backup
 
-With the Bose cloud shutting down on **6 May 2026**, cloud-hosted presets (TuneIn, Amazon Music, etc.) will stop resolving. Back up your presets now:
+The Bose cloud shut down on **6 May 2026**, so cloud-hosted presets (TuneIn, Amazon Music, etc.) no longer resolve. Back up your presets if you haven't already:
 
 1. In the web UI, go to **Settings → Preset Backup → Backup All Speakers**
 2. Backups are saved to `data/presets/<ip>.json`
@@ -250,7 +258,7 @@ Add your own always-on streams that don't depend on the Bose cloud:
 - **Via web UI:** Presets tab → Custom Radio Stations → Add Station
 - **Via source file:** Edit the `LOCAL_INTERNET_RADIO` list near the top of `soundtouch_controller.py`
 
-Custom stations are stored in `data/stations/` and served locally so the speaker can resolve them without internet.
+Custom stations are stored in `data/stations/` and served locally. An embedded DLNA server and UPnP AVTransport bridge means custom stations work on **all speakers**, including those provisioned after Bose disabled internet radio (which lack the `LOCAL_INTERNET_RADIO` source). The controller handles the difference transparently — search, play, and set preset work the same way regardless of speaker.
 
 ---
 
