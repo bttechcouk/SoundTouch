@@ -76,9 +76,11 @@ CLOUD_SOURCES = {
     "INTERNET_RADIO":  ("Internet Radio",   "Bose Internet Radio presets are cloud-routed — replace with a Custom Radio Station"),
     "SPOTIFY":         ("Spotify",          "Spotify presets are recalled via the Bose cloud — replace with Bluetooth or Spotify Connect"),
 }
-# Sources that are fully local and will continue to work after shutdown
+# Sources that are fully local and will continue to work after shutdown.
+# UPNP presets point at our own DLNA stream redirect (a local custom station),
+# so they are cloud-independent and must pass the preset health check.
 SAFE_SOURCES = {"LOCAL_INTERNET_RADIO", "BLUETOOTH", "AUX", "AIRPLAY", "TV",
-                "STORED_MUSIC", "PRODUCT", "STANDBY"}
+                "STORED_MUSIC", "PRODUCT", "STANDBY", "UPNP"}
 
 # ── App icon SVG (served at /icon.svg) ──────────────────────────────────────
 ICON_SVG = (
@@ -1586,8 +1588,9 @@ class Handler(BaseHTTPRequestHandler):
                                    "risk": "high", "label": lbl, "suggestion": sug,
                                    "location": loc})
                 elif src in SAFE_SOURCES:
+                    label = "Custom Radio (UPnP)" if src == "UPNP" else src.replace("_"," ").title()
                     result.append({"id": p.get("id",""), "name": name, "source": src,
-                                   "risk": "safe", "label": src.replace("_"," ").title(), "suggestion": "",
+                                   "risk": "safe", "label": label, "suggestion": "",
                                    "location": loc})
                 else:
                     result.append({"id": p.get("id",""), "name": name, "source": src,
