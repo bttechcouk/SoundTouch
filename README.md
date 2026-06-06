@@ -139,7 +139,7 @@ bash install.sh
 
 The installer will:
 1. Check for Python 3 and install pip if needed
-2. Install required Python packages (`requests`, `zeroconf`, `Pillow`)
+2. Install Python packages from `requirements.txt` (`requests`, `zeroconf`, plus optional `Pillow`/`gTTS`)
 3. Check for Node.js 20+ (required for the Matter bridge)
 4. Run `npm install` inside `matter_bridge/`
 5. Open firewall ports if ufw is active
@@ -278,7 +278,7 @@ Custom stations are stored in `data/stations/` and served locally. An embedded D
 | Python | 3.8+ |
 | Node.js | 20 LTS+ |
 
-Python packages: `requests`, `zeroconf`, `Pillow` (optional, for album art)  
+Python packages: declared in [`requirements.txt`](requirements.txt) — `requests`, `zeroconf` (required); `Pillow` (optional, album art), `gTTS` (optional, TTS announcements). Install with `pip3 install -r requirements.txt`.  
 Node.js packages: `@project-chip/matter-node.js` (installed via `npm install`)
 
 ---
