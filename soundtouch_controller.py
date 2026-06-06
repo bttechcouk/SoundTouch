@@ -344,7 +344,14 @@ class SoundTouchDevice:
 
     def has_local_internet_radio(self):
         try:
-            return any(s["source"] == "LOCAL_INTERNET_RADIO" for s in self.get_sources())
+            sources = self.get_sources()
+            # An empty list means we couldn't read /sources (unreachable speaker /
+            # parse error) — a real speaker always reports BLUETOOTH/AUX/etc. Fail
+            # safe to True so a temporarily-unreachable normal speaker isn't
+            # misclassified as Kitchen-like and have its presets converted to UPNP.
+            if not sources:
+                return True
+            return any(s["source"] == "LOCAL_INTERNET_RADIO" for s in sources)
         except Exception:
             return True  # assume available on error so existing speakers aren't broken
 
@@ -700,6 +707,37 @@ class PresetStore:
                 "isRealtime":  True,
             }
         })
+
+
+def plan_preset_restore(preset, has_local_ir, store, dlna):
+    """Decide how a single backed-up preset should be re-stored on a speaker.
+
+    Pure function (no I/O of its own beyond reading the station store) so the
+    restore conversion can be unit-tested without a speaker. Returns:
+      ("store", kwargs) — caller should call dev.store_preset(**kwargs)
+      ("skip", reason)  — referenced custom station is gone; skip with a log note
+      None              — preset is malformed (missing id or source); ignore
+
+    For speakers that lack LOCAL_INTERNET_RADIO, a LOCAL_INTERNET_RADIO preset is
+    converted to a UPNP preset pointing at our DLNA stream redirect, provided the
+    custom station it references still exists.
+    """
+    pid = preset.get("id", "")
+    if not pid or not preset.get("source"):
+        return None
+    src  = preset["source"]
+    name = preset.get("name", "")
+    loc  = preset.get("location", "")
+    if src == "LOCAL_INTERNET_RADIO" and not has_local_ir:
+        station_id = loc.rstrip("/").split("/")[-1]
+        if not store.get_station(station_id):
+            return ("skip", f"no station for {station_id!r}")
+        return ("store", dict(preset_id=pid, name=name, source="UPNP", stype="",
+                              location=dlna.stream_url(station_id),
+                              account="UPnPUserName"))
+    return ("store", dict(preset_id=pid, name=name, source=src,
+                          stype=preset.get("type", ""), location=loc,
+                          account=preset.get("account", "")))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1618,26 +1656,16 @@ class Handler(BaseHTTPRequestHandler):
                 dlna = self.server_state.dlna
                 count = 0; skipped = 0
                 for p in data.get("presets",[]):
-                    pid = p.get("id","")
-                    if not pid or not p.get("source"):
+                    plan = plan_preset_restore(p, has_local_ir,
+                                               self.server_state.store, dlna)
+                    if plan is None:
                         continue
-                    src  = p["source"]
-                    name = p.get("name","")
-                    loc  = p.get("location","")
-                    if src == "LOCAL_INTERNET_RADIO" and not has_local_ir:
-                        # Speaker lacks LOCAL_INTERNET_RADIO — store as UPNP preset
-                        station_id = loc.rstrip("/").split("/")[-1]
-                        st = self.server_state.store.get_station(station_id)
-                        if st:
-                            dev.store_preset(pid, name, "UPNP", "",
-                                             dlna.stream_url(station_id), "UPnPUserName")
-                            count += 1
-                        else:
-                            log.warning(f"[restore] no station for {station_id!r} — skipping preset {pid}")
-                            skipped += 1
+                    kind, payload = plan
+                    if kind == "skip":
+                        log.warning(f"[restore] {payload} — skipping preset {p.get('id')}")
+                        skipped += 1
                     else:
-                        dev.store_preset(pid, name, src, p.get("type",""),
-                                         loc, p.get("account",""))
+                        dev.store_preset(**payload)
                         count += 1
                 self._json({"ok":True,"count":count,"skipped":skipped,
                             "dlna_mode": not has_local_ir})

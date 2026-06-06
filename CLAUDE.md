@@ -61,7 +61,16 @@ journalctl --user -u soundtouch-matter -f                # bridge live logs
 Python: declared in `requirements.txt`. Required: `requests`, `zeroconf`. Optional: `Pillow` (album art), `gTTS` (TTS announcements). Install: `pip3 install -r requirements.txt`.  
 Node.js: `@project-chip/matter-node.js` (ESM, `"type": "module"` in package.json)
 
-No test suite. No linter configuration.
+## Tests
+
+```bash
+pip3 install -r requirements-dev.txt   # pytest + runtime deps
+pytest                                 # runs tests/ (config in pytest.ini)
+```
+
+Unit tests live in `tests/` and cover the pure/near-pure logic that has historically needed the most fixing — DLNA DIDL-Lite/Browse generation, `PresetStore.station_descriptor()` and custom-station/backup round-trips, the `LOCAL_INTERNET_RADIO → UPNP` restore conversion (`plan_preset_restore()`), and `get_sources()` / `has_local_internet_radio()` parsing (with mocked `/sources` XML). No speaker hardware required; `_get` is stubbed where needed. CI runs them on push/PR via `.github/workflows/tests.yml`.
+
+No linter configuration.
 
 ---
 
