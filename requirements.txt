@@ -1,0 +1,18 @@
+# SoundTouch Controller — Python runtime dependencies
+#
+#   pip3 install -r requirements.txt
+#
+# Required and optional packages are both listed so a single install brings up a
+# fully-working controller (album art + TTS). The optional ones can be removed if
+# you don't need those features — the app degrades gracefully without them.
+
+# ── Required ────────────────────────────────────────────────────────────────
+requests>=2.25            # speaker HTTP API + stream/station lookups
+zeroconf>=0.39            # mDNS speaker discovery (falls back to subnet scan if absent)
+
+# ── Optional ────────────────────────────────────────────────────────────────
+# Pillow — album-art / icon rendering. Without it, art falls back to SVG.
+Pillow>=9.0
+# gTTS — text-to-speech announcements (/api/tts/announce). Without it, the
+#        Announce feature is disabled; everything else works.
+gTTS>=2.3

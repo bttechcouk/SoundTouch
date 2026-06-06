@@ -33,7 +33,10 @@ fi
 echo "→  Installing Python packages…"
 
 pip_install() {
-  PKGS_APT=(python3-requests python3-zeroconf python3-pil)
+  REQ_FILE="$SCRIPT_DIR/requirements.txt"
+
+  # Prefer distro packages where available (avoids PEP 668 friction on Ubuntu).
+  PKGS_APT=(python3-requests python3-zeroconf python3-pil python3-gtts)
   MISSING_APT=()
   for pkg in "${PKGS_APT[@]}"; do
     dpkg -s "$pkg" &>/dev/null || MISSING_APT+=("$pkg")
@@ -43,18 +46,15 @@ pip_install() {
     sudo apt-get install -y "${MISSING_APT[@]}" 2>/dev/null || true
   fi
 
-  MISSING_PIP=()
-  for pkg in requests zeroconf; do
-    python3 -c "import $pkg" &>/dev/null 2>&1 || MISSING_PIP+=("$pkg")
-  done
-  python3 -c "import PIL" &>/dev/null 2>&1 || MISSING_PIP+=(Pillow)
-
-  if [ ${#MISSING_PIP[@]} -gt 0 ]; then
-    echo "  → pip: ${MISSING_PIP[*]}"
-    if python3 -m pip install --quiet --break-system-packages "${MISSING_PIP[@]}" 2>/dev/null; then :
-    elif python3 -m pip install --quiet --user "${MISSING_PIP[@]}" 2>/dev/null; then :
-    else python3 -m pip install --quiet "${MISSING_PIP[@]}" || true
+  # Fill any remaining gaps from requirements.txt via pip.
+  if [ -f "$REQ_FILE" ]; then
+    echo "  → pip: -r requirements.txt"
+    if python3 -m pip install --quiet --break-system-packages -r "$REQ_FILE" 2>/dev/null; then :
+    elif python3 -m pip install --quiet --user -r "$REQ_FILE" 2>/dev/null; then :
+    else python3 -m pip install --quiet -r "$REQ_FILE" || true
     fi
+  else
+    echo "  ⚠  requirements.txt not found at $REQ_FILE — skipping pip step"
   fi
 }
 pip_install

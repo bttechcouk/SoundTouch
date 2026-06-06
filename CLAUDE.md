@@ -58,7 +58,7 @@ journalctl --user -u soundtouch-matter -f                # bridge live logs
 
 ## Dependencies
 
-Python: `requests`, `zeroconf`, `Pillow` (optional — album art)  
+Python: declared in `requirements.txt`. Required: `requests`, `zeroconf`. Optional: `Pillow` (album art), `gTTS` (TTS announcements). Install: `pip3 install -r requirements.txt`.  
 Node.js: `@project-chip/matter-node.js` (ESM, `"type": "module"` in package.json)
 
 No test suite. No linter configuration.
