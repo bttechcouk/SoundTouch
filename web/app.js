@@ -206,9 +206,11 @@ function applyState(d) {
       if(glowEl){glowEl.src=''; glowEl.classList.remove('visible');}
     };
     tmp.src=d.art;
+    updateBackground(d.art);   // full-bleed living background
   } else if (!d.art) {
     artEl.classList.add('hidden'); ph.style.display='';
     if(glowEl){glowEl.src=''; glowEl.classList.remove('visible');}
+    updateBackground('');
   }
   // EQ visualiser + play button ring
   document.getElementById('eq-bars')?.classList.toggle('playing', d.playing);
@@ -249,6 +251,27 @@ function applyState(d) {
       el.querySelector('.preset-name').textContent=nm||'—';
     });
   }
+}
+
+// ── Living background ─────────────────────────────────────────────────────────
+// The current album art drives a slow-drifting, blurred full-bleed backdrop.
+// Two layers crossfade so track changes melt rather than flash.
+let _bgWhich='b';            // last layer shown; first call flips to 'a'
+
+function updateBackground(artUrl){
+  const a=document.getElementById('bg-art-a'), b=document.getElementById('bg-art-b');
+  if(!a||!b) return;
+  if(!artUrl){ a.classList.remove('show'); b.classList.remove('show'); return; }
+  const next=_bgWhich==='a'?b:a, cur=_bgWhich==='a'?a:b;
+  const probe=new Image();
+  probe.onload=()=>{
+    next.style.backgroundImage=`url("${artUrl}")`;
+    next.classList.add('show');
+    cur.classList.remove('show');
+    _bgWhich=_bgWhich==='a'?'b':'a';
+  };
+  probe.onerror=()=>{};
+  probe.src=artUrl;
 }
 
 // ── Volume ───────────────────────────────────────────────────────────────────
