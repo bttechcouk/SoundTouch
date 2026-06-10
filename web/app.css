@@ -31,7 +31,8 @@ html,body{height:100%;background:var(--bg);color:var(--fg);
 
 /* ── Layout ──────────────────────────────────────────────── */
 #app{max-width:440px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column;
-  position:relative;z-index:1}
+  position:relative;z-index:1;
+  padding-bottom:calc(82px + env(safe-area-inset-bottom,0px))}
 
 /* ── Full-bleed living background ─────────────────────────── */
 /* Two crossfading layers of the current album art, blurred and slowly  */
@@ -51,7 +52,8 @@ html,body{height:100%;background:var(--bg);color:var(--fg);
     linear-gradient(to bottom, rgba(11,12,17,.55) 0%, rgba(11,12,17,.78) 55%, rgba(11,12,17,.94) 100%)}
 
 /* ── Header ──────────────────────────────────────────────── */
-header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space-between}
+header{padding:calc(16px + env(safe-area-inset-top,0px)) 20px 0;
+  display:flex;align-items:center;justify-content:space-between}
 .logo{font-size:12px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;
   display:flex;align-items:center;gap:8px}
 .logo-stripe{width:28px;height:3px;
@@ -84,12 +86,25 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 .qr-chevron.open{transform:rotate(180deg)}
 .qr-body{padding:14px 4px 4px}
 
-/* ── Tabs ────────────────────────────────────────────────── */
-#tabs{display:flex;border-bottom:1px solid var(--border);margin:12px 20px 0;gap:0}
-.tab{flex:1;text-align:center;padding:9px 0;font-size:12px;font-weight:600;
-  letter-spacing:.08em;color:var(--fg3);text-transform:uppercase;cursor:pointer;
-  border-bottom:2px solid transparent;transition:all .15s}
-.tab.active{color:var(--blue-light);border-color:var(--blue)}
+/* ── Bottom tab bar ──────────────────────────────────────── */
+/* Fixed frosted-glass nav, thumb-reachable; a single pill indicator */
+/* glides between tabs (positioned by translateX from switchTab).    */
+#tabs{position:fixed;bottom:0;left:50%;transform:translateX(-50%);
+  width:100%;max-width:440px;display:flex;gap:0;z-index:80;
+  background:rgba(13,15,22,.78);
+  backdrop-filter:blur(20px) saturate(1.3);-webkit-backdrop-filter:blur(20px) saturate(1.3);
+  border-top:1px solid var(--border);
+  padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px))}
+.tab{flex:1;position:relative;z-index:1;display:flex;flex-direction:column;
+  align-items:center;gap:3px;padding:7px 0 5px;font-size:9.5px;font-weight:700;
+  letter-spacing:.07em;color:var(--fg2);text-transform:uppercase;cursor:pointer;
+  border-radius:12px;transition:color .2s;user-select:none}
+.tab svg{display:block}
+.tab.active{color:var(--blue-light)}
+#tab-indicator{position:absolute;top:8px;left:10px;height:calc(100% - 16px - env(safe-area-inset-bottom,0px));
+  width:calc((100% - 20px)/4);border-radius:12px;
+  background:rgba(34,119,238,.13);box-shadow:inset 0 0 0 1px rgba(34,119,238,.22);
+  transition:transform .3s cubic-bezier(.3,.7,.3,1.1)}
 
 /* ── Speaker chips ───────────────────────────────────────── */
 #rooms-section{padding:12px 20px 0}
@@ -144,14 +159,7 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   padding:2px 7px;border-radius:10px;pointer-events:none;
   opacity:0;transition:opacity .2s}
 #bass-tooltip.visible{opacity:1}
-#bass-slider{width:100%;height:4px;-webkit-appearance:none;appearance:none;
-  border-radius:2px;outline:none;cursor:pointer;
-  background:linear-gradient(to right,var(--amber) var(--pct,100%),var(--surface2) var(--pct,100%))}
-#bass-slider::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;
-  border-radius:50%;background:var(--silver);cursor:pointer;
-  box-shadow:0 0 6px rgba(245,158,11,.5)}
-#bass-slider::-moz-range-thumb{width:16px;height:16px;border-radius:50%;
-  background:var(--silver);cursor:pointer;border:none}
+#bass-slider{background:linear-gradient(to right,var(--amber) var(--pct,100%),var(--surface2) var(--pct,100%))}
 .bass-label{font-size:10px;color:var(--fg3);flex-shrink:0;text-transform:uppercase;
   letter-spacing:.06em}
 
@@ -170,14 +178,22 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   padding:2px 7px;border-radius:10px;pointer-events:none;white-space:nowrap;
   opacity:0;transition:opacity .2s;left:var(--pct,20%)}
 #vol-tooltip.visible{opacity:1}
-#vol-slider{width:100%;height:4px;-webkit-appearance:none;appearance:none;
-  border-radius:2px;outline:none;cursor:pointer;
-  background:linear-gradient(to right,var(--blue) var(--pct,20%),var(--surface2) var(--pct,20%))}
-#vol-slider::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;
-  border-radius:50%;background:var(--silver);cursor:pointer;
-  box-shadow:0 0 8px var(--blue-glow)}
-#vol-slider::-moz-range-thumb{width:18px;height:18px;border-radius:50%;
-  background:var(--silver);cursor:pointer;border:none}
+#vol-slider{background:linear-gradient(to right,var(--blue) var(--pct,20%),var(--surface2) var(--pct,20%))}
+
+/* ── Capsule sliders ─────────────────────────────────────── */
+/* Thick iOS-style capsules: the colour fill IS the control — no thumb. */
+/* The fill edge is driven by the same --pct var the JS already sets.   */
+#vol-slider,#all-vol-slider,#bass-slider{width:100%;height:32px;
+  -webkit-appearance:none;appearance:none;border-radius:16px;outline:none;
+  cursor:pointer;transition:transform .18s ease;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.07),0 2px 10px rgba(0,0,0,.35)}
+#vol-slider:active,#all-vol-slider:active,#bass-slider:active{transform:scaleY(1.1)}
+#vol-slider::-webkit-slider-thumb,#all-vol-slider::-webkit-slider-thumb,
+#bass-slider::-webkit-slider-thumb{-webkit-appearance:none;width:6px;height:32px;
+  background:transparent;border:none;box-shadow:none}
+#vol-slider::-moz-range-thumb,#all-vol-slider::-moz-range-thumb,
+#bass-slider::-moz-range-thumb{width:6px;height:32px;border-radius:3px;
+  background:transparent;border:none}
 
 /* Transport */
 #transport{padding:14px 4px 6px;display:flex;align-items:center;justify-content:center;gap:20px}
@@ -189,6 +205,12 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 #btn-play{background:var(--blue);width:64px;height:64px;
   box-shadow:0 4px 22px var(--blue-glow),0 0 0 1px var(--blue-dim)}
 #btn-play:active{background:var(--blue-dim)}
+/* Play ⇄ pause morph: both icons stacked, crossfade + spin between states */
+#btn-play svg{position:absolute;inset:0;margin:auto;
+  transition:opacity .2s ease,transform .25s cubic-bezier(.3,.7,.3,1.2)}
+#btn-play #ico-pause{opacity:0;transform:scale(.4) rotate(90deg)}
+#btn-play.playing #ico-pause{opacity:1;transform:scale(1) rotate(0)}
+#btn-play.playing #ico-play{opacity:0;transform:scale(.4) rotate(-90deg)}
 .t-btn-sm{opacity:.75}.t-btn-sm:hover{opacity:1}
 
 /* Presets dropdown */
@@ -200,10 +222,10 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 #preset-toggle .arrow{font-size:9px;transition:transform .2s}
 #preset-toggle.open .arrow{transform:rotate(180deg)}
 /* Clip wrapper: positioned dynamically via JS below the tabs bar */
-#presets-clip{position:absolute;top:94px;left:0;right:0;z-index:50;
+#presets-clip{position:absolute;top:64px;left:0;right:0;z-index:50;
   max-height:0;overflow:hidden;pointer-events:none;
   transition:max-height .22s ease}
-#presets-clip.open{max-height:300px;pointer-events:auto}
+#presets-clip.open{max-height:420px;pointer-events:auto}
 /* Panel itself just slides within the clip wrapper */
 #presets-panel{background:var(--surface);border-bottom:1px solid var(--border);
   box-shadow:0 8px 32px rgba(0,0,0,.7);
@@ -213,15 +235,25 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 #presets-panel-label{font-size:10px;font-weight:700;letter-spacing:.12em;
   color:var(--fg3);text-transform:uppercase;margin-bottom:10px}
 #presets-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.preset{background:var(--surface2);border:1px solid var(--border);
-  border-radius:var(--radius);padding:12px 8px;cursor:pointer;
-  text-align:center;transition:all .15s;user-select:none}
-.preset:active{background:var(--blue-dim);border-color:var(--blue)}
-.preset-num{font-size:9px;font-weight:700;letter-spacing:.1em;
-  color:var(--fg3);text-transform:uppercase;margin-bottom:3px}
-.preset-name{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;
-  white-space:nowrap;color:var(--fg3)}
-.preset.has-name .preset-name{color:var(--fg)}
+/* Art tiles: square, station artwork fills the tile behind a bottom shade */
+.preset{position:relative;aspect-ratio:1;background:var(--surface2);
+  border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;
+  overflow:hidden;user-select:none;transition:transform .15s,border-color .15s}
+.preset:active{transform:scale(.95);border-color:var(--blue)}
+.preset.empty{border-style:dashed;background:var(--surface)}
+.preset-art{position:absolute;inset:0;background-size:cover;background-position:center}
+.preset-art-ph{display:flex;align-items:center;justify-content:center;
+  font-size:24px;color:var(--blue-light);opacity:.28}
+.preset-shade{position:absolute;inset:0;
+  background:linear-gradient(to top,rgba(7,8,12,.88) 0%,rgba(7,8,12,.30) 48%,rgba(7,8,12,.05) 75%)}
+.preset-num{position:absolute;top:6px;left:7px;font-size:9px;font-weight:700;
+  letter-spacing:.08em;color:var(--silver);line-height:1;
+  background:rgba(11,12,17,.55);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  padding:3px 7px;border-radius:8px}
+.preset-name{position:absolute;left:8px;right:8px;bottom:7px;font-size:11.5px;
+  font-weight:600;color:var(--white);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;text-shadow:0 1px 4px rgba(0,0,0,.8)}
+.preset.empty .preset-name{color:var(--fg3);text-shadow:none}
 #presets-backdrop{display:none;position:fixed;inset:0;z-index:49}
 #presets-backdrop.open{display:block}
 
@@ -351,14 +383,13 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 .eq-bars:not(.playing) .eq-bar{animation-play-state:paused}
 
 /* ── Play button pulse ring ──────────────────────────────── */
+/* Expanding box-shadow ring — a ::before ring would be clipped by the
+   button's overflow:hidden (needed for the ripple effect) */
 #btn-play{position:relative}
-#btn-play::before{content:'';position:absolute;inset:-4px;border-radius:50%;
-  border:2px solid var(--blue);opacity:0;pointer-events:none;
-  animation:play-ring 2.4s ease-out infinite;animation-play-state:paused}
-#btn-play.playing::before{animation-play-state:running}
+#btn-play.playing{animation:play-ring 2.4s ease-out infinite}
 @keyframes play-ring{
-  0%{opacity:.8;transform:scale(1)}
-  100%{opacity:0;transform:scale(1.55)}}
+  0%{box-shadow:0 4px 22px var(--blue-glow),0 0 0 0 rgba(34,119,238,.45)}
+  70%,100%{box-shadow:0 4px 22px var(--blue-glow),0 0 0 16px rgba(34,119,238,0)}}
 
 /* ── Track name marquee ──────────────────────────────────── */
 #track-name{overflow:hidden;white-space:nowrap}
@@ -366,9 +397,15 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 #track-name.marquee span{animation:marquee-scroll 10s linear 1.5s infinite}
 @keyframes marquee-scroll{0%,12%{transform:translateX(0)}88%,100%{transform:translateX(var(--sw,0))}}
 
-/* ── Tab page fade-in ────────────────────────────────────── */
+/* ── Tab page transitions ────────────────────────────────── */
+/* Default fade-up on first paint; directional slide when moving      */
+/* between tabs (slide class set by switchTab from the tab order).    */
 .page.visible{animation:page-in .18s ease forwards}
+.page.visible.slide-right{animation:page-in-right .24s cubic-bezier(.3,.7,.3,1) forwards}
+.page.visible.slide-left{animation:page-in-left .24s cubic-bezier(.3,.7,.3,1) forwards}
 @keyframes page-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+@keyframes page-in-right{from{opacity:0;transform:translateX(28px)}to{opacity:1;transform:translateX(0)}}
+@keyframes page-in-left{from{opacity:0;transform:translateX(-28px)}to{opacity:1;transform:translateX(0)}}
 
 /* ── Ripple ──────────────────────────────────────────────── */
 .t-btn,.preset,.mc-btn{overflow:hidden}
@@ -393,7 +430,8 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 .chip-eq-bar:nth-child(3){height:60%;animation-delay:0s}
 
 /* ── Toast ───────────────────────────────────────────────── */
-#toast{position:fixed;bottom:32px;left:50%;transform:translateX(-50%);
+#toast{position:fixed;bottom:calc(92px + env(safe-area-inset-bottom,0px));
+  left:50%;transform:translateX(-50%);
   background:rgba(19,21,29,.96);color:var(--blue-light);border:1px solid var(--blue-dim);
   padding:9px 20px;border-radius:22px;font-size:13px;font-weight:600;
   opacity:0;pointer-events:none;transition:opacity .25s;
@@ -434,14 +472,7 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   padding:2px 7px;border-radius:10px;pointer-events:none;white-space:nowrap;
   opacity:0;transition:opacity .2s;left:var(--pct,50%)}
 #all-vol-tip.visible{opacity:1}
-#all-vol-slider{width:100%;height:4px;-webkit-appearance:none;appearance:none;
-  border-radius:2px;outline:none;cursor:pointer;
-  background:linear-gradient(to right,var(--silver-dim) var(--pct,50%),var(--surface2) var(--pct,50%))}
-#all-vol-slider::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;
-  border-radius:50%;background:var(--silver);cursor:pointer;
-  box-shadow:0 0 6px rgba(200,212,232,.3)}
-#all-vol-slider::-moz-range-thumb{width:18px;height:18px;border-radius:50%;
-  background:var(--silver);cursor:pointer;border:none}
+#all-vol-slider{background:linear-gradient(to right,var(--silver-dim) var(--pct,50%),var(--surface2) var(--pct,50%))}
 
 /* ── Alarm day buttons ───────────────────────────────────── */
 .day-btn{display:inline-flex;align-items:center;justify-content:center;
@@ -453,8 +484,10 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 .day-btn input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
 
 /* ── PWA install banner (Android Chrome) ─────────────────── */
-#install-banner{display:none;position:fixed;bottom:0;left:50%;transform:translateX(-50%);
-  width:100%;max-width:440px;background:var(--surface2);border-top:1px solid var(--border);
+#install-banner{display:none;position:fixed;
+  bottom:calc(78px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%);
+  width:100%;max-width:440px;background:var(--surface2);
+  border-top:1px solid var(--border);border-bottom:1px solid var(--border);
   padding:12px 16px;align-items:center;gap:10px;z-index:90;
   backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
 #install-banner.show{display:flex}

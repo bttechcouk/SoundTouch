@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="SoundTouch">
@@ -46,14 +46,6 @@
       </button>
     </div>
   </header>
-
-  <!-- Tabs -->
-  <div id="tabs">
-    <div class="tab active" data-tab="player"   onclick="switchTab('player')">Player</div>
-    <div class="tab"        data-tab="manage"   onclick="switchTab('manage')">Presets</div>
-    <div class="tab"        data-tab="groups"   onclick="switchTab('groups')">Groups</div>
-    <div class="tab"        data-tab="settings" onclick="switchTab('settings')">Settings</div>
-  </div>
 
   <!-- Speaker chips -->
   <div id="rooms-section">
@@ -105,7 +97,7 @@
         <svg id="ico-play" width="30" height="30" viewBox="0 0 32 32">
           <polygon points="8,4 28,16 8,28" fill="currentColor"/>
         </svg>
-        <svg id="ico-pause" width="30" height="30" viewBox="0 0 32 32" style="display:none">
+        <svg id="ico-pause" width="30" height="30" viewBox="0 0 32 32">
           <rect x="5" y="4" width="8" height="24" rx="2" fill="currentColor"/>
           <rect x="19" y="4" width="8" height="24" rx="2" fill="currentColor"/>
         </svg>
@@ -479,6 +471,45 @@
   </div>
 
 </div>
+
+<!-- Bottom tab bar — frosted glass, gliding pill indicator -->
+<nav id="tabs">
+  <div id="tab-indicator"></div>
+  <div class="tab active" data-tab="player" onclick="switchTab('player')">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+      <circle cx="12" cy="12" r="8.6" stroke="currentColor" stroke-width="1.7"/>
+      <polygon points="10,8.6 16,12 10,15.4" fill="currentColor"/>
+    </svg>
+    <span>Player</span>
+  </div>
+  <div class="tab" data-tab="manage" onclick="switchTab('manage')">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+      <rect x="3.5" y="3.5" width="7.4" height="7.4" rx="2"/>
+      <rect x="13.1" y="3.5" width="7.4" height="7.4" rx="2"/>
+      <rect x="3.5" y="13.1" width="7.4" height="7.4" rx="2"/>
+      <rect x="13.1" y="13.1" width="7.4" height="7.4" rx="2"/>
+    </svg>
+    <span>Presets</span>
+  </div>
+  <div class="tab" data-tab="groups" onclick="switchTab('groups')">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+      <rect x="3.5" y="4.5" width="7.2" height="15" rx="2"/>
+      <rect x="13.3" y="4.5" width="7.2" height="15" rx="2"/>
+      <circle cx="7.1" cy="14.4" r="2"/>
+      <circle cx="16.9" cy="14.4" r="2"/>
+    </svg>
+    <span>Groups</span>
+  </div>
+  <div class="tab" data-tab="settings" onclick="switchTab('settings')">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+      <path d="M4 7h16M4 12h16M4 17h16"/>
+      <circle cx="15" cy="7" r="2.3" fill="#0d0f16"/>
+      <circle cx="8" cy="12" r="2.3" fill="#0d0f16"/>
+      <circle cx="12" cy="17" r="2.3" fill="#0d0f16"/>
+    </svg>
+    <span>Settings</span>
+  </div>
+</nav>
 
 <!-- PWA install banner (shown by beforeinstallprompt on Android Chrome) -->
 <div id="install-banner">

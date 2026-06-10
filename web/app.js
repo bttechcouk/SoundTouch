@@ -51,11 +51,23 @@ function collapseAll(pageId) {
   page.querySelectorAll('.qr-body').forEach(b => b.style.display = 'none');
   page.querySelectorAll('.qr-chevron').forEach(c => c.classList.remove('open'));
 }
+const TAB_ORDER = ['player', 'manage', 'groups', 'settings'];
 function switchTab(name) {
+  const prev = document.querySelector('.tab.active')?.dataset?.tab;
   document.querySelectorAll('.tab').forEach(t =>
     t.classList.toggle('active', t.dataset.tab === name));
-  document.querySelectorAll('.page').forEach(p =>
-    p.classList.toggle('visible', p.id === 'page-' + name));
+  // slide direction follows the tab order; plain fade on first paint / same tab
+  const dir = prev && prev !== name
+    ? (TAB_ORDER.indexOf(name) > TAB_ORDER.indexOf(prev) ? 'slide-right' : 'slide-left') : '';
+  document.querySelectorAll('.page').forEach(p => {
+    const vis = p.id === 'page-' + name;
+    p.classList.remove('slide-left', 'slide-right');
+    p.classList.toggle('visible', vis);
+    if (vis && dir) p.classList.add(dir);
+  });
+  const ind = document.getElementById('tab-indicator');
+  if (ind) ind.style.transform = `translateX(${Math.max(0, TAB_ORDER.indexOf(name)) * 100}%)`;
+  closePresets();
   collapseAll('page-' + name);
   if (name === 'manage')   { /* sections load on expand */ }
   if (name === 'groups')   { loadGroups(); }
@@ -212,10 +224,8 @@ function applyState(d) {
     if(glowEl){glowEl.src=''; glowEl.classList.remove('visible');}
     updateBackground('');
   }
-  // EQ visualiser + play button ring
+  // EQ visualiser + play button ring (.playing also drives the icon morph)
   document.getElementById('eq-bars')?.classList.toggle('playing', d.playing);
-  document.getElementById('ico-play').style.display=d.playing?'none':'';
-  document.getElementById('ico-pause').style.display=d.playing?'':'none';
   document.getElementById('btn-play').classList.toggle('playing', d.playing);
   // power button — highlight while playing
   document.getElementById('btn-power').classList.toggle('playing', d.playing);
@@ -230,26 +240,58 @@ function applyState(d) {
   // chip
   const chip=document.getElementById('chip-'+activeHost.replace(/\./g,'_'));
   if (chip) { chip.classList.toggle('playing',d.playing); chip.classList.add('active'); }
-  // presets — populate dropdown grid
-  const g=document.getElementById('presets-grid');
-  const presets = d.presets || [];
-  if (g.children.length===0) {
-    g.innerHTML='';
-    for (let i=0;i<6;i++) {
-      const nm=presets[i]?.name||'';
-      const div=document.createElement('div');
-      div.className='preset'+(nm?' has-name':'');
-      div.innerHTML=`<div class="preset-num">Preset ${i+1}</div>
-                     <div class="preset-name">${nm||'—'}</div>`;
-      div.onclick=(e)=>{ ripple(div,e); if(navigator.vibrate)navigator.vibrate(8); cmd('preset'+(i+1)); closePresets(); };
-      g.appendChild(div);
-    }
-  } else {
-    [...g.children].forEach((el,i)=>{
-      const nm=presets[i]?.name||'';
-      el.className='preset'+(nm?' has-name':'');
-      el.querySelector('.preset-name').textContent=nm||'—';
-    });
+  // presets — populate dropdown art-tile grid
+  renderPresetGrid(d.presets || []);
+}
+
+// ── Preset art tiles ──────────────────────────────────────────────────────────
+// Tiles show the preset's containerArt; UPNP presets pointing at our DLNA
+// redirect fall back to the custom station's art_url (fetched once, cached).
+let _presetSig='', _stationArt=null, _stationArtLoading=false;
+
+function presetArt(p) {
+  if (p.art) return p.art;
+  const loc = p.location || '';
+  // TuneIn presets carry no containerArt, but the station id maps to a
+  // public logo CDN (verified pattern used by the TuneIn apps themselves)
+  if (p.source === 'TUNEIN') {
+    const m = loc.match(/\/station\/(s\d+)/);
+    if (m) return `https://cdn-radiotime-logos.tunein.com/${m[1]}d.png`;
+  }
+  // Our own stations: UPNP DLNA redirects and LOCAL_INTERNET_RADIO descriptors
+  if (!loc.includes('/dlna/stream/') && !loc.includes('/api/station-desc/')) return '';
+  const sid = loc.split('/').pop();
+  if (_stationArt) return _stationArt[sid] || '';
+  if (!_stationArtLoading) {
+    _stationArtLoading = true;
+    fetch('/api/stations').then(r=>r.json()).then(list=>{
+      _stationArt = {};
+      list.forEach(s => { _stationArt[s.id] = s.art_url || ''; });
+      _presetSig = '';                       // force re-render with art
+      if (lastState) applyState(lastState);
+    }).catch(()=>{ _stationArtLoading = false; });
+  }
+  return '';
+}
+
+function renderPresetGrid(presets) {
+  const g = document.getElementById('presets-grid');
+  const sig = JSON.stringify(presets.map(p=>[p?.name||'', presetArt(p||{})]));
+  if (sig === _presetSig) return;
+  _presetSig = sig;
+  g.innerHTML = '';
+  for (let i=0; i<6; i++) {
+    const p = presets[i]||{}, nm = p.name||'', art = presetArt(p);
+    const div = document.createElement('div');
+    div.className = 'preset' + (nm ? '' : ' empty');
+    div.innerHTML = (art
+        ? `<div class="preset-art" style="background-image:url('${art.replace(/'/g,'%27')}')"></div>`
+        : `<div class="preset-art preset-art-ph">${nm?'&#9835;':''}</div>`)
+      + `<div class="preset-shade"></div>
+         <div class="preset-num">${i+1}</div>
+         <div class="preset-name">${nm||'—'}</div>`;
+    div.onclick=(e)=>{ ripple(div,e); if(navigator.vibrate)navigator.vibrate(8); cmd('preset'+(i+1)); closePresets(); };
+    g.appendChild(div);
   }
 }
 
@@ -536,12 +578,10 @@ function togglePresets() {
   if (isOpen) {
     closePresets();
   } else {
-    // Position the clip right below the tabs bar so it doesn't matter
-    // how tall the speaker chips section is
-    const tabsEl = document.getElementById('tabs');
-    const tabsBottom = tabsEl.getBoundingClientRect().bottom +
-                       document.getElementById('app').scrollTop;
-    clip.style.top = tabsBottom + 'px';
+    // Position the clip right below the header (the tab bar is fixed at
+    // the bottom, so the header is the panel's visual anchor)
+    const hdr = document.querySelector('header');
+    clip.style.top = (hdr.offsetTop + hdr.offsetHeight) + 'px';
     clip.classList.add('open');
     backdrop.classList.add('open');
     btn.classList.add('open');

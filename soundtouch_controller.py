@@ -441,6 +441,7 @@ class SoundTouchDevice:
                     "type":     "",
                     "location": "",
                     "account":  "",
+                    "art":      "",
                 }
                 if ci is not None:
                     rec["source"]   = ci.get("source","")
@@ -450,6 +451,9 @@ class SoundTouchDevice:
                     nm = ci.find("itemName")
                     if nm is not None:
                         rec["name"] = nm.text or ""
+                    ca = ci.find("containerArt")
+                    if ca is not None:
+                        rec["art"] = ca.text or ""
                 out.append(rec)
         self._presets_cache = out
         self._presets_ts    = time.monotonic()
