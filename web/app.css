@@ -30,7 +30,10 @@ html,body{height:100%;background:var(--bg);color:var(--fg);
   -webkit-font-smoothing:antialiased;overscroll-behavior:none}
 
 /* ── Layout ──────────────────────────────────────────────── */
-#app{max-width:440px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column;
+/* Fixed viewport height (not min-height) so the Player page can size itself   */
+/* to the screen instead of growing past it. Long pages scroll inside .page.   */
+#app{max-width:440px;margin:0 auto;height:100vh;height:100dvh;
+  display:flex;flex-direction:column;
   position:relative;z-index:1;
   padding-bottom:calc(82px + env(safe-area-inset-bottom,0px))}
 
@@ -129,11 +132,15 @@ header{padding:calc(16px + env(safe-area-inset-top,0px)) 20px 0;
 #no-speakers{color:var(--fg3);font-size:13px;padding:4px 0}
 
 /* ── Page ────────────────────────────────────────────────── */
-.page{display:none;flex-direction:column;flex:1}
+.page{display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto}
 .page.visible{display:flex}
+/* Player never scrolls — the art absorbs the slack instead (see #art-wrap) */
+#page-player{overflow:hidden}
 
-/* Art — full square */
-#art-wrap{position:relative;width:100%;padding-bottom:100%;margin:12px 0 0;
+/* Art — square when there's room, shrinks to fit when there isn't, so the  */
+/* transport and power controls always stay above the fold.                 */
+#art-wrap{position:relative;width:100%;aspect-ratio:1/1;flex:0 1 auto;min-height:0;
+  margin:12px 0 0;
   background:var(--surface);border-radius:var(--radius);overflow:hidden;
   box-shadow:0 8px 32px rgba(0,0,0,.5),0 0 0 1px var(--border),
              0 1px 0 rgba(34,119,238,.15) inset}
@@ -143,7 +150,7 @@ header{padding:calc(16px + env(safe-area-inset-top,0px)) 20px 0;
   justify-content:center;font-size:52px;opacity:.1;color:var(--blue-light)}
 
 /* Track info */
-#track-info{padding:12px 4px 0;display:flex;align-items:flex-start;
+#track-info{padding:12px 4px 0;flex-shrink:0;display:flex;align-items:flex-start;
   justify-content:space-between;gap:10px}
 #track-text{min-width:0;flex:1}
 #track-name{font-size:18px;font-weight:700;color:var(--white);
@@ -167,7 +174,7 @@ header{padding:calc(16px + env(safe-area-inset-top,0px)) 20px 0;
 .chip-warn{font-size:9px;color:var(--amber);flex-shrink:0;margin-left:1px}
 
 /* Volume */
-#vol-row{padding:12px 4px 0;display:flex;align-items:center;gap:10px}
+#vol-row{padding:12px 4px 0;flex-shrink:0;display:flex;align-items:center;gap:10px}
 .vol-icon{color:var(--fg3);font-size:15px;flex-shrink:0}
 .vol-btn{cursor:pointer;user-select:none;transition:color .15s}
 .vol-btn:hover{color:var(--fg1)}
@@ -196,7 +203,7 @@ header{padding:calc(16px + env(safe-area-inset-top,0px)) 20px 0;
   background:transparent;border:none}
 
 /* Transport */
-#transport{padding:14px 4px 6px;display:flex;align-items:center;justify-content:center;gap:20px}
+#transport{padding:14px 4px 6px;flex-shrink:0;display:flex;align-items:center;justify-content:center;gap:20px}
 .t-btn{background:none;border:none;color:var(--fg);cursor:pointer;
   padding:10px;border-radius:50%;transition:all .15s;flex-shrink:0;
   display:flex;align-items:center;justify-content:center}
@@ -263,12 +270,8 @@ header{padding:calc(16px + env(safe-area-inset-top,0px)) 20px 0;
 #group-badge{font-size:10px;font-weight:700;letter-spacing:.06em;
   color:var(--amber);background:var(--surface);border:1px solid var(--amber-dim);
   padding:3px 8px;border-radius:10px;white-space:nowrap;align-self:center;flex-shrink:0}
-#cloud-warn{margin:8px 20px 0;padding:8px 12px;
-  background:rgba(245,158,11,.08);border:1px solid var(--amber-dim);
-  border-radius:8px;font-size:11px;color:var(--amber);line-height:1.5}
-
 /* Power / Mute */
-#power-row{display:flex;justify-content:center;gap:10px;padding:10px 20px 18px}
+#power-row{display:flex;flex-shrink:0;justify-content:center;gap:10px;padding:10px 20px 18px}
 #btn-power,#btn-mute{background:var(--surface);border:1px solid var(--border);
   color:var(--fg2);border-radius:20px;padding:8px 22px;font-size:13px;
   cursor:pointer;display:flex;align-items:center;gap:7px;transition:all .18s}

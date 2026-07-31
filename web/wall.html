@@ -148,7 +148,6 @@ body{display:flex;flex-direction:column;height:100vh}
   padding:2px 7px;border-radius:8px;white-space:nowrap;
 }
 .badge-source{color:var(--blue-light);border:1px solid rgba(96,165,250,.3);background:rgba(96,165,250,.08)}
-.badge-cloud{color:var(--amber);border:1px solid var(--amber-dim);background:rgba(245,158,11,.08)}
 .badge-group{color:var(--amber);border:1px solid var(--amber-dim);background:rgba(245,158,11,.08)}
 
 /* ── Controls row ─────────────────────────────── */
@@ -500,7 +499,6 @@ function applyCard(host, d){
   const bEl=document.getElementById('badges-'+id);
   let badges='';
   if(d.source) badges+=`<span class="badge badge-source">${d.source}</span>`;
-  if(d.cloud_warning) badges+=`<span class="badge badge-cloud" title="${d.cloud_warning}">⚠ Cloud</span>`;
   if(d.group_role==='master') badges+=`<span class="badge badge-group">Master</span>`;
   if(d.group_role==='member') badges+=`<span class="badge badge-group">Member</span>`;
   bEl.innerHTML=badges;

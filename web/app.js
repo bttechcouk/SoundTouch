@@ -193,9 +193,6 @@ function applyState(d) {
   setTrackName(track); setText('track-artist',artist);
   const badge=document.getElementById('source-badge');
   badge.textContent=d.source||''; badge.style.display=d.source?'':'none';
-  const cw=document.getElementById('cloud-warn');
-  if(d.cloud_warning){cw.textContent='⚠ '+d.cloud_warning; cw.style.display='';}
-  else{cw.style.display='none';}
   const gbadge=document.getElementById('group-badge');
   if (d.group_role==='master') {
     gbadge.textContent=`GROUP MASTER (${d.group_members||0})`; gbadge.style.display='';
