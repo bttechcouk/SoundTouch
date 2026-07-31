@@ -31,7 +31,48 @@ window.addEventListener('DOMContentLoaded', () => {
   fetchSpeakers(false); schedPoll();
   const savedTab = localStorage.getItem('activeTab');
   if (savedTab) switchTab(savedTab);
+  initViewportChrome();
 });
+
+// ── Viewport chrome sync ─────────────────────────────────────────────────────
+// iOS reports no model in its user agent — every iPhone just says "iPhone" —
+// so there is no reliable way to detect a Pro or Pro Max and hardcode offsets
+// for it. Instead we measure the two things that actually vary at runtime:
+//
+//   --nav-h  the tab bar's real height. It already includes its own
+//            env(safe-area-inset-bottom) padding, so the home indicator /
+//            Dynamic Island is accounted for on any device that has one.
+//   --vh     the true visible viewport height from visualViewport, which on
+//            iOS Safari shrinks and grows as the bottom toolbar collapses.
+//
+// This self-corrects on every screen, including models that don't exist yet.
+function syncViewportChrome() {
+  const nav = document.getElementById('tabs');
+  if (nav) {
+    const h = nav.getBoundingClientRect().height;
+    if (h > 0) document.documentElement.style.setProperty('--nav-h', h + 'px');
+  }
+  const vv = window.visualViewport, app = document.getElementById('app');
+  if (!vv || !app) return;
+  // Skip while typing: the software keyboard shrinks the visual viewport, and
+  // resizing the app to match makes the whole layout lurch mid-edit.
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '')) return;
+  document.documentElement.style.setProperty('--vh', vv.height + 'px');
+  app.classList.add('has-vv');
+}
+
+function initViewportChrome() {
+  syncViewportChrome();
+  // Nav height settles after first paint (web fonts, icon layout).
+  requestAnimationFrame(syncViewportChrome);
+  const nav = document.getElementById('tabs');
+  if (nav && window.ResizeObserver) new ResizeObserver(syncViewportChrome).observe(nav);
+  window.visualViewport?.addEventListener('resize', syncViewportChrome);
+  window.addEventListener('resize', syncViewportChrome);
+  window.addEventListener('orientationchange', () => setTimeout(syncViewportChrome, 250));
+  // Restore full height once the keyboard closes.
+  document.addEventListener('focusout', () => setTimeout(syncViewportChrome, 100));
+}
 
 // ── Page Visibility — pause polls when tab is hidden ─────────────────────────
 document.addEventListener('visibilitychange', () => {

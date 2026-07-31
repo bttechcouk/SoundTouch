@@ -32,10 +32,18 @@ html,body{height:100%;background:var(--bg);color:var(--fg);
 /* ── Layout ──────────────────────────────────────────────── */
 /* Fixed viewport height (not min-height) so the Player page can size itself   */
 /* to the screen instead of growing past it. Long pages scroll inside .page.   */
+/* Height ladder, worst to best:                                               */
+/*   100vh  — ignores browser chrome, wrong on iOS but universally supported   */
+/*   100dvh — tracks Safari's collapsing toolbar (iOS 15.4+)                   */
+/*   --vh   — measured from visualViewport by syncViewportChrome(), exact      */
+/* Bottom padding is the *measured* nav height (--nav-h), so it's correct on   */
+/* every device — notch, home indicator, Dynamic Island or none — instead of   */
+/* a hardcoded guess that only suits one screen.                               */
 #app{max-width:440px;margin:0 auto;height:100vh;height:100dvh;
   display:flex;flex-direction:column;
   position:relative;z-index:1;
-  padding-bottom:calc(82px + env(safe-area-inset-bottom,0px))}
+  padding-bottom:var(--nav-h,calc(82px + env(safe-area-inset-bottom,0px)))}
+#app.has-vv{height:var(--vh)}
 
 /* ── Full-bleed living background ─────────────────────────── */
 /* Two crossfading layers of the current album art, blurred and slowly  */
