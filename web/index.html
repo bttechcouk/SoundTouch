@@ -4,7 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<!-- "black", not "black-translucent": with translucent, iOS home-screen apps
+     start the web view under the status bar but don't make it taller, leaving a
+     status-bar-height black band below the tab bar that the page can't paint. -->
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="apple-mobile-web-app-title" content="SoundTouch">
 <meta name="theme-color" content="#0b0c11">
 <link rel="manifest" href="/manifest.json">
