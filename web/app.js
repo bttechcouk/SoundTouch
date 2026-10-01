@@ -137,18 +137,66 @@ async function rescan() {
 function renderRooms() {
   const el = document.getElementById('rooms-list');
   if (!speakers.length) { el.innerHTML='<div id="no-speakers">No speakers found</div>';
-    document.getElementById('all-vol-row')?.classList.remove('visible'); return; }
-  // Single speaker: full-width; 2+: 2-column grid
-  el.style.gridTemplateColumns = speakers.length === 1 ? '1fr' : 'repeat(2,1fr)';
-  el.innerHTML = speakers.map(s=>`
-    <div class="room-chip${s.host===activeHost?' active':''}"
-         id="chip-${s.host.replace(/\./g,'_')}"
-         onclick="setActive('${s.host}')">
+    document.getElementById('all-vol-row')?.classList.remove('visible'); syncSpeakerBar(); return; }
+  // Re-rendering must not lose the playing/offline state the polls set
+  const prev = {};
+  el.querySelectorAll('.room-chip').forEach(c => prev[c.id] = c.className);
+  const sorted = [...speakers].sort((a,b)=>a.name.localeCompare(b.name));
+  el.innerHTML = sorted.map(s=>{
+    const id = 'chip-'+s.host.replace(/\./g,'_');
+    const keep = (prev[id]||'').split(' ').filter(c=>c==='playing'||c==='offline');
+    const cls = ['room-chip', ...(s.host===activeHost?['active']:[]), ...keep].join(' ');
+    return `
+    <div class="${cls}" id="${id}" role="option" aria-selected="${s.host===activeHost}"
+         onclick="pickSpeaker('${s.host}')">
+      <span class="check">${s.host===activeHost?'✓':''}</span>
       <span class="dot"></span>
       <span class="chip-eq"><span class="chip-eq-bar"></span><span class="chip-eq-bar"></span><span class="chip-eq-bar"></span></span>
-      <span class="name">${s.name}</span>${s.has_backup===false?'<span class="chip-warn" title="No preset backup">⚠</span>':''}</div>`).join('');
+      <span class="name">${s.name}</span>${s.has_backup===false?'<span class="chip-warn" title="No preset backup">⚠</span>':''}
+      <span class="model">${(s.model||'').replace(/^SoundTouch\s*/,'ST ')}</span>
+    </div>`;}).join('');
+  syncSpeakerBar();
   updateAlarmSpeakerSelect();
 }
+// Picker bar mirrors the active speaker's row, plus a count of other
+// speakers currently playing so you can see activity without opening it.
+function syncSpeakerBar() {
+  const bar = document.getElementById('spk-current');
+  const sp  = speakers.find(s=>s.host===activeHost);
+  document.getElementById('spk-name').textContent =
+    sp ? sp.name : (speakers.length ? 'Choose a speaker' : 'No speakers found');
+  document.getElementById('spk-sub').textContent = sp ? (sp.model||'') : '';
+  const row = activeHost && document.getElementById('chip-'+activeHost.replace(/\./g,'_'));
+  bar.classList.toggle('playing', !!row && row.classList.contains('playing'));
+  bar.classList.toggle('offline', !!row && row.classList.contains('offline'));
+  const others = document.querySelectorAll('#rooms-list .room-chip.playing:not(.active)').length;
+  document.getElementById('spk-others').textContent = others ? `+${others} playing` : '';
+}
+function toggleSpeakers() {
+  const clip = document.getElementById('speakers-clip');
+  if (clip.classList.contains('open')) { closeSpeakers(); return; }
+  closePresets();
+  const sec = document.getElementById('rooms-section');
+  clip.style.top = (sec.offsetTop + sec.offsetHeight) + 'px';
+  clip.classList.add('open');
+  sec.classList.add('open');
+  document.getElementById('speakers-backdrop').classList.add('open');
+  document.getElementById('spk-current').setAttribute('aria-expanded','true');
+}
+function closeSpeakers() {
+  document.getElementById('speakers-clip').classList.remove('open');
+  document.getElementById('rooms-section').classList.remove('open');
+  document.getElementById('speakers-backdrop').classList.remove('open');
+  document.getElementById('spk-current').setAttribute('aria-expanded','false');
+}
+function pickSpeaker(h) {
+  if (navigator.vibrate) navigator.vibrate(8);
+  closeSpeakers();
+  if (h !== activeHost) setActive(h);
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeSpeakers(); closePresets(); }
+});
 function setActive(h) {
   activeHost=h; clearTimeout(pollTimer); renderRooms(); pollNow();
   const tab = document.querySelector('.tab.active')?.dataset?.tab;
@@ -184,6 +232,7 @@ async function pollNow() {
 function setChipOffline(host, offline) {
   const chip = document.getElementById('chip-'+host.replace(/\./g,'_'));
   if (chip) chip.classList.toggle('offline', offline);
+  syncSpeakerBar();
 }
 
 // Background poll — updates playing/offline state for all non-active speakers
@@ -203,6 +252,7 @@ async function bgPollAll() {
       setChipOffline(s.host, !st.online);
       const chip = document.getElementById('chip-'+s.host.replace(/\./g,'_'));
       if (chip) chip.classList.toggle('playing', st.playing);
+      syncSpeakerBar();
     } catch(e) {
       speakerErrors[s.host] = (speakerErrors[s.host]||0) + 1;
       if (speakerErrors[s.host] >= 2) setChipOffline(s.host, true);
@@ -228,12 +278,24 @@ function setTrackName(text) {
     }
   });
 }
+// Speaker source codes → readable names (PRODUCT is the soundbar's TV/HDMI input)
+const SOURCE_LABELS = {STANDBY:'Standby', INVALID_SOURCE:'No source', BLUETOOTH:'Bluetooth',
+  AUX:'AUX', AIRPLAY:'AirPlay', SPOTIFY:'Spotify', UPNP:'Radio', LOCAL_INTERNET_RADIO:'Radio',
+  TUNEIN:'TuneIn', AMAZON:'Amazon Music', DEEZER:'Deezer', PANDORA:'Pandora',
+  IHEART:'iHeartRadio', STORED_MUSIC:'Music Library', QPLAY:'QPlay', NOTIFICATION:'Announcement'};
+function sourceLabel(src, acct) {
+  if (!src) return '';
+  if (src === 'PRODUCT') return acct === 'TV' ? 'TV' : (acct||'').replace(/_/g,' ') || 'TV';
+  return SOURCE_LABELS[src] || src;
+}
 function applyState(d) {
   if (!d) return; lastState = d;
-  const track = d.track||(d.source||'—'), artist = d.artist||d.album||'';
+  const src = sourceLabel(d.source, d.source_account);
+  const track = d.track||(src||'—'), artist = d.artist||d.album||'';
   setTrackName(track); setText('track-artist',artist);
   const badge=document.getElementById('source-badge');
-  badge.textContent=d.source||''; badge.style.display=d.source?'':'none';
+  // Skip the badge when the title is already just the source name ("TV" twice)
+  badge.textContent=src; badge.style.display=(src && d.track)?'':'none';
   const gbadge=document.getElementById('group-badge');
   if (d.group_role==='master') {
     gbadge.textContent=`GROUP MASTER (${d.group_members||0})`; gbadge.style.display='';
@@ -279,6 +341,7 @@ function applyState(d) {
   // chip
   const chip=document.getElementById('chip-'+activeHost.replace(/\./g,'_'));
   if (chip) { chip.classList.toggle('playing',d.playing); chip.classList.add('active'); }
+  syncSpeakerBar();
   // presets — populate dropdown art-tile grid
   renderPresetGrid(d.presets || []);
 }
@@ -654,6 +717,7 @@ function togglePresets() {
   if (isOpen) {
     closePresets();
   } else {
+    closeSpeakers();
     // Position the clip right below the header (the tab bar is fixed at
     // the bottom, so the header is the panel's visual anchor)
     const hdr = document.querySelector('header');

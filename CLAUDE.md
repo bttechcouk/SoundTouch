@@ -169,6 +169,7 @@ Commissioning state is persisted to `matter_bridge/data/matter/bridge.json`. Del
 
 **Key JS functions:**
 - `setActive(host)` — switch active speaker; triggers poll and reloads any open Settings sections
+- `renderRooms()` / `syncSpeakerBar()` / `toggleSpeakers()` — speaker picker: a bar showing the active speaker that opens a slide-down list (same mechanics as the Presets panel). Rows keep `chip-<host>` ids; the polls toggle `.playing`/`.offline` on them and the bar mirrors the active row
 - `pollNow()` / `schedPoll()` — 3s active-speaker poll loop
 - `bgPollAll()` — 12s background poll of all non-active speakers
 - `applyState(d)` — applies `/api/state` response to the Player UI

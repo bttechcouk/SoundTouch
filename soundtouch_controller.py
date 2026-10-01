@@ -430,6 +430,7 @@ class SoundTouchDevice:
         np = f_np.result()
         if np is not None:
             d["source"]     = np.get("source","")
+            d["source_account"] = np.get("sourceAccount","")
             play_status     = np.get("playStatus") or np.findtext("playStatus") or ""
             d["playing"]    = play_status in ("PLAY_STATE", "BUFFERING_STATE")
             d["playStatus"] = play_status

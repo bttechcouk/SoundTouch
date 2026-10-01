@@ -47,10 +47,28 @@
     </div>
   </header>
 
-  <!-- Speaker chips -->
+  <!-- Speaker picker: one bar showing the active speaker; tap for the full list -->
   <div id="rooms-section">
-    <div class="section-label">Speakers</div>
-    <div id="rooms-list"><div id="no-speakers">Scanning…</div></div>
+    <button id="spk-current" onclick="toggleSpeakers()" aria-haspopup="listbox" aria-expanded="false">
+      <span class="dot"></span>
+      <span class="chip-eq"><span class="chip-eq-bar"></span><span class="chip-eq-bar"></span><span class="chip-eq-bar"></span></span>
+      <span class="spk-text">
+        <span id="spk-name">Scanning…</span>
+        <span id="spk-sub"></span>
+      </span>
+      <span id="spk-others"></span>
+      <span class="arrow">▼</span>
+    </button>
+  </div>
+
+  <!-- Speakers dropdown panel (slides down from under the picker bar) -->
+  <div id="speakers-backdrop" onclick="closeSpeakers()"></div>
+  <div id="speakers-clip">
+    <div id="speakers-panel">
+      <div id="speakers-panel-inner">
+        <div id="rooms-list" role="listbox"><div id="no-speakers">Scanning…</div></div>
+      </div>
+    </div>
   </div>
 
   <!-- ═══ PAGE: Player ═══ -->
