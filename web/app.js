@@ -272,6 +272,7 @@ function applyState(d) {
   muteBtn.classList.toggle('muted', !!d.muted);
   document.getElementById('ico-mute-lines').style.display=d.muted?'none':'';
   document.getElementById('ico-mute-cross').style.display=d.muted?'':'none';
+  applyDialogState(d);
   // volume
   const sl=document.getElementById('vol-slider');
   if (!sl.matches(':active')) { sl.value=d.volume; updateVol(d.volume); }
@@ -397,6 +398,43 @@ async function cmd(a, el, e) {
   if (!activeHost) { toast('No speaker selected'); return; }
   await fetch(`/api/cmd?host=${activeHost}&action=${a}`);
   setTimeout(pollNow,500);
+}
+
+// ── Dialogue mode (soundbars) ───────────────────────────────────────────────
+// audio_mode is null for speakers without /audiodspcontrols — row stays hidden.
+// A poll landing mid-request would flip the switch back, so polls are ignored
+// for a moment after the user touches either switch.
+let _dialogHold = 0;
+function applyDialogState(d) {
+  const row = document.getElementById('dialog-row');
+  const show = d.audio_mode != null;
+  row.style.display = show ? '' : 'none';
+  document.getElementById('power-row').classList.toggle('tight', show);
+  if (!show || Date.now() < _dialogHold) return;
+  document.getElementById('sw-dialog').checked = d.audio_mode === 'dialog';
+  document.getElementById('sw-dialog-auto').checked = !!d.auto_dialog_tv;
+}
+async function dialogReq(qs, okMsg) {
+  if (!activeHost) { toast('No speaker selected'); return; }
+  const host = activeHost;
+  _dialogHold = Date.now() + 4000;
+  if (navigator.vibrate) navigator.vibrate(8);
+  try {
+    const r = await (await fetch(`/api/audio-mode${qs}${qs.includes('?')?'&':'?'}host=${host}`)).json();
+    if (host !== activeHost) return;
+    if (!r.supported) { toast('Dialogue mode not supported'); return; }
+    document.getElementById('sw-dialog').checked = r.mode === 'dialog';
+    document.getElementById('sw-dialog-auto').checked = !!r.auto_tv;
+    toast(okMsg(r));
+  } catch(e) { toast('Could not reach speaker'); }
+}
+function setDialogMode(on) {
+  dialogReq(`/set?mode=${on?'dialog':'normal'}`,
+            r => r.mode === 'dialog' ? 'Dialogue mode on' : 'Dialogue mode off');
+}
+function setDialogAuto(on) {
+  dialogReq(`/auto?enabled=${on}`,
+            r => r.auto_tv ? 'Dialogue mode will switch on for TV' : 'Auto dialogue mode off');
 }
 
 // ── Preset backup ────────────────────────────────────────────────────────────

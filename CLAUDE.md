@@ -90,6 +90,7 @@ Key methods:
 - `play_via_avt(stream_url)` (line 511) — plays a stream via UPnP AVTransport SOAP on port 8091. Used for speakers without `LOCAL_INTERNET_RADIO`. URL must be HTTP (not HTTPS); the speaker follows 302 redirects.
 - `get_zone()` / `set_zone()` / `remove_zone()` — multi-room zone management
 - `get_bass_capabilities()` / `get_bass()` / `set_bass()` — bass control
+- `supports_dialog_mode()` / `get_audio_mode()` / `set_audio_mode()` — dialogue mode via `/audiodspcontrols` (SoundTouch 300 only; other models 404, cached as unsupported)
 - `detail_info()` — device details from `/info`
 - `set_name()` — rename via `POST /name`
 
@@ -128,10 +129,13 @@ Key API endpoints:
 - `POST /api/tts/announce` / `GET /api/tts/status`
 - `GET /api/volume/all` / `GET /api/sources?host=` / `POST /api/select`
 - `GET /api/matter/qr`
+- `GET /api/audio-mode?host=` / `/api/audio-mode/set?host=&mode=dialog|normal` / `/api/audio-mode/auto?host=&enabled=` — dialogue mode + per-speaker "Auto on TV" setting
 
 **`AppState` (line 5074)** — Singleton holding the device list, `PresetStore`, `SceneStore`, `AlarmStore`, `AlarmScheduler`, and `DLNAServer`. On init, starts the DLNA server and the `_upnp_autoplay_loop` daemon thread.
 
 `_upnp_autoplay_loop` (line 5098) — Polls Kitchen-like speakers every 2s. Fires `play_via_avt()` when it detects either `source=UPNP`+stopped (ContentItem has our DLNA URL) or a fresh transition into `source=INVALID_SOURCE` (the more common case when a physical preset button is pressed). Uses `prev_source`, `last_upnp_loc`, and `last_fired` dicts for debounce.
+
+`_audio_mode_loop` — Polls dialogue-capable soundbars every 2s. Entering the TV input (`source=PRODUCT`, from music or standby) sets dialogue mode; entering a music source sets normal. Rules live in the pure `audio_mode_for_transition()`. The target mode is re-applied for ~10s in case the bar resets it while settling. Settings in `AudioModeStore` (`data/audio_mode.json`, keyed by deviceID, default on).
 
 **`main()` (line 5225)** — Parses `--port`, `--ip`, `--daemon`, runs `_check_network()`, starts `AppState.scan()`, launches `ThreadingHTTPServer`.
 
@@ -181,6 +185,7 @@ data/
   stations/<id>.json    # custom station definitions (name, stream_url, art_url)
   scenes/<id>.json      # named multi-speaker scenes
   alarms.json           # alarm definitions
+  audio_mode.json       # per-soundbar "auto dialogue mode on TV" setting
   dlna_uuid.txt         # persistent UUID for the embedded DLNA server
 ```
 

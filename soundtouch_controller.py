@@ -61,6 +61,7 @@ STATIONS_DIR  = DATA_DIR / "stations"
 LOG_FILE      = pathlib.Path(__file__).parent / "soundtouch.log"
 SCENES_DIR    = DATA_DIR / "scenes"
 ALARMS_FILE   = DATA_DIR / "alarms.json"
+AUDIO_MODE_FILE = DATA_DIR / "audio_mode.json"
 
 # Sources that route through the Bose cloud — will break on 6 May 2026
 CLOUD_SOURCES = {
@@ -198,6 +199,8 @@ class SoundTouchDevice:
         self._presets_ts    = 0.0        # monotonic time of last preset fetch
         self._zone_cache    = None       # cached zone info
         self._zone_ts       = 0.0        # monotonic time of last zone fetch
+        self._dsp_supported = None       # dialogue-mode support, probed lazily
+        self._dsp_checked   = None       # monotonic time of last failed probe
 
     # ── low-level ─────────────────────────────────────────────────────────────
     def _get(self, path, timeout=4):
@@ -317,6 +320,43 @@ class SoundTouchDevice:
     def set_bass(self, value):
         self._post("/bass", f"<bass>{max(-9, min(9, int(value)))}</bass>")
 
+    # ── audio DSP (dialogue mode) — SoundTouch 300 / soundbars only ──────────
+    def supports_dialog_mode(self):
+        """True if /audiodspcontrols lists AUDIO_MODE_DIALOG. Speakers without
+        it (ST10/20/30) 404 the endpoint — that answer is cached for good. A
+        network error is re-probed after 10 min so a speaker that was briefly
+        offline doesn't lose the feature until restart."""
+        if self._dsp_supported is not None:
+            return self._dsp_supported
+        now = time.monotonic()
+        if self._dsp_checked is not None and now - self._dsp_checked < 600:
+            return False
+        self._dsp_checked = now
+        try:
+            r = self._session.get(f"{self.url}/audiodspcontrols", timeout=4)
+        except Exception as e:
+            log.debug(f"[DSP] {self.host} probe failed, will retry: {e}")
+            return False
+        try:
+            xml = ET.fromstring(r.text) if r.status_code == 200 else None
+        except ET.ParseError:
+            xml = None
+        self._dsp_supported = (xml is not None and xml.tag == "audiodspcontrols" and
+                               "AUDIO_MODE_DIALOG" in xml.get("supportedaudiomodes", ""))
+        log.info(f"[DSP] {self.host} dialogue mode supported: {self._dsp_supported}")
+        return self._dsp_supported
+
+    def get_audio_mode(self):
+        """Return "dialog" / "normal", or None if dialogue mode is unsupported."""
+        xml = self._get("/audiodspcontrols")
+        if xml is None or xml.tag != "audiodspcontrols":
+            return None
+        return "dialog" if xml.get("audiomode") == "AUDIO_MODE_DIALOG" else "normal"
+
+    def set_audio_mode(self, mode):
+        am = "AUDIO_MODE_DIALOG" if mode == "dialog" else "AUDIO_MODE_NORMAL"
+        return self._post("/audiodspcontrols", f'<audiodspcontrols audiomode="{am}"/>')
+
     def get_sources(self):
         xml = self._get("/sources")
         if xml is None: return []
@@ -364,12 +404,17 @@ class SoundTouchDevice:
                  volume=0, muted=False, source="", track="", artist="",
                  album="", art="", playing=False, presets=[])
 
-        # Fetch all four endpoints in parallel to minimise poll latency
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        # Fetch all endpoints in parallel to minimise poll latency
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
             f_vol  = ex.submit(self._get, "/volume")
             f_np   = ex.submit(self._get, "/now_playing")
             f_pre  = ex.submit(self.get_presets_detail)
             f_zone = ex.submit(self.get_zone)
+            f_dsp  = ex.submit(lambda: self.get_audio_mode()
+                               if self.supports_dialog_mode() else None)
+
+        # dialogue mode — None means unsupported (UI hides the toggle)
+        d["audio_mode"] = f_dsp.result()
 
         # volume
         vx = f_vol.result()
@@ -1136,6 +1181,65 @@ class AlarmStore:
             self._save(alarms)
 
 
+class AudioModeStore:
+    """Per-speaker "auto dialogue mode on TV" setting, persisted to
+    data/audio_mode.json. Keyed by deviceID (falls back to IP) so the setting
+    survives DHCP address changes. Defaults to enabled."""
+
+    def __init__(self, path=AUDIO_MODE_FILE):
+        self._file = pathlib.Path(path)
+        self._lock = threading.Lock()
+
+    def _load(self):
+        if not self._file.exists(): return {}
+        try: return json.loads(self._file.read_text())
+        except Exception: return {}
+
+    @staticmethod
+    def _key(dev):
+        return dev.device_id or dev.host
+
+    def auto_enabled(self, dev):
+        with self._lock:
+            return bool(self._load().get(self._key(dev), {}).get("auto_tv", True))
+
+    def set_auto(self, dev, enabled):
+        with self._lock:
+            data = self._load()
+            data.setdefault(self._key(dev), {})["auto_tv"] = bool(enabled)
+            _atomic_write(self._file, json.dumps(data, indent=2))
+
+
+def _source_kind(source):
+    """Classify a now_playing source: "tv" (PRODUCT = TV/HDMI input), "idle"
+    (standby / nothing selected), or "music" (everything else)."""
+    if source == "PRODUCT":
+        return "tv"
+    if source in ("", "STANDBY", "INVALID_SOURCE"):
+        return "idle"
+    return "music"
+
+
+def audio_mode_for_transition(prev_source, source):
+    """Audio mode to apply when a soundbar moves prev_source → source, or None.
+
+    Entering the TV input (from music *or* standby — the bar tends to drop
+    dialogue mode when it sleeps) → "dialog". Entering a music source from TV
+    or standby → "normal". Music → music and TV → TV leave the mode alone, so
+    a manual change made mid-session sticks. prev_source=None (first time we
+    see the speaker) never acts, so starting the controller doesn't override."""
+    if prev_source is None:
+        return None
+    before, after = _source_kind(prev_source), _source_kind(source)
+    if before == after:
+        return None
+    if after == "tv":
+        return "dialog"
+    if after == "music":
+        return "normal"
+    return None
+
+
 class AlarmScheduler:
     """Background thread that fires alarms at their scheduled time."""
 
@@ -1545,6 +1649,8 @@ class Handler(BaseHTTPRequestHandler):
                             st["track"] = station.get("name", "")
                         if not st.get("art"):
                             st["art"] = station.get("art_url", "")
+                if st.get("audio_mode") is not None:
+                    st["auto_dialog_tv"] = self.server_state.audio_mode_store.auto_enabled(dev)
                 self._json(st)
 
         elif path == "/api/cmd":
@@ -1923,6 +2029,26 @@ class Handler(BaseHTTPRequestHandler):
                 caps = dev.get_bass_capabilities()
                 caps["current"] = dev.get_bass()
                 self._json(caps)
+
+        # ── dialogue mode (soundbars) ─────────────────────────────────────────
+        elif path in ("/api/audio-mode", "/api/audio-mode/set", "/api/audio-mode/auto"):
+            host = qs.get("host",[None])[0]
+            dev  = self.server_state.get_device(host)
+            st   = self.server_state
+            if not dev or not dev.supports_dialog_mode():
+                self._json({"supported": False})
+            else:
+                if path.endswith("/set"):
+                    mode = qs.get("mode",[""])[0]
+                    if mode in ("dialog", "normal"):
+                        st.cancel_audio_mode_pending(dev.host)
+                        dev.set_audio_mode(mode)
+                elif path.endswith("/auto"):
+                    enabled = qs.get("enabled",["true"])[0].lower() == "true"
+                    st.audio_mode_store.set_auto(dev, enabled)
+                    log.info(f"[DSP] {dev.host} auto dialogue mode on TV: {enabled}")
+                self._json({"supported": True, "mode": dev.get_audio_mode(),
+                            "auto_tv": st.audio_mode_store.auto_enabled(dev)})
 
         # ── sources ───────────────────────────────────────────────────────────
         elif path == "/api/sources":
@@ -2321,6 +2447,61 @@ class AppState:
         self._kitchen_like = {}  # host → bool, cached after first check
         t = threading.Thread(target=self._upnp_autoplay_loop, daemon=True)
         t.start()
+
+        self.audio_mode_store = AudioModeStore()
+        self._audio_pending   = {}  # host → [mode, deadline, attempts] being enforced
+        threading.Thread(target=self._audio_mode_loop, daemon=True).start()
+
+    def cancel_audio_mode_pending(self, host):
+        """Stop enforcing an automatic mode — called when the user sets one by hand."""
+        self._audio_pending.pop(host, None)
+
+    def _audio_mode_loop(self):
+        """Auto dialogue mode: switch soundbars to dialogue mode when the TV
+        input is selected and back to normal for music sources.
+
+        After a switch the target mode is re-checked for a few seconds and
+        re-applied if the bar reverts it — the bar can reset its DSP mode while
+        it's still settling into the new input."""
+        prev_source = {}   # host → source from the previous poll
+        while True:
+            time.sleep(2)
+            with self._lock:
+                devices = list(self.devices)
+            for dev in devices:
+                try:
+                    if not dev.supports_dialog_mode():
+                        continue
+                    if not self.audio_mode_store.auto_enabled(dev):
+                        prev_source.pop(dev.host, None)
+                        self._audio_pending.pop(dev.host, None)
+                        continue
+                    np = dev._get("/now_playing")
+                    if np is None:
+                        continue
+                    source = np.get("source", "")
+                    if source == "NOTIFICATION":
+                        continue   # TTS announcement — not a real source change
+                    target = audio_mode_for_transition(prev_source.get(dev.host), source)
+                    prev_source[dev.host] = source
+                    if target:
+                        log.info(f"[DSP-AUTO] {dev.host} source → {source}: want {target} mode")
+                        self._audio_pending[dev.host] = [target, time.monotonic() + 10, 0]
+
+                    pend = self._audio_pending.get(dev.host)
+                    if not pend:
+                        continue
+                    mode, deadline, attempts = pend
+                    if time.monotonic() > deadline or attempts >= 4:
+                        self._audio_pending.pop(dev.host, None)
+                        continue
+                    current = dev.get_audio_mode()
+                    if current is not None and current != mode:
+                        log.info(f"[DSP-AUTO] {dev.host} {current} → {mode}")
+                        dev.set_audio_mode(mode)
+                        pend[2] += 1
+                except Exception as e:
+                    log.debug(f"[DSP-AUTO] {dev.host} error: {e}")
 
     def _upnp_autoplay_loop(self):
         """Watch Kitchen-like speakers (no LOCAL_INTERNET_RADIO) for UPNP preset presses.

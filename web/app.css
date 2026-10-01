@@ -295,6 +295,22 @@ header{padding:calc(16px + env(safe-area-inset-top,0px)) 20px 0;
   cursor:pointer;display:flex;align-items:center;gap:7px;transition:all .18s}
 #btn-power:active,#btn-mute:active{background:var(--surface2);color:var(--silver);border-color:var(--silver-dim)}
 #btn-mute.muted,#btn-power.playing{background:rgba(34,119,238,.12);border-color:var(--blue);color:var(--blue-light)}
+/* Dialogue mode switches (soundbars). The power row gives up its bottom
+   padding while this row is showing, so the controls don't move down. */
+#power-row.tight{padding-bottom:8px}
+#dialog-row{display:flex;flex-shrink:0;justify-content:center;flex-wrap:wrap;gap:10px;padding:0 20px 14px}
+.sw-pill{display:flex;align-items:center;gap:9px;background:var(--surface);
+  border:1px solid var(--border);border-radius:20px;padding:6px 8px 6px 14px;
+  font-size:12px;color:var(--fg2);cursor:pointer;user-select:none;transition:all .18s}
+.sw-pill input{position:absolute;opacity:0;width:0;height:0}
+.sw-track{position:relative;width:34px;height:20px;border-radius:10px;
+  background:var(--surface3);border:1px solid var(--border);transition:background .18s,border-color .18s}
+.sw-track::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;
+  border-radius:50%;background:var(--silver-dim);transition:transform .18s,background .18s}
+.sw-pill input:checked + .sw-track{background:var(--blue);border-color:var(--blue)}
+.sw-pill input:checked + .sw-track::after{transform:translateX(14px);background:var(--white)}
+.sw-pill:has(input:checked){border-color:var(--blue);color:var(--blue-light);background:rgba(34,119,238,.12)}
+.sw-pill input:focus-visible + .sw-track{outline:2px solid var(--blue-light);outline-offset:2px}
 
 /* ── Page: Manage Presets ────────────────────────────────── */
 .manage-section{padding:14px 20px}

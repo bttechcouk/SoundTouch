@@ -130,6 +130,20 @@
       </button>
     </div>
 
+    <!-- Dialogue mode — soundbars only (hidden unless the speaker supports it) -->
+    <div id="dialog-row" style="display:none">
+      <label class="sw-pill" title="Clearer speech for TV and films">
+        <span>Dialogue mode</span>
+        <input type="checkbox" id="sw-dialog" onchange="setDialogMode(this.checked)">
+        <span class="sw-track"></span>
+      </label>
+      <label class="sw-pill" title="Turn dialogue mode on for the TV input and off for music">
+        <span>Auto on TV</span>
+        <input type="checkbox" id="sw-dialog-auto" onchange="setDialogAuto(this.checked)">
+        <span class="sw-track"></span>
+      </label>
+    </div>
+
   </div>
 
   <!-- ═══ PAGE: Groups ═══ -->
