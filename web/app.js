@@ -57,8 +57,49 @@ function syncViewportChrome() {
   // Skip while typing: the software keyboard shrinks the visual viewport, and
   // resizing the app to match makes the whole layout lurch mid-edit.
   if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '')) return;
+  const gap = standaloneViewportGap();
+  document.documentElement.style.setProperty('--vgap', gap + 'px');
   document.documentElement.style.setProperty('--vh', vv.height + 'px');
   app.classList.add('has-vv');
+  vpDebug(gap);
+}
+
+// iOS home-screen web apps (viewport-fit=cover + black-translucent status
+// bar) can launch with a layout viewport that's short by the status-bar /
+// Dynamic Island height. position:fixed;bottom:0 is relative to that short
+// viewport, so the tab bar floats ~60pt up with a black band beneath it,
+// until a rotate or app switch makes iOS recompute. In standalone mode there
+// is no browser chrome, so the app should be exactly the screen height —
+// any shortfall is that bug, and we extend the layout down by it (--vgap).
+function standaloneViewportGap() {
+  const standalone = navigator.standalone === true ||
+    window.matchMedia?.('(display-mode: standalone)').matches;
+  if (!standalone || !window.screen) return 0;
+  const portrait = window.matchMedia?.('(orientation: portrait)').matches ?? true;
+  const full = portrait ? Math.max(screen.width, screen.height)
+                        : Math.min(screen.width, screen.height);
+  const seen = Math.max(window.innerHeight, window.visualViewport?.height || 0);
+  const gap = Math.round(full - seen);
+  // Only correct a plausible status-bar-sized shortfall; anything larger is
+  // something else (split view, keyboard) and must be left alone.
+  return gap > 0 && gap <= 120 ? gap : 0;
+}
+
+// Open the app with ?vp to overlay the viewport numbers (for diagnosing
+// layout gaps on a real phone).
+function vpDebug(gap) {
+  if (!/[?&]vp\b/.test(location.search)) return;
+  let el = document.getElementById('vp-debug');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'vp-debug';
+    el.style.cssText = 'position:fixed;top:50%;left:8px;z-index:999;font:11px/1.4 monospace;' +
+      'background:rgba(0,0,0,.8);color:#5af;padding:6px 8px;border-radius:6px;pointer-events:none';
+    document.body.appendChild(el);
+  }
+  const sa = getComputedStyle(document.documentElement);
+  el.textContent = `screen ${screen.width}x${screen.height} inner ${innerWidth}x${innerHeight} ` +
+    `vv ${Math.round(visualViewport?.height||0)} gap ${gap} standalone ${navigator.standalone} ` +
+    `nav ${sa.getPropertyValue('--nav-h')}`;
 }
 
 function initViewportChrome() {
@@ -72,6 +113,13 @@ function initViewportChrome() {
   window.addEventListener('orientationchange', () => setTimeout(syncViewportChrome, 250));
   // Restore full height once the keyboard closes.
   document.addEventListener('focusout', () => setTimeout(syncViewportChrome, 100));
+  // iOS can fix up the standalone viewport after launch or on resume without
+  // firing resize — re-measure so --vgap drops back to 0 when it does.
+  setTimeout(syncViewportChrome, 600);
+  window.addEventListener('pageshow', syncViewportChrome);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) setTimeout(syncViewportChrome, 150);
+  });
 }
 
 // ── Page Visibility — pause polls when tab is hidden ─────────────────────────
