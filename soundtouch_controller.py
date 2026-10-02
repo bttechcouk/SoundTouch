@@ -202,6 +202,7 @@ class SoundTouchDevice:
         self._dsp_supported = None       # dialogue-mode support, probed lazily
         self._dsp_checked   = None       # monotonic time of last failed probe
         self._tone_supported = None      # /audioproducttonecontrols (soundbars), probed lazily
+        self._capabilities  = None       # capability names from /capabilities, read once
 
     # ── low-level ─────────────────────────────────────────────────────────────
     def _get(self, path, timeout=4):
@@ -341,6 +342,9 @@ class SoundTouchDevice:
         speakers without it. Only a soundbar's positive answer is cached —
         _get can't tell a 404 from the speaker being offline."""
         path = self.AUDIO_CONTROL_PATHS[group]
+        caps = self.capabilities()
+        if caps is not None and path.lstrip("/") not in caps:
+            return None
         xml = self._get(path)
         if xml is None or xml.tag != path.lstrip("/"):
             return None
@@ -364,6 +368,62 @@ class SoundTouchDevice:
         tag  = self.AUDIO_CONTROL_PATHS[group].lstrip("/")
         body = "".join(f'<{k} value="{v["value"]}"/>' for k, v in ctl.items())
         return self._post(self.AUDIO_CONTROL_PATHS[group], f"<{tag}>{body}</{tag}>")
+
+    # ── soundbar settings: AV delay, auto-off, HDMI-CEC, attached speakers ──
+    # Read only the endpoints the speaker lists in /capabilities — some
+    # SoundTouch paths act on a plain GET (/lowPowerStandby drops the speaker
+    # off the network), so never probe blind.
+    AV_DELAY_MAX = 300   # ms; the bar accepts more but nothing sensible needs it
+
+    def capabilities(self):
+        """Set of capability names from /capabilities, or None if it couldn't
+        be read (only a successful read is cached)."""
+        if self._capabilities is not None:
+            return self._capabilities
+        xml = self._get("/capabilities")
+        if xml is None or xml.tag != "capabilities":
+            return None
+        self._capabilities = {c.get("name") for c in xml.findall("capability")}
+        return self._capabilities
+
+    def get_soundbar_settings(self):
+        """Whatever subset this speaker supports, e.g. {av_delay: 0,
+        auto_off: True, cec: True, rear: False, subwoofer: False}."""
+        caps, out = self.capabilities() or set(), {}
+        if "audiodspcontrols" in caps:
+            x = self._get("/audiodspcontrols")
+            if x is not None and x.get("videosyncaudiodelay") is not None:
+                out["av_delay"] = int(x.get("videosyncaudiodelay"))
+        if "systemtimeoutcontrol" in caps:
+            x = self._get("/systemtimeoutcontrol")
+            if x is not None and x.get("autopowerdown") is not None:
+                out["auto_off"] = x.get("autopowerdown") == "true"
+        if "productcechdmicontrol" in caps:
+            x = self._get("/productcechdmicontrol")
+            if x is not None and x.get("cecmode"):
+                out["cec"] = x.get("cecmode") != "CEC_MODE_OFF"
+        if "audiospeakerattributeandsetting" in caps:
+            x = self._get("/audiospeakerattributeandsetting")
+            if x is not None:
+                for tag, key in (("rear", "rear"), ("subwoofer01", "subwoofer")):
+                    el = x.find(tag)
+                    if el is not None: out[key] = el.get("available") == "true"
+        return out
+
+    def set_soundbar_setting(self, name, value):
+        """name: av_delay (ms, clamped 0…AV_DELAY_MAX) / auto_off / cec (bool-ish)."""
+        caps = self.capabilities() or set()
+        on = str(value).lower() in ("1", "true", "on", "yes")
+        if name == "av_delay" and "audiodspcontrols" in caps:
+            ms = max(0, min(self.AV_DELAY_MAX, int(value)))
+            return self._post("/audiodspcontrols", f'<audiodspcontrols videosyncaudiodelay="{ms}"/>')
+        if name == "auto_off" and "systemtimeoutcontrol" in caps:
+            return self._post("/systemtimeoutcontrol",
+                              f'<systemtimeoutcontrol autopowerdown="{str(on).lower()}"/>')
+        if name == "cec" and "productcechdmicontrol" in caps:
+            mode = "CEC_MODE_ON" if on else "CEC_MODE_OFF"
+            return self._post("/productcechdmicontrol", f'<productcechdmicontrol cecmode="{mode}"/>')
+        return False
 
     # ── audio DSP (dialogue mode) — SoundTouch 300 / soundbars only ──────────
     def supports_dialog_mode(self):
@@ -2093,6 +2153,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": bool(ok)})
             else:
                 self._json({g: dev.get_audio_controls(g) for g in dev.AUDIO_CONTROL_PATHS})
+
+        # ── soundbar settings (AV delay, auto-off, CEC, attached speakers) ───
+        elif path in ("/api/soundbar", "/api/soundbar/set"):
+            host = qs.get("host",[None])[0]
+            dev  = self.server_state.get_device(host)
+            if not dev: self._json({"error":"no_device"})
+            elif path.endswith("/set"):
+                try:
+                    ok = dev.set_soundbar_setting(qs.get("name",[""])[0], qs.get("value",[""])[0])
+                except ValueError:
+                    ok = False
+                self._json({"ok": bool(ok), **dev.get_soundbar_settings()})
+            else:
+                self._json(dev.get_soundbar_settings())
 
         # ── dialogue mode (soundbars) ─────────────────────────────────────────
         elif path in ("/api/audio-mode", "/api/audio-mode/set", "/api/audio-mode/auto"):

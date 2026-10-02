@@ -68,7 +68,7 @@ pip3 install -r requirements-dev.txt   # pytest + runtime deps
 pytest                                 # runs tests/ (config in pytest.ini)
 ```
 
-Unit tests live in `tests/` and cover the pure/near-pure logic that has historically needed the most fixing — DLNA DIDL-Lite/Browse generation, `PresetStore.station_descriptor()` and custom-station/backup round-trips, the `LOCAL_INTERNET_RADIO → UPNP` restore conversion (`plan_preset_restore()`), and `get_sources()` / `has_local_internet_radio()` parsing (with mocked `/sources` XML), plus bass routing (`/bass` vs the soundbar's `/audioproducttonecontrols`). No speaker hardware required; `_get` is stubbed where needed. CI runs them on push/PR via `.github/workflows/tests.yml`.
+Unit tests live in `tests/` and cover the pure/near-pure logic that has historically needed the most fixing — DLNA DIDL-Lite/Browse generation, `PresetStore.station_descriptor()` and custom-station/backup round-trips, the `LOCAL_INTERNET_RADIO → UPNP` restore conversion (`plan_preset_restore()`), and `get_sources()` / `has_local_internet_radio()` parsing (with mocked `/sources` XML), plus bass routing (`/bass` vs the soundbar's `/audioproducttonecontrols`) and the capability-gated soundbar settings. No speaker hardware required; `_get` is stubbed where needed. CI runs them on push/PR via `.github/workflows/tests.yml`.
 
 No linter configuration.
 
@@ -91,6 +91,7 @@ Key methods:
 - `get_zone()` / `set_zone()` / `remove_zone()` — multi-room zone management
 - `get_bass_capabilities()` / `get_bass()` / `set_bass()` — bass control. Soundbars report `bassAvailable=false` and go through `get_audio_controls("tone")` / `set_audio_control()` (`/audioproducttonecontrols`, -100…100 step 25) instead. The same pair handles treble and the centre/rear levels (`/audioproductlevelcontrols`), exposed at `/api/audio-controls[/set]?host=&group=tone|level&name=&value=`
 - `supports_dialog_mode()` / `get_audio_mode()` / `set_audio_mode()` — dialogue mode via `/audiodspcontrols` (SoundTouch 300 only; other models 404, cached as unsupported)
+- `capabilities()` / `get_soundbar_settings()` / `set_soundbar_setting()` — lip-sync delay (`/audiodspcontrols` videosyncaudiodelay, clamped 0–300 ms), auto-off (`/systemtimeoutcontrol`), HDMI-CEC on/off (`/productcechdmicontrol`) and attached rear/bass speakers (`/audiospeakerattributeandsetting`); `/api/soundbar[/set]?host=&name=&value=`. Only endpoints listed in `/capabilities` are read — **never GET-probe unknown speaker paths: `GET /lowPowerStandby` puts the speaker into network-off standby**
 - `detail_info()` — device details from `/info`
 - `set_name()` — rename via `POST /name`
 

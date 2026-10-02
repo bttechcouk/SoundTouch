@@ -951,7 +951,7 @@ function sendBass(v) { clearTimeout(bassD); bassD=setTimeout(()=>{
   if (activeHost) fetch(`/api/cmd?host=${activeHost}&action=bass&value=${v}`);
 }, 200); }
 
-// ── Soundbar treble / centre / rear levels ────────────────────────────────────
+// ── Soundbar treble / centre / rear levels + bar settings ────────────────────────────────────
 // Only the SoundTouch 300 has these; other speakers get null and show nothing.
 // Bass is left to the slider above (it covers both kinds of speaker).
 const AUDIO_CONTROLS = [
@@ -962,11 +962,16 @@ const AUDIO_CONTROLS = [
 async function loadAudioControls() {
   const el = document.getElementById('eq-extra');
   if (!el || !activeHost) return;
-  const h = activeHost;
-  let d; try { d = await (await fetch('/api/audio-controls?host='+encodeURIComponent(h))).json(); }
-  catch(e) { return; }
+  const h = activeHost, q = '?host='+encodeURIComponent(h);
+  let d, sb;
+  try {
+    [d, sb] = await Promise.all([fetch('/api/audio-controls'+q).then(r=>r.json()),
+                                 fetch('/api/soundbar'+q).then(r=>r.json())]);
+  } catch(e) { return; }
   if (h !== activeHost) return;
-  el.innerHTML = AUDIO_CONTROLS.filter(([g,n]) => d[g] && d[g][n]).map(([g,n,label]) => {
+  // No point offering a level for speakers that aren't plugged in
+  const fitted = n => !(n === 'rearSurroundSpeakersLevel' && sb.rear === false);
+  el.innerHTML = AUDIO_CONTROLS.filter(([g,n]) => d[g] && d[g][n] && fitted(n)).map(([g,n,label]) => {
     const c = d[g][n];
     return `
     <div class="eq-head"><span>${label}</span><span class="eq-val" id="eqv-${n}">${fmtEq(c.value)}</span></div>
@@ -979,21 +984,65 @@ async function loadAudioControls() {
                oninput="onEqInput('${n}',this)" onchange="sendEq('${g}','${n}',this.value)">
       </div>
       <span class="bass-label">+</span>
-    </div>`;}).join('');
+    </div>`;}).join('') + soundbarSettingsHtml(sb);
   el.querySelectorAll('.eq-slider').forEach(paintEq);
 }
-function fmtEq(v) { v = parseInt(v); return v > 0 ? '+'+v : String(v); }
+// AV delay slider + auto-off / HDMI-CEC switches (whatever the speaker reports)
+function soundbarSettingsHtml(sb) {
+  let html = '';
+  if (sb.av_delay != null) html += `
+    <div class="eq-head"><span title="Delays the sound to line up with the picture">Lip sync delay</span>
+      <span class="eq-val" id="eqv-avdelay">${sb.av_delay} ms</span></div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="bass-label">0</span>
+      <div class="eq-track" style="flex:1;position:relative;padding-top:22px">
+        <div class="eq-tooltip" id="eqt-avdelay"></div>
+        <input type="range" class="eq-slider" id="eq-avdelay" min="0" max="300" step="10"
+               value="${Math.min(sb.av_delay,300)}"
+               oninput="onEqInput('avdelay',this,' ms')" onchange="sendSoundbar('av_delay',this.value)">
+      </div>
+      <span class="bass-label">300</span>
+    </div>`;
+  const sw = (key, label, title) => sb[key] == null ? '' : `
+      <label class="sw-pill" title="${title}">
+        <span>${label}</span>
+        <input type="checkbox" ${sb[key]?'checked':''} onchange="sendSoundbar('${key}',this.checked,this)">
+        <span class="sw-track"></span>
+      </label>`;
+  const sws = sw('auto_off', 'Auto-off', 'Switch the bar off after a while with no audio') +
+              sw('cec', 'HDMI-CEC', 'Let the TV switch the bar on/off and control its volume');
+  if (sws) html += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px">${sws}</div>`;
+  return html;
+}
+const SOUNDBAR_MSG = {
+  av_delay: v => `Lip sync delay ${v} ms`,
+  auto_off: v => v ? 'Auto-off on' : 'Auto-off disabled — the bar stays on',
+  cec:      v => v ? 'HDMI-CEC on' : 'HDMI-CEC off — the TV won\'t control the bar',
+};
+async function sendSoundbar(name, value, input) {
+  if (!activeHost) return;
+  try {
+    const r = await (await fetch(`/api/soundbar/set?host=${encodeURIComponent(activeHost)}`+
+      `&name=${name}&value=${value}`)).json();
+    if (!r.ok) throw 0;
+    toast(SOUNDBAR_MSG[name](r[name]));
+  } catch(e) {
+    toast("Couldn't change that setting");
+    if (input) input.checked = !input.checked;   // put the switch back
+  }
+}
+function fmtEq(v, unit) { v = parseInt(v); return unit ? v+unit : v > 0 ? '+'+v : String(v); }
 function paintEq(sl) {
   const pct = ((sl.value - sl.min) / (sl.max - sl.min) * 100) + '%';
   sl.style.setProperty('--pct', pct);
   const tip = sl.previousElementSibling; if (tip) tip.style.left = pct;
 }
 const eqTipTimers = {};
-function onEqInput(n, sl) {
+function onEqInput(n, sl, unit) {
   paintEq(sl);
   const tip = document.getElementById('eqt-'+n);
-  tip.textContent = fmtEq(sl.value); tip.classList.add('visible');
-  document.getElementById('eqv-'+n).textContent = fmtEq(sl.value);
+  tip.textContent = fmtEq(sl.value, unit); tip.classList.add('visible');
+  document.getElementById('eqv-'+n).textContent = fmtEq(sl.value, unit);
   clearTimeout(eqTipTimers[n]);
   eqTipTimers[n] = setTimeout(() => tip.classList.remove('visible'), 1200);
 }
