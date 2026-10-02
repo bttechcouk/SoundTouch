@@ -922,6 +922,7 @@ async function loadBass() {
     if (d.available) {
       document.getElementById('bass-slider').min = d.min;
       document.getElementById('bass-slider').max = d.max;
+      document.getElementById('bass-slider').step = d.step || 1;
       document.getElementById('bass-slider').value = d.current;
       updateBass(d.current, d.min, d.max);
       row.style.display = 'block';

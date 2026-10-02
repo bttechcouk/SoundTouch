@@ -201,6 +201,7 @@ class SoundTouchDevice:
         self._zone_ts       = 0.0        # monotonic time of last zone fetch
         self._dsp_supported = None       # dialogue-mode support, probed lazily
         self._dsp_checked   = None       # monotonic time of last failed probe
+        self._tone_supported = None      # /audioproducttonecontrols (soundbars), probed lazily
 
     # ── low-level ─────────────────────────────────────────────────────────────
     def _get(self, path, timeout=4):
@@ -303,14 +304,21 @@ class SoundTouchDevice:
 
     def get_bass_capabilities(self):
         xml = self._get("/bassCapabilities")
-        if xml is None:
-            return {"available": False, "min": -9, "max": 0, "default": 0}
-        return {
-            "available": (xml.findtext("bassAvailable") or "false").lower() == "true",
-            "min":     int(xml.findtext("bassMin")     or "-9"),
-            "max":     int(xml.findtext("bassMax")     or "0"),
-            "default": int(xml.findtext("bassDefault") or "0"),
-        }
+        if xml is not None and (xml.findtext("bassAvailable") or "false").lower() == "true":
+            return {
+                "available": True, "kind": "bass", "step": 1,
+                "min":     int(xml.findtext("bassMin")     or "-9"),
+                "max":     int(xml.findtext("bassMax")     or "0"),
+                "default": int(xml.findtext("bassDefault") or "0"),
+            }
+        # Soundbars (SoundTouch 300) report bassAvailable=false and expose
+        # bass through the tone controls instead (-100…100 in steps of 25).
+        tone = self.get_tone_controls()
+        if tone and "bass" in tone:
+            b = tone["bass"]
+            return {"available": True, "kind": "tone", "min": b["min"], "max": b["max"],
+                    "step": b["step"], "default": 0, "current": b["value"]}
+        return {"available": False, "min": -9, "max": 0, "default": 0}
 
     def get_bass(self):
         xml = self._get("/bass")
@@ -318,7 +326,36 @@ class SoundTouchDevice:
         return int(xml.findtext("actualbass") or "0")
 
     def set_bass(self, value):
-        self._post("/bass", f"<bass>{max(-9, min(9, int(value)))}</bass>")
+        tone = self._tone_supported and self.get_tone_controls()
+        if tone and "bass" in tone:
+            b = tone["bass"]
+            tone["bass"]["value"] = max(b["min"], min(b["max"], int(value)))
+            return self.set_tone_controls(tone)
+        return self._post("/bass", f"<bass>{max(-9, min(9, int(value)))}</bass>")
+
+    # ── tone controls (bass/treble) — SoundTouch 300 / soundbars only ────────
+    def get_tone_controls(self):
+        """{name: {value, min, max, step}} from /audioproducttonecontrols, or
+        None on speakers without it. Only a soundbar's positive answer is
+        cached — _get can't tell a 404 from the speaker being offline."""
+        xml = self._get("/audioproducttonecontrols")
+        if xml is None or xml.tag != "audioproducttonecontrols":
+            return None
+        self._tone_supported = True
+        out = {}
+        for el in xml:
+            try:
+                out[el.tag] = {k: int(el.get(a)) for k, a in
+                               (("value","value"),("min","minValue"),("max","maxValue"),("step","step"))}
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def set_tone_controls(self, tone):
+        # The bar expects every control in the body, so unchanged ones are resent.
+        inner = "".join(f'<{k} value="{v["value"]}"/>' for k, v in tone.items())
+        return self._post("/audioproducttonecontrols",
+                          f"<audioproducttonecontrols>{inner}</audioproducttonecontrols>")
 
     # ── audio DSP (dialogue mode) — SoundTouch 300 / soundbars only ──────────
     def supports_dialog_mode(self):
@@ -2028,7 +2065,7 @@ class Handler(BaseHTTPRequestHandler):
             if not dev: self._json({"error":"no_device"})
             else:
                 caps = dev.get_bass_capabilities()
-                caps["current"] = dev.get_bass()
+                if "current" not in caps: caps["current"] = dev.get_bass()
                 self._json(caps)
 
         # ── dialogue mode (soundbars) ─────────────────────────────────────────
