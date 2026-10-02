@@ -57,3 +57,27 @@ def test_regular_speaker_uses_bass_endpoint():
 def test_no_bass_anywhere():
     dev = _dev({"/bassCapabilities": ST300_CAPS})   # tone controls 404
     assert dev.get_bass_capabilities()["available"] is False
+
+
+ST300_LEVELS = ('<audioproductlevelcontrols>'
+                '<frontCenterSpeakerLevel value="0" minValue="-100" maxValue="100" step="10" />'
+                '<rearSurroundSpeakersLevel value="-20" minValue="-100" maxValue="100" step="10" />'
+                '</audioproductlevelcontrols>')
+
+
+def test_level_controls_parse_and_set():
+    dev = _dev({"/audioproductlevelcontrols": ST300_LEVELS})
+    lv = dev.get_audio_controls("level")
+    assert lv["rearSurroundSpeakersLevel"] == {"value": -20, "min": -100, "max": 100, "step": 10}
+    assert dev.set_audio_control("level", "frontCenterSpeakerLevel", 30)
+    path, body = dev.posts[-1]
+    root = ET.fromstring(body)
+    assert path == "/audioproductlevelcontrols" and root.tag == "audioproductlevelcontrols"
+    assert root.find("frontCenterSpeakerLevel").get("value") == "30"
+    assert root.find("rearSurroundSpeakersLevel").get("value") == "-20"
+
+
+def test_set_unknown_control_is_refused():
+    dev = _dev({"/audioproducttonecontrols": ST300_TONE.format(0)})
+    assert dev.set_audio_control("tone", "loudness", 10) is False
+    assert dev.posts == []

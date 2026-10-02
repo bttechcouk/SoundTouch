@@ -89,7 +89,7 @@ Key methods:
 - `has_local_internet_radio()` (line 368) — checks `/sources` for `LOCAL_INTERNET_RADIO`. Returns `True` on error (fail-safe for normal speakers). Used to detect "Kitchen-like" speakers provisioned after Bose disabled internet radio.
 - `play_via_avt(stream_url)` (line 511) — plays a stream via UPnP AVTransport SOAP on port 8091. Used for speakers without `LOCAL_INTERNET_RADIO`. URL must be HTTP (not HTTPS); the speaker follows 302 redirects.
 - `get_zone()` / `set_zone()` / `remove_zone()` — multi-room zone management
-- `get_bass_capabilities()` / `get_bass()` / `set_bass()` — bass control. Soundbars report `bassAvailable=false` and go through `get_tone_controls()` / `set_tone_controls()` (`/audioproducttonecontrols`, -100…100 step 25) instead
+- `get_bass_capabilities()` / `get_bass()` / `set_bass()` — bass control. Soundbars report `bassAvailable=false` and go through `get_audio_controls("tone")` / `set_audio_control()` (`/audioproducttonecontrols`, -100…100 step 25) instead. The same pair handles treble and the centre/rear levels (`/audioproductlevelcontrols`), exposed at `/api/audio-controls[/set]?host=&group=tone|level&name=&value=`
 - `supports_dialog_mode()` / `get_audio_mode()` / `set_audio_mode()` — dialogue mode via `/audiodspcontrols` (SoundTouch 300 only; other models 404, cached as unsupported)
 - `detail_info()` — device details from `/info`
 - `set_name()` — rename via `POST /name`

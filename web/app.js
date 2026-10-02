@@ -951,6 +951,61 @@ function sendBass(v) { clearTimeout(bassD); bassD=setTimeout(()=>{
   if (activeHost) fetch(`/api/cmd?host=${activeHost}&action=bass&value=${v}`);
 }, 200); }
 
+// ── Soundbar treble / centre / rear levels ────────────────────────────────────
+// Only the SoundTouch 300 has these; other speakers get null and show nothing.
+// Bass is left to the slider above (it covers both kinds of speaker).
+const AUDIO_CONTROLS = [
+  ['tone',  'treble',                    'Treble'],
+  ['level', 'frontCenterSpeakerLevel',   'Centre speaker'],
+  ['level', 'rearSurroundSpeakersLevel', 'Rear surround'],
+];
+async function loadAudioControls() {
+  const el = document.getElementById('eq-extra');
+  if (!el || !activeHost) return;
+  const h = activeHost;
+  let d; try { d = await (await fetch('/api/audio-controls?host='+encodeURIComponent(h))).json(); }
+  catch(e) { return; }
+  if (h !== activeHost) return;
+  el.innerHTML = AUDIO_CONTROLS.filter(([g,n]) => d[g] && d[g][n]).map(([g,n,label]) => {
+    const c = d[g][n];
+    return `
+    <div class="eq-head"><span>${label}</span><span class="eq-val" id="eqv-${n}">${fmtEq(c.value)}</span></div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="bass-label">−</span>
+      <div class="eq-track" style="flex:1;position:relative;padding-top:22px">
+        <div class="eq-tooltip" id="eqt-${n}"></div>
+        <input type="range" class="eq-slider" id="eq-${n}" min="${c.min}" max="${c.max}"
+               step="${c.step||1}" value="${c.value}"
+               oninput="onEqInput('${n}',this)" onchange="sendEq('${g}','${n}',this.value)">
+      </div>
+      <span class="bass-label">+</span>
+    </div>`;}).join('');
+  el.querySelectorAll('.eq-slider').forEach(paintEq);
+}
+function fmtEq(v) { v = parseInt(v); return v > 0 ? '+'+v : String(v); }
+function paintEq(sl) {
+  const pct = ((sl.value - sl.min) / (sl.max - sl.min) * 100) + '%';
+  sl.style.setProperty('--pct', pct);
+  const tip = sl.previousElementSibling; if (tip) tip.style.left = pct;
+}
+const eqTipTimers = {};
+function onEqInput(n, sl) {
+  paintEq(sl);
+  const tip = document.getElementById('eqt-'+n);
+  tip.textContent = fmtEq(sl.value); tip.classList.add('visible');
+  document.getElementById('eqv-'+n).textContent = fmtEq(sl.value);
+  clearTimeout(eqTipTimers[n]);
+  eqTipTimers[n] = setTimeout(() => tip.classList.remove('visible'), 1200);
+}
+async function sendEq(g, n, v) {
+  if (!activeHost) return;
+  try {
+    const r = await (await fetch(`/api/audio-controls/set?host=${encodeURIComponent(activeHost)}`+
+      `&group=${g}&name=${n}&value=${v}`)).json();
+    if (!r.ok) toast("Couldn't change that setting");
+  } catch(e) { toast("Couldn't change that setting"); }
+}
+
 // ── Backup All ────────────────────────────────────────────────────────────────
 async function backupAll() {
   const st = document.getElementById('backup-all-status');
@@ -1030,8 +1085,9 @@ async function loadSpeakerInfo() {
         </div>
         <span class="bass-label">+</span>
       </div>
-    </div>`;
-    loadBass();
+    </div>
+    <div id="eq-extra"></div>`;
+    loadBass(); loadAudioControls();
   } catch(e) {
     el.innerHTML = '<p style="font-size:12px;color:var(--fg3)">Could not load device info.</p>';
   }

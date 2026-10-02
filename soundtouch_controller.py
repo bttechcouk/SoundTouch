@@ -313,7 +313,7 @@ class SoundTouchDevice:
             }
         # Soundbars (SoundTouch 300) report bassAvailable=false and expose
         # bass through the tone controls instead (-100…100 in steps of 25).
-        tone = self.get_tone_controls()
+        tone = self.get_audio_controls("tone")
         if tone and "bass" in tone:
             b = tone["bass"]
             return {"available": True, "kind": "tone", "min": b["min"], "max": b["max"],
@@ -326,22 +326,25 @@ class SoundTouchDevice:
         return int(xml.findtext("actualbass") or "0")
 
     def set_bass(self, value):
-        tone = self._tone_supported and self.get_tone_controls()
-        if tone and "bass" in tone:
-            b = tone["bass"]
-            tone["bass"]["value"] = max(b["min"], min(b["max"], int(value)))
-            return self.set_tone_controls(tone)
+        if self._tone_supported:
+            return self.set_audio_control("tone", "bass", value)
         return self._post("/bass", f"<bass>{max(-9, min(9, int(value)))}</bass>")
 
-    # ── tone controls (bass/treble) — SoundTouch 300 / soundbars only ────────
-    def get_tone_controls(self):
-        """{name: {value, min, max, step}} from /audioproducttonecontrols, or
-        None on speakers without it. Only a soundbar's positive answer is
-        cached — _get can't tell a 404 from the speaker being offline."""
-        xml = self._get("/audioproducttonecontrols")
-        if xml is None or xml.tag != "audioproducttonecontrols":
+    # ── tone & speaker-level controls — SoundTouch 300 / soundbars only ─────
+    # /audioproducttonecontrols holds bass + treble, /audioproductlevelcontrols
+    # the centre and rear-surround levels; both use -100…100 in steps.
+    AUDIO_CONTROL_PATHS = {"tone":  "/audioproducttonecontrols",
+                           "level": "/audioproductlevelcontrols"}
+
+    def get_audio_controls(self, group):
+        """{name: {value, min, max, step}} for a control group, or None on
+        speakers without it. Only a soundbar's positive answer is cached —
+        _get can't tell a 404 from the speaker being offline."""
+        path = self.AUDIO_CONTROL_PATHS[group]
+        xml = self._get(path)
+        if xml is None or xml.tag != path.lstrip("/"):
             return None
-        self._tone_supported = True
+        if group == "tone": self._tone_supported = True
         out = {}
         for el in xml:
             try:
@@ -351,11 +354,16 @@ class SoundTouchDevice:
                 continue
         return out
 
-    def set_tone_controls(self, tone):
-        # The bar expects every control in the body, so unchanged ones are resent.
-        inner = "".join(f'<{k} value="{v["value"]}"/>' for k, v in tone.items())
-        return self._post("/audioproducttonecontrols",
-                          f"<audioproducttonecontrols>{inner}</audioproducttonecontrols>")
+    def set_audio_control(self, group, name, value):
+        """Set one control, resending the rest of its group unchanged (the bar
+        expects every control in the body). Clamped to the bar's range."""
+        ctl = self.get_audio_controls(group)
+        if not ctl or name not in ctl: return False
+        c = ctl[name]
+        c["value"] = max(c["min"], min(c["max"], int(value)))
+        tag  = self.AUDIO_CONTROL_PATHS[group].lstrip("/")
+        body = "".join(f'<{k} value="{v["value"]}"/>' for k, v in ctl.items())
+        return self._post(self.AUDIO_CONTROL_PATHS[group], f"<{tag}>{body}</{tag}>")
 
     # ── audio DSP (dialogue mode) — SoundTouch 300 / soundbars only ──────────
     def supports_dialog_mode(self):
@@ -2067,6 +2075,24 @@ class Handler(BaseHTTPRequestHandler):
                 caps = dev.get_bass_capabilities()
                 if "current" not in caps: caps["current"] = dev.get_bass()
                 self._json(caps)
+
+        # ── soundbar tone / speaker levels (bass has its own slider) ─────────
+        elif path in ("/api/audio-controls", "/api/audio-controls/set"):
+            host = qs.get("host",[None])[0]
+            dev  = self.server_state.get_device(host)
+            if not dev: self._json({"error":"no_device"})
+            elif path.endswith("/set"):
+                group = qs.get("group",[""])[0]
+                name  = qs.get("name", [""])[0]
+                value = qs.get("value",[""])[0]
+                try:
+                    ok = (group in dev.AUDIO_CONTROL_PATHS and
+                          dev.set_audio_control(group, name, int(value)))
+                except ValueError:
+                    ok = False
+                self._json({"ok": bool(ok)})
+            else:
+                self._json({g: dev.get_audio_controls(g) for g in dev.AUDIO_CONTROL_PATHS})
 
         # ── dialogue mode (soundbars) ─────────────────────────────────────────
         elif path in ("/api/audio-mode", "/api/audio-mode/set", "/api/audio-mode/auto"):

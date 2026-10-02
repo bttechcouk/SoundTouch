@@ -1,5 +1,5 @@
 
-const CACHE='soundtouch-v13';
+const CACHE='soundtouch-v14';
 self.addEventListener('install',e=>{
   e.waitUntil(caches.open(CACHE).then(c=>c.addAll(['/'])));
   self.skipWaiting();
