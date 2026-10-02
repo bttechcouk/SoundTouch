@@ -175,7 +175,7 @@ function syncSpeakerBar() {
 function toggleSpeakers() {
   const clip = document.getElementById('speakers-clip');
   if (clip.classList.contains('open')) { closeSpeakers(); return; }
-  closePresets();
+  closePresets(); closeSources();
   const sec = document.getElementById('rooms-section');
   clip.style.top = (sec.offsetTop + sec.offsetHeight) + 'px';
   clip.classList.add('open');
@@ -189,16 +189,89 @@ function closeSpeakers() {
   document.getElementById('speakers-backdrop').classList.remove('open');
   document.getElementById('spk-current').setAttribute('aria-expanded','false');
 }
+// ── Source picker ─────────────────────────────────────────────────────────────
+// Only inputs a speaker can switch to without content: TV/HDMI on soundbars,
+// AUX, and Bluetooth (always offered — selecting it enters pairing mode).
+// Streaming services (Spotify, Amazon…) need a track to play, so they're
+// started from their apps or the presets instead.
+const SELECTABLE_SOURCES = new Set(['PRODUCT','AUX','BLUETOOTH']);
+let sourcesCache = {};   // host → [{source, sourceAccount, …}]
+function sourceKey(src, acct) { return src + '|' + (src === 'PRODUCT' ? acct||'' : ''); }
+function syncSourceBar() {
+  const bar = document.getElementById('src-current');
+  const d = lastState && lastState.host === activeHost ? lastState : null;
+  const label = d ? sourceLabel(d.source, d.source_account) : '';
+  document.getElementById('src-name').textContent = label || '—';
+  bar.classList.toggle('unknown', !label);
+}
+function renderSources() {
+  const el = document.getElementById('sources-list');
+  const list = sourcesCache[activeHost];
+  if (!list) { el.innerHTML = '<div class="src-empty">Loading…</div>'; return; }
+  const opts = list.filter(x => SELECTABLE_SOURCES.has(x.source) &&
+                                (x.status === 'READY' || x.source === 'BLUETOOTH'));
+  if (!opts.length) { el.innerHTML = '<div class="src-empty">No switchable inputs</div>'; return; }
+  const d = lastState && lastState.host === activeHost ? lastState : null;
+  const cur = d ? sourceKey(d.source, d.source_account) : '';
+  el.innerHTML = opts.map(x => {
+    const on = sourceKey(x.source, x.sourceAccount) === cur;
+    return `
+    <div class="room-chip${on?' active':''}" role="option" aria-selected="${on}"
+         onclick="pickSource('${x.source}','${(x.sourceAccount||'').replace(/'/g,"\\'")}')">
+      <span class="check">${on?'✓':''}</span>
+      <span class="name">${sourceLabel(x.source, x.sourceAccount)}</span>
+    </div>`;}).join('');
+}
+async function loadSources() {
+  const h = activeHost; if (!h) return;
+  try {
+    const list = await (await fetch('/api/sources?host='+encodeURIComponent(h))).json();
+    if (list.length) sourcesCache[h] = list;
+  } catch(e) {}
+  if (h === activeHost) { sourcesCache[h] = sourcesCache[h] || []; renderSources(); }
+}
+function toggleSources() {
+  const clip = document.getElementById('sources-clip');
+  if (clip.classList.contains('open')) { closeSources(); return; }
+  if (!activeHost) return;
+  closePresets(); closeSpeakers();
+  const sec = document.getElementById('rooms-section');
+  clip.style.top = (sec.offsetTop + sec.offsetHeight) + 'px';
+  renderSources(); loadSources();   // show cached list now, refresh behind it
+  clip.classList.add('open');
+  sec.classList.add('src-open');
+  document.getElementById('speakers-backdrop').classList.add('open');
+  document.getElementById('src-current').setAttribute('aria-expanded','true');
+}
+function closeSources() {
+  document.getElementById('sources-clip').classList.remove('open');
+  document.getElementById('rooms-section').classList.remove('src-open');
+  if (!document.getElementById('speakers-clip').classList.contains('open'))
+    document.getElementById('speakers-backdrop').classList.remove('open');
+  document.getElementById('src-current').setAttribute('aria-expanded','false');
+}
+async function pickSource(source, account) {
+  if (navigator.vibrate) navigator.vibrate(8);
+  closeSources();
+  const h = activeHost, label = sourceLabel(source, account);
+  document.getElementById('src-name').textContent = label;
+  try {
+    const r = await (await fetch(`/api/select?host=${encodeURIComponent(h)}`+
+      `&source=${encodeURIComponent(source)}&account=${encodeURIComponent(account)}`)).json();
+    toast(r.ok ? `Switched to ${label}` : `Couldn't switch to ${label}`);
+  } catch(e) { toast(`Couldn't switch to ${label}`); }
+  if (h === activeHost) { clearTimeout(pollTimer); setTimeout(pollNow, 800); }
+}
 function pickSpeaker(h) {
   if (navigator.vibrate) navigator.vibrate(8);
   closeSpeakers();
   if (h !== activeHost) setActive(h);
 }
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') { closeSpeakers(); closePresets(); }
+  if (e.key === 'Escape') { closeSpeakers(); closeSources(); closePresets(); }
 });
 function setActive(h) {
-  activeHost=h; clearTimeout(pollTimer); renderRooms(); pollNow();
+  activeHost=h; clearTimeout(pollTimer); renderRooms(); syncSourceBar(); pollNow();
   const tab = document.querySelector('.tab.active')?.dataset?.tab;
   if (tab === 'manage') {
     const sec = document.getElementById('sec-manage-backup');
@@ -289,7 +362,7 @@ function sourceLabel(src, acct) {
   return SOURCE_LABELS[src] || src;
 }
 function applyState(d) {
-  if (!d) return; lastState = d;
+  if (!d) return; lastState = d; syncSourceBar();
   const src = sourceLabel(d.source, d.source_account);
   const track = d.track||(src||'—'), artist = d.artist||d.album||'';
   setTrackName(track); setText('track-artist',artist);
@@ -717,7 +790,7 @@ function togglePresets() {
   if (isOpen) {
     closePresets();
   } else {
-    closeSpeakers();
+    closeSpeakers(); closeSources();
     // Position the clip right below the header (the tab bar is fixed at
     // the bottom, so the header is the panel's visual anchor)
     const hdr = document.querySelector('header');

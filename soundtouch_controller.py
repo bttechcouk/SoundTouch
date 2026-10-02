@@ -380,7 +380,7 @@ class SoundTouchDevice:
 
     def select_source(self, source, account=""):
         body = f'<ContentItem source="{source}" sourceAccount="{account}"></ContentItem>'
-        self._post("/select", body)
+        return self._post("/select", body)
 
     def has_local_internet_radio(self):
         try:
@@ -2062,8 +2062,7 @@ class Handler(BaseHTTPRequestHandler):
             source  = qs.get("source", [""])[0]
             account = qs.get("account",[""])[0]
             dev     = self.server_state.get_device(host)
-            if dev and source: dev.select_source(source, account); self._json({"ok":True})
-            else:              self._json({"ok":False})
+            self._json({"ok": bool(dev and source and dev.select_source(source, account))})
 
         # ── rename ────────────────────────────────────────────────────────────
         elif path == "/api/rename":

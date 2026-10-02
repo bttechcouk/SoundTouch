@@ -50,7 +50,7 @@
     </div>
   </header>
 
-  <!-- Speaker picker: one bar showing the active speaker; tap for the full list -->
+  <!-- Speaker picker (left) and source picker (right); each opens its own list -->
   <div id="rooms-section">
     <button id="spk-current" onclick="toggleSpeakers()" aria-haspopup="listbox" aria-expanded="false">
       <span class="dot"></span>
@@ -62,10 +62,26 @@
       <span id="spk-others"></span>
       <span class="arrow">▼</span>
     </button>
+    <button id="src-current" onclick="toggleSources()" aria-haspopup="listbox" aria-expanded="false">
+      <span class="spk-text">
+        <span id="src-name">—</span>
+        <span id="src-sub">Source</span>
+      </span>
+      <span class="arrow">▼</span>
+    </button>
+  </div>
+
+  <!-- Sources dropdown panel (inputs the active speaker can switch to) -->
+  <div id="sources-clip">
+    <div id="sources-panel">
+      <div id="sources-panel-inner">
+        <div id="sources-list" role="listbox"></div>
+      </div>
+    </div>
   </div>
 
   <!-- Speakers dropdown panel (slides down from under the picker bar) -->
-  <div id="speakers-backdrop" onclick="closeSpeakers()"></div>
+  <div id="speakers-backdrop" onclick="closeSpeakers();closeSources()"></div>
   <div id="speakers-clip">
     <div id="speakers-panel">
       <div id="speakers-panel-inner">

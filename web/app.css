@@ -128,45 +128,54 @@ header{padding:calc(16px + env(safe-area-inset-top,0px)) 20px 0;
   transition:transform .3s cubic-bezier(.3,.7,.3,1.1)}
 
 /* ── Speaker chips ───────────────────────────────────────── */
-#rooms-section{padding:12px 20px 0;position:relative}
+#rooms-section{padding:12px 20px 0;position:relative;display:flex;gap:10px}
 /* Raised above the dropdown only while it's open, so the list slides out
    from under the bar — but the Presets panel still covers it normally. */
-#rooms-section.open{z-index:51}
+#rooms-section.open,#rooms-section.src-open{z-index:51}
 .section-label{font-size:10px;font-weight:700;letter-spacing:.12em;
   color:var(--fg3);text-transform:uppercase;margin-bottom:8px}
 
 /* Picker bar — mirrors the active speaker's row (dot / EQ / offline) */
-#spk-current{width:100%;display:flex;align-items:center;gap:10px;
+#spk-current,#src-current{flex:1 1 0;min-width:0;display:flex;align-items:center;gap:8px;
   background:var(--surface);border:1.5px solid var(--border);border-radius:16px;
   padding:8px 14px;color:var(--fg);cursor:pointer;text-align:left;font:inherit;
   transition:border-color .18s,background .18s}
-#spk-current:active,#rooms-section.open #spk-current{border-color:var(--blue);background:var(--surface2)}
-#spk-current .spk-text{display:flex;flex-direction:column;min-width:0;flex:1}
-#spk-name{font-size:14px;font-weight:600;color:var(--white);
+#spk-current:active,#rooms-section.open #spk-current,
+#src-current:active,#rooms-section.src-open #src-current{border-color:var(--blue);background:var(--surface2)}
+.spk-text{display:flex;flex-direction:column;min-width:0;flex:1}
+#spk-name,#src-name{font-size:14px;font-weight:600;color:var(--white);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#spk-sub{font-size:11px;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#spk-sub,#src-sub{font-size:11px;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #spk-sub:empty{display:none}
 #spk-others{font-size:10px;font-weight:700;letter-spacing:.05em;color:var(--blue-light);
   background:rgba(34,119,238,.12);border:1px solid var(--blue-dim);
-  padding:3px 8px;border-radius:10px;white-space:nowrap;flex-shrink:0}
+  padding:2px 6px;border-radius:10px;white-space:nowrap;flex-shrink:0}
 #spk-others:empty{display:none}
-#spk-current .arrow{font-size:9px;color:var(--fg2);transition:transform .2s;flex-shrink:0}
-#rooms-section.open #spk-current .arrow{transform:rotate(180deg)}
+#spk-current .arrow,#src-current .arrow{font-size:9px;color:var(--fg2);transition:transform .2s;flex-shrink:0}
+#rooms-section.open #spk-current .arrow,#rooms-section.src-open #src-current .arrow{transform:rotate(180deg)}
+#src-current{justify-content:flex-end;text-align:right}
+#src-current .spk-text{align-items:flex-end}
+#src-current.unknown #src-name{color:var(--fg2);font-weight:500}
 #spk-current.offline{opacity:.55;border-style:dashed}
 
 /* Dropdown — same slide-down mechanics as the Presets panel */
-#speakers-clip{position:absolute;left:0;right:0;z-index:50;
+/* Each list drops from under its own bar: speakers on the left, sources on the right */
+#speakers-clip,#sources-clip{position:absolute;z-index:50;width:max(calc(50% - 25px),230px);
   max-height:0;overflow:hidden;pointer-events:none;transition:max-height .22s ease}
-#speakers-clip.open{max-height:70vh;pointer-events:auto}
-#speakers-panel{background:var(--surface);border-bottom:1px solid var(--border);
+#speakers-clip{left:20px}
+#sources-clip{right:20px}
+#speakers-clip.open,#sources-clip.open{max-height:70vh;pointer-events:auto}
+#speakers-panel,#sources-panel{background:var(--surface);border:1px solid var(--border);border-top:0;
+  border-radius:0 0 14px 14px;
   box-shadow:0 8px 32px rgba(0,0,0,.7);
   transform:translateY(-100%);transition:transform .22s ease}
-#speakers-clip.open #speakers-panel{transform:translateY(0)}
-#speakers-panel-inner{padding:10px 20px 14px;max-width:440px;margin:0 auto;
+#speakers-clip.open #speakers-panel,#sources-clip.open #sources-panel{transform:translateY(0)}
+#speakers-panel-inner,#sources-panel-inner{padding:8px 8px 10px;
   max-height:70vh;overflow-y:auto;overscroll-behavior:contain}
 #speakers-backdrop{display:none;position:fixed;inset:0;z-index:49;background:rgba(0,0,0,.35)}
 #speakers-backdrop.open{display:block}
-#rooms-list{display:flex;flex-direction:column;gap:2px}
+#rooms-list,#sources-list{display:flex;flex-direction:column;gap:2px}
+#sources-list .src-empty{color:var(--fg3);font-size:13px;padding:10px 12px}
 
 /* Speaker rows (ids chip-<host>; the background poll toggles .playing/.offline) */
 .room-chip{display:flex;align-items:center;gap:10px;padding:11px 12px;
