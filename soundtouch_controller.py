@@ -62,6 +62,7 @@ LOG_FILE      = pathlib.Path(__file__).parent / "soundtouch.log"
 SCENES_DIR    = DATA_DIR / "scenes"
 ALARMS_FILE   = DATA_DIR / "alarms.json"
 AUDIO_MODE_FILE = DATA_DIR / "audio_mode.json"
+TV_PARK_SETTLE  = 5   # seconds a soundbar sits on TV before being switched off
 
 # Sources that route through the Bose cloud — will break on 6 May 2026
 CLOUD_SOURCES = {
@@ -201,6 +202,7 @@ class SoundTouchDevice:
         self._zone_ts       = 0.0        # monotonic time of last zone fetch
         self._dsp_supported = None       # dialogue-mode support, probed lazily
         self._dsp_checked   = None       # monotonic time of last failed probe
+        self._tv_input      = None       # soundbar with a PRODUCT/TV source?
         self._tone_supported = None      # /audioproducttonecontrols (soundbars), probed lazily
         self._capabilities  = None       # capability names from /capabilities, read once
 
@@ -457,6 +459,20 @@ class SoundTouchDevice:
         if xml is None or xml.tag != "audiodspcontrols":
             return None
         return "dialog" if xml.get("audiomode") == "AUDIO_MODE_DIALOG" else "normal"
+
+    def has_tv_input(self):
+        """True for soundbars — speakers whose /sources include PRODUCT/TV.
+        Cached once /sources answers; an unreachable speaker is re-checked."""
+        if self._tv_input is None:
+            sources = self.get_sources()
+            if sources:
+                self._tv_input = any(s["source"] == "PRODUCT" and s["sourceAccount"] == "TV"
+                                     for s in sources)
+        return bool(self._tv_input)
+
+    def current_source(self):
+        np = self._get("/now_playing")
+        return np.get("source", "") if np is not None else None
 
     def set_audio_mode(self, mode):
         am = "AUDIO_MODE_DIALOG" if mode == "dialog" else "AUDIO_MODE_NORMAL"
@@ -1346,6 +1362,15 @@ def audio_mode_for_transition(prev_source, source):
     return None
 
 
+def should_park_on_tv(prev_source, source):
+    """True when a soundbar went from a music source straight into standby —
+    switched off by the remote, Alexa or its idle timer while on music. It
+    would wake back into that music source rather than the TV, so it needs
+    parking on the TV input."""
+    return (prev_source is not None and _source_kind(prev_source) == "music"
+            and source == "STANDBY")
+
+
 class AlarmScheduler:
     """Background thread that fires alarms at their scheduled time."""
 
@@ -1765,11 +1790,14 @@ class Handler(BaseHTTPRequestHandler):
             value  = qs.get("value",[None])[0]
             dev = self.server_state.get_device(host)
             ok = False
+            extra = {}
             if dev:
                 if   action=="playpause":        dev.play_pause(); ok=True
                 elif action=="next":             dev.next_track(); ok=True
                 elif action=="prev":             dev.prev_track(); ok=True
-                elif action=="power":            dev.power();      ok=True
+                elif action=="power":
+                    if self.server_state.soundbar_power(dev): extra["parking_tv"] = True
+                    ok = True
                 elif action=="mute":             dev.mute();       ok=True
                 elif action=="volume" and value: dev.set_volume(value); ok=True
                 elif action=="bass"   and value: dev.set_bass(value);   ok=True
@@ -1784,7 +1812,7 @@ class Handler(BaseHTTPRequestHandler):
                         ok = dev.play_via_avt(p["location"])
                     else:
                         dev.preset(n); ok=True
-            self._json({"ok":ok})
+            self._json({"ok":ok, **extra})
 
         # ── preset backup / restore ───────────────────────────────────────────
         elif path == "/api/presets/backup":
@@ -2587,19 +2615,71 @@ class AppState:
 
         self.audio_mode_store = AudioModeStore()
         self._audio_pending   = {}  # host → [mode, deadline, attempts] being enforced
+        self._tv_parking      = set()  # hosts mid power_off_soundbar()
         threading.Thread(target=self._audio_mode_loop, daemon=True).start()
 
     def cancel_audio_mode_pending(self, host):
         """Stop enforcing an automatic mode — called when the user sets one by hand."""
         self._audio_pending.pop(host, None)
 
-    def _audio_mode_loop(self):
-        """Auto dialogue mode: switch soundbars to dialogue mode when the TV
-        input is selected and back to normal for music sources.
+    def power_off_soundbar(self, dev, reason):
+        """Switch a soundbar to the TV input, let it settle, then turn it off.
 
-        After a switch the target mode is re-checked for a few seconds and
-        re-applied if the bar reverts it — the bar can reset its DSP mode while
-        it's still settling into the new input."""
+        A soundbar switched off while on a music source wakes back into that
+        source, so turning the TV on later doesn't bring the TV sound through
+        reliably. Parking it on TV first means it always wakes on TV.
+
+        Runs in its own thread (≈5–10 s). Returns False if a park is already
+        running for this speaker."""
+        with self._lock:
+            if dev.host in self._tv_parking:
+                return False
+            self._tv_parking.add(dev.host)
+
+        def run():
+            try:
+                log.info(f"[TV-PARK] {dev.host} {reason}: switching to TV before power-off")
+                dev.select_source("PRODUCT", "TV")
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline and dev.current_source() != "PRODUCT":
+                    time.sleep(0.5)
+                time.sleep(TV_PARK_SETTLE)
+                src = dev.current_source()
+                if src != "PRODUCT":
+                    # Someone picked another source or turned it off meanwhile
+                    log.info(f"[TV-PARK] {dev.host} source is {src!r}, not TV — leaving it alone")
+                    return
+                dev.power()
+                log.info(f"[TV-PARK] {dev.host} parked on TV and powered off")
+            except Exception as e:
+                log.warning(f"[TV-PARK] {dev.host} error: {e}")
+            finally:
+                with self._lock:
+                    self._tv_parking.discard(dev.host)
+
+        threading.Thread(target=run, daemon=True).start()
+        return True
+
+    def soundbar_power(self, dev):
+        """Power button for any speaker: on a soundbar playing a music source,
+        park on TV before switching off; everything else is a plain key press.
+        Returns True when it's parking (the app shows a toast for the delay)."""
+        if dev.has_tv_input() and _source_kind(dev.current_source() or "") == "music":
+            self.power_off_soundbar(dev, "power button")
+            return True
+        dev.power()
+        return False
+
+    def _audio_mode_loop(self):
+        """Soundbar watcher (every 2 s, soundbars only):
+
+        - Auto dialogue mode: dialogue mode when the TV input is selected,
+          normal for music sources. After a switch the target mode is re-checked
+          for a few seconds and re-applied if the bar reverts it — it can reset
+          its DSP mode while still settling into the new input.
+        - TV parking: a bar that drops from music straight into standby (Bose
+          remote, Alexa, idle timer — anything that skipped soundbar_power) is
+          woken on the TV input and switched off again, so it wakes on TV."""
         prev_source = {}   # host → source from the previous poll
         while True:
             time.sleep(2)
@@ -2607,11 +2687,7 @@ class AppState:
                 devices = list(self.devices)
             for dev in devices:
                 try:
-                    if not dev.supports_dialog_mode():
-                        continue
-                    if not self.audio_mode_store.auto_enabled(dev):
-                        prev_source.pop(dev.host, None)
-                        self._audio_pending.pop(dev.host, None)
+                    if not dev.has_tv_input():
                         continue
                     np = dev._get("/now_playing")
                     if np is None:
@@ -2619,8 +2695,15 @@ class AppState:
                     source = np.get("source", "")
                     if source == "NOTIFICATION":
                         continue   # TTS announcement — not a real source change
-                    target = audio_mode_for_transition(prev_source.get(dev.host), source)
+                    prev = prev_source.get(dev.host)
                     prev_source[dev.host] = source
+                    if should_park_on_tv(prev, source):
+                        self.power_off_soundbar(dev, f"went to standby from {prev}")
+
+                    if not (dev.supports_dialog_mode() and self.audio_mode_store.auto_enabled(dev)):
+                        self._audio_pending.pop(dev.host, None)
+                        continue
+                    target = audio_mode_for_transition(prev, source)
                     if target:
                         log.info(f"[DSP-AUTO] {dev.host} source → {source}: want {target} mode")
                         self._audio_pending[dev.host] = [target, time.monotonic() + 10, 0]

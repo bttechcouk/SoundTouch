@@ -101,3 +101,45 @@ def test_store_defaults_on_and_keys_by_device_id(tmp_path):
     store.set_auto(dev, False)
     moved = stc.SoundTouchDevice("10.0.0.99"); moved.device_id = "C4F31264FB9F"
     assert store.auto_enabled(moved) is False   # survives a DHCP IP change
+
+
+# ── TV parking ───────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("prev, cur, want", [
+    ("SPOTIFY",   "STANDBY", True),    # remote / Alexa / idle timer while on music
+    ("BLUETOOTH", "STANDBY", True),
+    ("PRODUCT",   "STANDBY", False),   # already on TV — wakes on TV anyway
+    ("STANDBY",   "STANDBY", False),
+    ("SPOTIFY",   "PRODUCT", False),   # our own park switching to TV
+    (None,        "STANDBY", False),   # first sighting never acts
+])
+def test_should_park_on_tv(prev, cur, want):
+    assert stc.should_park_on_tv(prev, cur) is want
+
+
+class _FakeBar:
+    def __init__(self, source, tv=True):
+        self.host, self.source, self.tv, self.keys = "10.0.0.9", source, tv, []
+    def has_tv_input(self): return self.tv
+    def current_source(self): return self.source
+    def power(self): self.keys.append("POWER")
+
+
+def _app():
+    import threading, types
+    app = types.SimpleNamespace(parked=[])
+    app.power_off_soundbar = lambda dev, reason: app.parked.append(dev.host) or True
+    app.soundbar_power = lambda dev: stc.AppState.soundbar_power(app, dev)
+    return app
+
+
+@pytest.mark.parametrize("source, tv, parks", [
+    ("SPOTIFY", True,  True),    # soundbar on music → park on TV first
+    ("PRODUCT", True,  False),   # soundbar on TV → plain power-off
+    ("STANDBY", True,  False),   # soundbar off → plain power-on
+    ("SPOTIFY", False, False),   # ordinary speaker → never parks
+])
+def test_power_button(source, tv, parks):
+    app, bar = _app(), _FakeBar(source, tv)
+    assert app.soundbar_power(bar) is parks
+    assert (app.parked == [bar.host]) is parks
+    assert (bar.keys == ["POWER"]) is (not parks)

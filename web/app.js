@@ -532,7 +532,10 @@ async function cmd(a, el, e) {
   if (el && e) ripple(el, e);
   if (navigator.vibrate) navigator.vibrate(8);
   if (!activeHost) { toast('No speaker selected'); return; }
-  await fetch(`/api/cmd?host=${activeHost}&action=${a}`);
+  try {
+    const r = await (await fetch(`/api/cmd?host=${activeHost}&action=${a}`)).json();
+    if (r.parking_tv) toast('Switching to TV, then off…');
+  } catch(e) {}
   setTimeout(pollNow,500);
 }
 

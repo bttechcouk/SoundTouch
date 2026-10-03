@@ -138,6 +138,8 @@ Key API endpoints:
 
 `_audio_mode_loop` — Polls dialogue-capable soundbars every 2s. Entering the TV input (`source=PRODUCT`, from music or standby) sets dialogue mode; entering a music source sets normal. Rules live in the pure `audio_mode_for_transition()`. The target mode is re-applied for ~10s in case the bar resets it while settling. Settings in `AudioModeStore` (`data/audio_mode.json`, keyed by deviceID, default on).
 
+**TV parking** (`power_off_soundbar()` / `soundbar_power()`) — a soundbar switched off while on a music source wakes back into that source, so turning the TV on didn't reliably bring TV sound through. `/api/cmd?action=power` on a soundbar playing music switches it to `PRODUCT/TV`, waits `TV_PARK_SETTLE` (5 s), then powers off (response carries `parking_tv` so the app can toast). `_audio_mode_loop` also catches music → `STANDBY` from any other route (Bose remote, idle timer) via `should_park_on_tv()` and parks it the same way. Soundbars are detected with `has_tv_input()` (`PRODUCT/TV` in `/sources`).
+
 **`main()` (line 5225)** — Parses `--port`, `--ip`, `--daemon`, runs `_check_network()`, starts `AppState.scan()`, launches `ThreadingHTTPServer`.
 
 ### UPNP-only speakers (Kitchen-like)
