@@ -103,43 +103,14 @@ def test_store_defaults_on_and_keys_by_device_id(tmp_path):
     assert store.auto_enabled(moved) is False   # survives a DHCP IP change
 
 
-# ── TV parking ───────────────────────────────────────────────────────────────
-@pytest.mark.parametrize("prev, cur, want", [
-    ("SPOTIFY",   "STANDBY", True),    # remote / Alexa / idle timer while on music
-    ("BLUETOOTH", "STANDBY", True),
-    ("PRODUCT",   "STANDBY", False),   # already on TV — wakes on TV anyway
-    ("STANDBY",   "STANDBY", False),
-    ("SPOTIFY",   "PRODUCT", False),   # our own park switching to TV
-    (None,        "STANDBY", False),   # first sighting never acts
+# ── TV wake (bar woken by the TV over CEC into its last music source) ────────
+@pytest.mark.parametrize("woke, elapsed, source, playing, want", [
+    ("SPOTIFY", 2,  "SPOTIFY", False, "wait"),    # give a real wake time to start
+    ("SPOTIFY", 8,  "SPOTIFY", False, "switch"),  # silent after the grace → TV woke it
+    ("SPOTIFY", 3,  "SPOTIFY", True,  "done"),    # Spotify Connect started playing
+    ("UPNP",    9,  "UPNP",    True,  "done"),    # radio started from the app
+    ("SPOTIFY", 4,  "PRODUCT", False, "done"),    # bar switched to TV by itself
+    ("SPOTIFY", 9,  "STANDBY", False, "done"),    # turned off again
 ])
-def test_should_park_on_tv(prev, cur, want):
-    assert stc.should_park_on_tv(prev, cur) is want
-
-
-class _FakeBar:
-    def __init__(self, source, tv=True):
-        self.host, self.source, self.tv, self.keys = "10.0.0.9", source, tv, []
-    def has_tv_input(self): return self.tv
-    def current_source(self): return self.source
-    def power(self): self.keys.append("POWER")
-
-
-def _app():
-    import threading, types
-    app = types.SimpleNamespace(parked=[])
-    app.power_off_soundbar = lambda dev, reason: app.parked.append(dev.host) or True
-    app.soundbar_power = lambda dev: stc.AppState.soundbar_power(app, dev)
-    return app
-
-
-@pytest.mark.parametrize("source, tv, parks", [
-    ("SPOTIFY", True,  True),    # soundbar on music → park on TV first
-    ("PRODUCT", True,  False),   # soundbar on TV → plain power-off
-    ("STANDBY", True,  False),   # soundbar off → plain power-on
-    ("SPOTIFY", False, False),   # ordinary speaker → never parks
-])
-def test_power_button(source, tv, parks):
-    app, bar = _app(), _FakeBar(source, tv)
-    assert app.soundbar_power(bar) is parks
-    assert (app.parked == [bar.host]) is parks
-    assert (bar.keys == ["POWER"]) is (not parks)
+def test_tv_wake_action(woke, elapsed, source, playing, want):
+    assert stc.tv_wake_action(woke, elapsed, source, playing, grace=8) == want
