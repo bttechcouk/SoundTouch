@@ -1135,11 +1135,54 @@ async function loadSpeakerInfo() {
         <span class="bass-label">+</span>
       </div>
     </div>
-    <div id="eq-extra"></div>`;
+    <div id="eq-extra"></div>
+    <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">
+      <button class="mc-btn" id="reboot-btn" onclick="rebootSpeaker('${d.device_id||''}')">Restart speaker</button>
+      <p style="font-size:11px;color:var(--fg3);margin-top:6px">
+        Fixes a blank clock or a speaker that's stopped responding. Takes about a minute.
+      </p>
+    </div>`;
     loadBass(); loadAudioControls();
   } catch(e) {
     el.innerHTML = '<p style="font-size:12px;color:var(--fg3)">Could not load device info.</p>';
   }
+}
+
+// ── Restart speaker ──────────────────────────────────────────────────────────
+// The speaker can come back on a new DHCP address, so follow it by device ID:
+// the server rescans after the reboot and reports where it reappeared.
+async function rebootSpeaker(deviceId) {
+  const sp = speakers.find(s=>s.host===activeHost);
+  const name = sp ? sp.name : 'this speaker';
+  if (!activeHost || !confirm(`Restart ${name}? It'll be offline for about a minute.`)) return;
+  const btn = document.getElementById('reboot-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Restarting…'; }
+  let r;
+  try { r = await (await fetch('/api/reboot?host='+activeHost)).json(); } catch(e) { r = {ok:false}; }
+  if (!r.ok) {
+    toast(`Couldn't restart ${name}`);
+    if (btn) { btn.disabled = false; btn.textContent = 'Restart speaker'; }
+    return;
+  }
+  toast(`Restarting ${name}…`);
+  const did = r.device_id || deviceId, oldHost = activeHost, t0 = Date.now();
+  const poll = async () => {
+    let st = {};
+    try { st = await (await fetch('/api/reboot/status?device_id='+did)).json(); } catch(e) {}
+    if (st.state === 'back') {
+      await fetchSpeakers();
+      if (activeHost === oldHost || !speakers.some(s=>s.host===activeHost)) setActive(st.host);
+      toast(`${name} is back online${st.host!==oldHost?' ('+st.host+')':''}`);
+      return;
+    }
+    if (st.state === 'lost' || Date.now()-t0 > 6*60*1000) {
+      toast(`${name} hasn't come back yet — try Discover Speakers`);
+      if (btn) { btn.disabled = false; btn.textContent = 'Restart speaker'; }
+      return;
+    }
+    setTimeout(poll, 5000);
+  };
+  setTimeout(poll, 10000);
 }
 
 // ── Settings — Radio Presets (UPNP speakers) ──────────────────────────────────

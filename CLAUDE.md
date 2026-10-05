@@ -49,6 +49,7 @@ journalctl --user -u soundtouch-matter -f                # bridge live logs
 | 8090 | TCP | SoundTouch speaker API (outbound to speaker) |
 | 8091 | TCP | UPnP AVTransport on speaker (outbound, used for UPNP-only speakers) |
 | 1900 | UDP | SSDP multicast — DLNA server announcements |
+| 17000 | TCP | Speaker diagnostic console (TAP), outbound — used only to send `sys reboot` |
 | 5540 | UDP | Matter protocol (Alexa smart home) |
 
 ## Logs
@@ -94,6 +95,7 @@ Key methods:
 - `capabilities()` / `get_soundbar_settings()` / `set_soundbar_setting()` — lip-sync delay (`/audiodspcontrols` videosyncaudiodelay, clamped 0–300 ms), auto-off (`/systemtimeoutcontrol`), HDMI-CEC on/off (`/productcechdmicontrol`) and attached rear/bass speakers (`/audiospeakerattributeandsetting`); `/api/soundbar[/set]?host=&name=&value=`. Only endpoints listed in `/capabilities` are read — **never GET-probe unknown speaker paths: `GET /lowPowerStandby` puts the speaker into network-off standby**
 - `detail_info()` — device details from `/info`
 - `set_name()` — rename via `POST /name`
+- `reboot()` — restarts the speaker via its TAP console on port 17000 (`sys reboot`; the 8090 API has no reboot). Never send anything else there — the console also has `sys factorydefault`. Fixes ST20s whose clock goes blank. `AppState.reboot_device()` then rescans until the deviceID reappears, since it can return on a new DHCP address; `GET /api/reboot?host=` / `/api/reboot/status?device_id=`
 
 **`PresetStore` (line 624)** — Reads/writes preset backups as JSON to `data/presets/<ip>.json` and custom station definitions to `data/stations/<id>.json`. `station_descriptor()` (line 706) returns the JSON the speaker fetches to resolve a `LOCAL_INTERNET_RADIO` stream URL.
 

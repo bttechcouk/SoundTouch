@@ -516,6 +516,32 @@ class SoundTouchDevice:
         except Exception:
             return True  # assume available on error so existing speakers aren't broken
 
+    def reboot(self):
+        """Restart the speaker. There's no reboot in the port-8090 API, but every
+        SoundTouch runs a diagnostic console (TAP) on TCP 17000 that takes
+        `sys reboot`. Only that exact command is ever sent — the same console
+        has `sys factorydefault`. Returns True once the speaker confirms.
+
+        Fixes ST20s whose front-panel clock goes blank. The speaker may come
+        back on a new DHCP address — see AppState.reboot_device()."""
+        try:
+            with socket.create_connection((self.host, 17000), timeout=5) as s:
+                s.settimeout(3)
+                s.recv(256)                      # "->" prompt
+                s.sendall(b"sys reboot\r\n")
+                reply = b""
+                deadline = time.monotonic() + 3
+                while b"Rebooting" not in reply and time.monotonic() < deadline:
+                    chunk = s.recv(256)
+                    if not chunk: break
+                    reply += chunk
+            ok = b"Rebooting" in reply
+            log.info(f"[REBOOT] {self.host} ({self.name}) → {reply.decode(errors='replace').strip()!r}")
+            return ok
+        except Exception as e:
+            log.warning(f"[REBOOT] {self.host} console error: {e}")
+            return False
+
     def set_name(self, new_name):
         self._post("/name", f"<name>{new_name}</name>")
 
@@ -2281,6 +2307,20 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json(dev.get_soundbar_settings())
 
+        # ── reboot ────────────────────────────────────────────────────────────
+        elif path == "/api/reboot":
+            dev = self.server_state.get_device(qs.get("host",[None])[0])
+            if not dev:
+                self._json({"ok": False, "error": "no_device"})
+            elif self.server_state.reboot_device(dev):
+                self._json({"ok": True, "device_id": dev.device_id})
+            else:
+                self._json({"ok": False, "error": "speaker didn't accept the reboot"})
+
+        elif path == "/api/reboot/status":
+            did = qs.get("device_id",[""])[0]
+            self._json(self.server_state.reboot_status.get(did, {"state": "unknown"}))
+
         # ── dialogue mode (soundbars) ─────────────────────────────────────────
         elif path in ("/api/audio-mode", "/api/audio-mode/set", "/api/audio-mode/auto"):
             host = qs.get("host",[None])[0]
@@ -2708,6 +2748,7 @@ class AppState:
 
         self.audio_mode_store = AudioModeStore()
         self._audio_pending   = {}  # host → [mode, deadline, attempts] being enforced
+        self.reboot_status    = {}  # deviceID → {state, host, name} after reboot_device()
         threading.Thread(target=self._audio_mode_loop, daemon=True).start()
 
     def cancel_audio_mode_pending(self, host):
@@ -2862,6 +2903,31 @@ class AppState:
                     prev_source[dev.host] = source
                 except Exception as e:
                     log.debug(f"[AVT-AUTO] {dev.host} error: {e}")
+
+    def reboot_device(self, dev):
+        """Reboot a speaker, then rescan until it's back (matched by deviceID —
+        it can come back on a different IP). Returns False if the speaker
+        didn't accept the command."""
+        if not dev.reboot():
+            return False
+        did, name = dev.device_id, dev.name
+        self.reboot_status[did] = {"state": "rebooting", "host": None, "name": name}
+
+        def rediscover():
+            time.sleep(40)   # an ST20 is back on the network in ~40 s
+            for _ in range(8):
+                self.scan()
+                back = next((d for d in self.devices if d.device_id == did), None)
+                if back:
+                    log.info(f"[REBOOT] {name} back at {back.host}")
+                    self.reboot_status[did] = {"state": "back", "host": back.host, "name": name}
+                    return
+                time.sleep(20)
+            log.warning(f"[REBOOT] {name} not found after reboot")
+            self.reboot_status[did] = {"state": "lost", "host": None, "name": name}
+
+        threading.Thread(target=rediscover, daemon=True).start()
+        return True
 
     def scan(self):
         log.info("Scanning network…")
