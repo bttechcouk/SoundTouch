@@ -31,10 +31,12 @@ import sys
 import threading
 import time
 import uuid as _uuid
+import datetime as _dt
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
 from urllib.parse import parse_qs, urlparse, quote as urlquote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
     import requests
@@ -633,6 +635,23 @@ class SoundTouchDevice:
     def volume_up(self):   self._key("VOLUME_UP")
     def volume_down(self): self._key("VOLUME_DOWN")
     def preset(self, n):   self._key(f"PRESET_{n}")
+
+    def play_preset(self, n):
+        """Play preset n the way that actually starts audio. UPNP presets (our
+        DLNA radio stations): a key press only loads the ContentItem and the
+        speaker waits for an AVTransport Play, so send that directly. Anything
+        else: the preset key."""
+        p = next((x for x in self.get_presets_detail() if x.get("id") == str(n)), None)
+        if p and p.get("source") == "UPNP" and p.get("location", ""):
+            return self.play_via_avt(p["location"])
+        self.preset(n)
+        return True
+
+    def is_playing(self):
+        np = self._get("/now_playing")
+        if np is None: return False
+        ps = np.get("playStatus") or np.findtext("playStatus") or ""
+        return ps in ("PLAY_STATE", "BUFFERING_STATE")
 
     def set_volume(self, v):
         self._post("/volume", f"<volume>{max(0,min(100,int(v)))}</volume>")
@@ -1300,6 +1319,17 @@ class AlarmStore:
                 if a["id"] == alarm_id: a["enabled"] = enabled; break
             self._save(alarms)
 
+    def record_result(self, alarm_id, fired_at, result):
+        """Keep the outcome of the last ring on the alarm itself — the main
+        log rotates in about an hour, so this is the only lasting record."""
+        with self._lock:
+            alarms = self._load()
+            for a in alarms:
+                if a["id"] == alarm_id:
+                    a["last_fired"], a["last_result"] = fired_at, result
+                    break
+            self._save(alarms)
+
 
 class AudioModeStore:
     """Per-speaker "auto dialogue mode on TV" setting, persisted to
@@ -1379,13 +1409,41 @@ def tv_wake_action(woke_source, elapsed, source, playing, grace=TV_WAKE_GRACE):
     return "switch" if elapsed >= grace else "wait"
 
 
+def alarm_tz(alarm):
+    """The timezone an alarm's time is written in. New alarms carry the phone's
+    zone ("Europe/London"); older ones fall back to SOUNDTOUCH_TZ, then the
+    server's local time. The server runs in UTC, so without this a 07:00 alarm
+    rang at 08:00 during British Summer Time."""
+    for name in (alarm.get("tz"), os.environ.get("SOUNDTOUCH_TZ")):
+        if name:
+            try: return ZoneInfo(name)
+            except (ZoneInfoNotFoundError, ValueError): pass
+    return None   # → server local time
+
+
+def alarm_due_key(alarm, now_utc):
+    """Dedup key if `alarm` should ring at `now_utc` (an aware datetime), else
+    None. The key is unique per alarm per local day, so the 30 s ticks fire it
+    exactly once."""
+    if not alarm.get("enabled"):
+        return None
+    now = now_utc.astimezone(alarm_tz(alarm))   # tz None → server local time
+    if alarm.get("time") != now.strftime("%H:%M"):
+        return None
+    if now.weekday() not in alarm.get("days", list(range(7))):   # 0=Mon … 6=Sun
+        return None
+    return f"{alarm['id']}_{now.date().isoformat()}"
+
+
 class AlarmScheduler:
     """Background thread that fires alarms at their scheduled time."""
+
+    VERIFY_AFTER = 15   # seconds before checking the speaker actually started
 
     def __init__(self, alarm_store, app_state):
         self._store     = alarm_store
         self._app       = app_state
-        self._fired     = {}   # alarm_id+date key → True
+        self._fired     = {}   # alarm_due_key → True
         self._thread    = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         log.info("[ALARM] Scheduler started")
@@ -1397,29 +1455,48 @@ class AlarmScheduler:
             time.sleep(30)
 
     def _tick(self):
-        now    = time.localtime()
-        hhmm   = f"{now.tm_hour:02d}:{now.tm_min:02d}"
-        wday   = now.tm_wday   # 0=Mon … 6=Sun
-        today  = f"{now.tm_year}{now.tm_yday}"
+        now = _dt.datetime.now(_dt.timezone.utc)
         for alarm in self._store.list_alarms():
-            if not alarm.get("enabled"): continue
-            if alarm.get("time") != hhmm: continue
-            if wday not in alarm.get("days", list(range(7))): continue
-            key = f"{alarm['id']}_{hhmm}_{today}"
-            if self._fired.get(key): continue
+            key = alarm_due_key(alarm, now)
+            if not key or self._fired.get(key): continue
             self._fired[key] = True
             threading.Thread(target=self._fire, args=(alarm,), daemon=True).start()
 
+    def _device(self, alarm):
+        """Find the alarm's speaker by IP, falling back to its deviceID in case
+        DHCP has moved it since the alarm was set."""
+        dev = self._app.get_device(alarm.get("host"))
+        if dev or not alarm.get("device_id"):
+            return dev
+        with self._app._lock:
+            return next((d for d in self._app.devices
+                         if d.device_id == alarm["device_id"]), None)
+
     def _fire(self, alarm):
-        host = alarm.get("host")
-        dev  = self._app.get_device(host) if host else None
+        name, n = alarm.get("name"), alarm.get("preset", 1)
+        fired_at = _dt.datetime.now(alarm_tz(alarm) or _dt.timezone.utc).isoformat(timespec="seconds")
+        dev = self._device(alarm)
         if not dev:
-            log.warning(f"[ALARM] Device not found for alarm '{alarm.get('name')}'"); return
-        vol = alarm.get("volume")
-        if vol is not None:
-            dev.set_volume(vol); time.sleep(0.5)
-        dev.preset(alarm.get("preset", 1))
-        log.info(f"[ALARM] Fired '{alarm.get('name')}' — {host} preset {alarm.get('preset',1)}")
+            log.warning(f"[ALARM] '{name}': speaker {alarm.get('host')} not found")
+            self._store.record_result(alarm["id"], fired_at, "speaker not found")
+            return
+        log.info(f"[ALARM] Firing '{name}' — {dev.name} ({dev.host}) preset {n}")
+        result = "failed"
+        for attempt in (1, 2):
+            vol = alarm.get("volume")
+            if vol is not None:
+                dev.set_volume(vol); time.sleep(0.5)
+            dev.invalidate_preset_cache()
+            dev.play_preset(n)
+            time.sleep(self.VERIFY_AFTER)
+            if dev.is_playing():
+                result = "played" if attempt == 1 else "played (retry)"
+                if vol is not None:
+                    dev.set_volume(vol)   # a speaker in standby can ignore the first one
+                break
+            log.warning(f"[ALARM] '{name}' not playing after attempt {attempt}")
+        log.info(f"[ALARM] '{name}' result: {result}")
+        self._store.record_result(alarm["id"], fired_at, result)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1807,16 +1884,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif action=="volume" and value: dev.set_volume(value); ok=True
                 elif action=="bass"   and value: dev.set_bass(value);   ok=True
                 elif action.startswith("preset"):
-                    n = int(action.replace("preset",""))
-                    # UPNP presets: key press loads the ContentItem but the speaker
-                    # waits for an external AVTransport Play to start audio.
-                    # Detect this case from the cached preset list and use AVTransport.
-                    presets = dev.get_presets_detail()
-                    p = next((x for x in presets if x.get("id") == str(n)), None)
-                    if p and p.get("source") == "UPNP" and p.get("location",""):
-                        ok = dev.play_via_avt(p["location"])
-                    else:
-                        dev.preset(n); ok=True
+                    ok = dev.play_preset(int(action.replace("preset","")))
             self._json({"ok":ok})
 
         # ── preset backup / restore ───────────────────────────────────────────
@@ -2506,6 +2574,14 @@ class Handler(BaseHTTPRequestHandler):
                     "enabled": True,
                     "volume":  int(data["volume"]) if data.get("volume") not in (None, "") else None,
                 }
+                # The phone's timezone — the server clock is UTC
+                tz = (data.get("tz") or "").strip()
+                if tz:
+                    try: ZoneInfo(tz); alarm["tz"] = tz
+                    except (ZoneInfoNotFoundError, ValueError): pass
+                dev = self.server_state.get_device(alarm["host"])
+                if dev and dev.device_id:
+                    alarm["device_id"] = dev.device_id
                 self.server_state.alarm_store.save_alarm(alarm)
                 log.info(f"[ALARM] Saved '{alarm['name']}' at {alarm['time']}")
                 self._json({"ok": True, "id": alarm_id})

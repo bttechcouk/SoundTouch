@@ -1453,6 +1453,14 @@ function updateAlarmSpeakerSelect() {
     speakers.map(s=>`<option value="${s.host}"${s.host===cur?' selected':''}>${s.name}</option>`).join('');
 }
 
+// "2026-10-09T07:00:12+01:00" → "Fri 9 Oct 07:00" (the alarm's own local time)
+function _alarmWhen(iso) {
+  const m = iso.match(/^(\d{4})-(\d\d)-(\d\d)T(\d\d:\d\d)/);
+  if (!m) return iso;
+  const d = new Date(Date.UTC(+m[1], +m[2]-1, +m[3]));
+  const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()];
+  return `${ALARM_DAYS[(d.getUTCDay()+6)%7]} ${d.getUTCDate()} ${mon} ${m[4]}`;
+}
 function _alarmHtml(a, closeModalId) {
   const dayStr=a.days.length===7?'Every day':
     (a.days.length===5&&!a.days.includes(5)&&!a.days.includes(6)?'Weekdays':
@@ -1463,6 +1471,7 @@ function _alarmHtml(a, closeModalId) {
     <div class="mc-left">
       <div class="mc-name">${a.name} · ${a.time}</div>
       <div class="mc-meta">${spk?spk.name:a.host} · Preset ${a.preset} · ${dayStr}${a.volume!=null?' · Vol '+a.volume:''}</div>
+      ${a.last_fired?`<div class="mc-meta">Last rang ${_alarmWhen(a.last_fired)} — ${a.last_result==='played'||a.last_result==='played (retry)'?'✓ '+a.last_result:'⚠ '+a.last_result}</div>`:''}
     </div>
     <div class="mc-actions">
       <button class="mc-btn${a.enabled?' primary':''}" onclick="toggleAlarm('${a.id}',${!a.enabled}${closeArg})">${a.enabled?'On':'Off'}</button>
@@ -1497,7 +1506,8 @@ async function addAlarm() {
   const volume=volRaw!==''?parseInt(volRaw):null;
   try{
     await fetch('/api/alarms',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({name,host,preset,time,days,volume})});
+      body:JSON.stringify({name,host,preset,time,days,volume,
+        tz:Intl.DateTimeFormat().resolvedOptions().timeZone})});
     document.getElementById('alarm-name').value='';
     toast('Alarm saved'); loadAlarms();
   }catch(e){toast('Failed to save alarm');}

@@ -109,6 +109,8 @@ Key methods:
 
 **`AlarmStore` / `AlarmScheduler` (lines 1074, 1113)** — Persist alarm definitions to `data/alarms.json`; background thread fires alarms at scheduled times.
 
+Alarm times are in the phone's timezone: the UI sends `tz` (IANA name) and `alarm_due_key()` evaluates each alarm in it — the server runs in UTC, so ignoring this made 07:00 alarms ring at 08:00 BST. Old alarms without `tz` fall back to `$SOUNDTOUCH_TZ`, then server local time. Firing uses `SoundTouchDevice.play_preset()` (AVTransport for UPNP station presets, key press otherwise — shared with `/api/cmd`), checks `is_playing()` after 15 s, retries once, and stores `last_fired` / `last_result` on the alarm (the main log only holds ~1 hour). Alarms also store `device_id` so they survive a DHCP IP change.
+
 **Discovery (line 1173)** — `discover_mdns()` uses zeroconf for `_soundtouch._tcp.local.`; `discover_subnet_scan()` concurrently probes all 254 hosts on the local /24. Both run in parallel via `discover_all()`.
 
 **Web UI assets (`web/` directory)** — The single-page web UI lives in `web/` and is served from disk (cached) by `web_asset()` / `Handler._web()`: `web/index.html` (markup), `web/app.css` (styles), `web/app.js` (logic), plus `web/wall.html` (kiosk panel) and `web/sw.js` (service worker). Tabs: Player, Presets, Groups, Settings. Editing the UI no longer means editing a Python string.
