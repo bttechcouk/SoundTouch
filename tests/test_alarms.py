@@ -97,6 +97,14 @@ def test_fire_records_played():
     assert calls[-1] == ("vol", 20)   # volume re-applied once it's playing
 
 
+def test_switched_off_quickly_counts_as_played_and_is_not_restarted():
+    # Plays at the first poll, then the user turns it off — the old single
+    # check at 15 s saw "not playing" and the retry turned the radio back on.
+    results, calls = _fire([True, False, False])
+    assert results == ["played"]
+    assert calls.count(("avt", "http://h/dlna/stream/x")) == 1
+
+
 def test_fire_retries_once_then_reports_failure():
     assert _fire([False, True])[0] == ["played (retry)"]
     assert _fire([False, False])[0] == ["failed"]

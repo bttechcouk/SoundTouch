@@ -1438,7 +1438,7 @@ def alarm_due_key(alarm, now_utc):
 class AlarmScheduler:
     """Background thread that fires alarms at their scheduled time."""
 
-    VERIFY_AFTER = 15   # seconds before checking the speaker actually started
+    VERIFY_AFTER = 15   # seconds to wait for the speaker to start before retrying
 
     def __init__(self, alarm_store, app_state):
         self._store     = alarm_store
@@ -1472,6 +1472,19 @@ class AlarmScheduler:
             return next((d for d in self._app.devices
                          if d.device_id == alarm["device_id"]), None)
 
+    def _wait_playing(self, dev):
+        """Poll once a second until the speaker plays (True) or VERIFY_AFTER
+        runs out (False). Returning as soon as it plays matters: a single check
+        at the end missed alarms that were switched off within 15 s, and the
+        retry then turned the radio back on."""
+        deadline = time.monotonic() + self.VERIFY_AFTER
+        while True:
+            if dev.is_playing():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(1)
+
     def _fire(self, alarm):
         name, n = alarm.get("name"), alarm.get("preset", 1)
         fired_at = _dt.datetime.now(alarm_tz(alarm) or _dt.timezone.utc).isoformat(timespec="seconds")
@@ -1488,8 +1501,7 @@ class AlarmScheduler:
                 dev.set_volume(vol); time.sleep(0.5)
             dev.invalidate_preset_cache()
             dev.play_preset(n)
-            time.sleep(self.VERIFY_AFTER)
-            if dev.is_playing():
+            if self._wait_playing(dev):
                 result = "played" if attempt == 1 else "played (retry)"
                 if vol is not None:
                     dev.set_volume(vol)   # a speaker in standby can ignore the first one
