@@ -2588,7 +2588,19 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── alarms ────────────────────────────────────────────────────────────
         elif path == "/api/alarms":
-            self._json(self.server_state.alarm_store.list_alarms())
+            # Add each alarm's current preset name/source (looked up live, so
+            # the card follows a preset that's been re-saved since)
+            alarms = self.server_state.alarm_store.list_alarms()
+            for a in alarms:
+                dev = self.server_state.get_device(a.get("host"))
+                if dev is None and a.get("device_id"):
+                    dev = next((d for d in self.server_state.devices
+                                if d.device_id == a["device_id"]), None)
+                p = next((x for x in (dev.get_presets_detail() if dev else [])
+                          if x.get("id") == str(a.get("preset"))), None)
+                if p and p.get("name"):
+                    a["preset_name"], a["preset_source"] = p["name"], p.get("source", "")
+            self._json(alarms)
 
         elif path == "/api/alarms/delete":
             aid = qs.get("id", [""])[0]
@@ -2851,15 +2863,19 @@ class Handler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             self._respond(404, "text/plain", b"Not found")
             return
-        self._respond(200, ctype, body)
+        # no-cache: the browser may keep a copy but must check it's current, so
+        # a deploy reaches phones on the next open
+        self._respond(200, ctype, body, extra={"Cache-Control": "no-cache"})
 
-    def _respond(self, code, ctype, body):
+    def _respond(self, code, ctype, body, extra=None):
         if code >= 400:
             log.warning(f"[API RESP] {code} {ctype}  {body[:200].decode('utf-8','replace')}")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", len(body))
         self.send_header("Access-Control-Allow-Origin", "*")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 

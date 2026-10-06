@@ -1610,7 +1610,7 @@ function _alarmHtml(a, closeModalId) {
   return`<div class="manage-card">
     <div class="mc-left">
       <div class="mc-name">${a.name} · ${a.time}</div>
-      <div class="mc-meta">${spk?spk.name:a.host} · Preset ${a.preset} · ${dayStr}${a.volume!=null?' · Vol '+a.volume:''}</div>
+      <div class="mc-meta">${spk?spk.name:a.host} · Preset ${a.preset}${a.preset_name?' · '+presetLabel({name:a.preset_name,source:a.preset_source}):''} · ${dayStr}${a.volume!=null?' · Vol '+a.volume:''}</div>
       ${a.last_fired?`<div class="mc-meta">Last rang ${_alarmWhen(a.last_fired)} — ${a.last_result==='played'||a.last_result==='played (retry)'?'✓ '+a.last_result:'⚠ '+a.last_result}</div>`:''}
     </div>
     <div class="mc-actions">
@@ -1632,6 +1632,13 @@ async function loadAlarms() {
   }catch(e){}
 }
 
+// "Discover Weekly (Spotify)" — the source matters for alarms: a Spotify
+// preset needs the speaker's linked account, a radio one doesn't
+function presetLabel(p) {
+  const src = {SPOTIFY:'Spotify', UPNP:'Radio', LOCAL_INTERNET_RADIO:'Radio', TUNEIN:'TuneIn',
+               AMAZON:'Amazon', DEEZER:'Deezer', IHEART:'iHeart', PANDORA:'Pandora'}[p.source] || p.source || '';
+  return (p.name||'').replace(/</g,'&lt;') + (src ? ` (${src})` : '');
+}
 // Label the alarm preset choices with the chosen speaker's preset names
 async function loadAlarmPresetNames() {
   const spk = document.getElementById('alarm-speaker-select');
@@ -1644,7 +1651,7 @@ async function loadAlarmPresetNames() {
   }
   sel.innerHTML = [1,2,3,4,5,6].map(n => {
     const p = presets.find(x => String(x.id) === String(n));
-    return `<option value="${n}">${n}${p && p.name ? ' · ' + p.name.replace(/</g,'&lt;') : ''}</option>`;
+    return `<option value="${n}">${n}${p && p.name ? ' · ' + presetLabel(p) : ''}</option>`;
   }).join('');
   sel.value = cur;
 }
