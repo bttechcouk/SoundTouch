@@ -1148,6 +1148,54 @@ async function loadSpeakerInfo() {
   }
 }
 
+// ── Weekly restart (ST20 clock fix) ─────────────────────────────────────────
+const MAINT_DAYS=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+function _maintRender(c) {
+  document.getElementById('maint-enabled').checked = !!c.enabled;
+  document.getElementById('maint-day').value = c.day;
+  document.getElementById('maint-time').value = c.time;
+  const spk = (c.speakers||[]).join(', ') || 'none found';
+  let last = 'Not run yet.';
+  if (c.last_run) {
+    const res = Object.entries(c.last_result||{}).map(([n,r])=>`${n}: ${r}`).join(' · ') || 'no clock speakers';
+    last = `Last run ${_alarmWhen(c.last_run)} — ${res}`;
+  }
+  document.getElementById('maint-info').innerHTML =
+    `${c.enabled?`Every ${MAINT_DAYS[c.day]} at ${c.time}`:'Off'} · Speakers: ${spk}<br>${last}`;
+}
+async function loadMaint() {
+  try { _maintRender(await (await fetch('/api/maintenance')).json()); } catch(e) {}
+}
+async function saveMaint() {
+  const q = new URLSearchParams({
+    enabled: document.getElementById('maint-enabled').checked,
+    day: document.getElementById('maint-day').value,
+    time: document.getElementById('maint-time').value,
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone });
+  try { _maintRender(await (await fetch('/api/maintenance/set?'+q)).json()); toast('Saved'); }
+  catch(e) { toast('Could not save'); }
+}
+async function runMaintNow() {
+  if (!confirm('Restart all clock speakers now? They\'ll be offline for a minute or two.')) return;
+  const btn = document.getElementById('maint-run');
+  btn.disabled = true; btn.textContent = 'Restarting…';
+  await fetch('/api/maintenance/run');
+  toast('Restarting clock speakers…');
+  // Results are saved once every speaker is back (~1–3 min)
+  const before = (await (await fetch('/api/maintenance')).json()).last_run, t0 = Date.now();
+  const poll = async () => {
+    const c = await (await fetch('/api/maintenance')).json();
+    if (c.last_run !== before || Date.now()-t0 > 6*60*1000) {
+      _maintRender(c); fetchSpeakers();
+      btn.disabled = false; btn.textContent = 'Restart them now';
+      toast('Clock speakers restarted');
+      return;
+    }
+    setTimeout(poll, 8000);
+  };
+  setTimeout(poll, 30000);
+}
+
 // ── Restart speaker ──────────────────────────────────────────────────────────
 // The speaker can come back on a new DHCP address, so follow it by device ID:
 // the server rescans after the reboot and reports where it reappeared.
@@ -1270,6 +1318,7 @@ function toggleSection(bodyId, chevronId) {
   if (opening && bodyId === 'sec-stations')      loadStations();
   if (opening && bodyId === 'sec-scenes')        loadScenes();
   if (opening && bodyId === 'sec-alarms')        loadAlarms();
+  if (opening && bodyId === 'sec-maint')         loadMaint();
   if (opening && bodyId === 'sec-announce')      loadAnnounceSection();
 }
 function loadAnnounceSection() {

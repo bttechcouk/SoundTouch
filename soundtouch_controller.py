@@ -64,6 +64,7 @@ LOG_FILE      = pathlib.Path(__file__).parent / "soundtouch.log"
 SCENES_DIR    = DATA_DIR / "scenes"
 ALARMS_FILE   = DATA_DIR / "alarms.json"
 AUDIO_MODE_FILE = DATA_DIR / "audio_mode.json"
+MAINTENANCE_FILE = DATA_DIR / "maintenance.json"
 # A soundbar that wakes from standby into a music source and hasn't started
 # playing after this many seconds was woken by the TV (CEC) → switch to TV.
 TV_WAKE_GRACE   = 8
@@ -209,6 +210,7 @@ class SoundTouchDevice:
         self._tv_input      = None       # soundbar with a PRODUCT/TV source?
         self._tone_supported = None      # /audioproducttonecontrols (soundbars), probed lazily
         self._capabilities  = None       # capability names from /capabilities, read once
+        self._has_clock     = None       # front-panel clock (ST20)? read once
 
     # ── low-level ─────────────────────────────────────────────────────────────
     def _get(self, path, timeout=4):
@@ -391,6 +393,16 @@ class SoundTouchDevice:
             return None
         self._capabilities = {c.get("name") for c in xml.findall("capability")}
         return self._capabilities
+
+    def has_clock(self):
+        """True for speakers with a front-panel clock (ST20) — /capabilities
+        carries <clockDisplay>true</clockDisplay>."""
+        if self._has_clock is None:
+            xml = self._get("/capabilities")
+            if xml is None or xml.tag != "capabilities":
+                return False
+            self._has_clock = (xml.findtext("clockDisplay") or "").strip().lower() == "true"
+        return self._has_clock
 
     def get_soundbar_settings(self):
         """Whatever subset this speaker supports, e.g. {av_delay: 0,
@@ -1435,6 +1447,40 @@ def tv_wake_action(woke_source, elapsed, source, playing, grace=TV_WAKE_GRACE):
     return "switch" if elapsed >= grace else "wait"
 
 
+class MaintenanceStore:
+    """Scheduled restart of the clock speakers (ST20s), persisted to
+    data/maintenance.json. Their front-panel clock stalls after running for a
+    while — the API still reports the right time — and a restart fixes it."""
+
+    DEFAULTS = {"enabled": True, "day": 6, "time": "04:00", "tz": "Europe/London"}
+
+    def __init__(self, path=MAINTENANCE_FILE):
+        self._file = pathlib.Path(path)
+        self._lock = threading.Lock()
+
+    def _load(self):
+        try: return json.loads(self._file.read_text())
+        except Exception: return {}
+
+    def get(self):
+        with self._lock:
+            return {**self.DEFAULTS, **self._load()}
+
+    def update(self, **fields):
+        with self._lock:
+            data = {**self.DEFAULTS, **self._load(), **fields}
+            _atomic_write(self._file, json.dumps(data, indent=2))
+            return data
+
+
+def maintenance_due_key(cfg, now_utc):
+    """Same rules as an alarm: weekly on cfg["day"] (0=Mon … 6=Sun) at
+    cfg["time"] in cfg["tz"]."""
+    return alarm_due_key({"id": "auto_restart", "enabled": cfg.get("enabled"),
+                          "time": cfg.get("time"), "days": [int(cfg.get("day", 6))],
+                          "tz": cfg.get("tz")}, now_utc)
+
+
 def alarm_tz(alarm):
     """The timezone an alarm's time is written in. New alarms carry the phone's
     zone ("Europe/London"); older ones fall back to SOUNDTOUCH_TZ, then the
@@ -1482,6 +1528,13 @@ class AlarmScheduler:
 
     def _tick(self):
         now = _dt.datetime.now(_dt.timezone.utc)
+        store = getattr(self._app, "maintenance_store", None)
+        if store:
+            key = maintenance_due_key(store.get(), now)
+            if key and not self._fired.get(key):
+                self._fired[key] = True
+                threading.Thread(target=self._app.restart_clock_speakers,
+                                 args=("weekly restart",), daemon=True).start()
         for alarm in self._store.list_alarms():
             key = alarm_due_key(alarm, now)
             if not key or self._fired.get(key): continue
@@ -2317,6 +2370,29 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"ok": False, "error": "speaker didn't accept the reboot"})
 
+        elif path in ("/api/maintenance", "/api/maintenance/set"):
+            ms = self.server_state.maintenance_store
+            if path.endswith("/set"):
+                fields = {}
+                if "enabled" in qs: fields["enabled"] = qs["enabled"][0].lower() == "true"
+                if "day" in qs and qs["day"][0].isdigit() and 0 <= int(qs["day"][0]) <= 6:
+                    fields["day"] = int(qs["day"][0])
+                if "time" in qs and re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", qs["time"][0]):
+                    fields["time"] = qs["time"][0]
+                if "tz" in qs:
+                    try: ZoneInfo(qs["tz"][0]); fields["tz"] = qs["tz"][0]
+                    except (ZoneInfoNotFoundError, ValueError): pass
+                ms.update(**fields)
+                log.info(f"[MAINT] settings → {ms.get()}")
+            cfg = ms.get()
+            cfg["speakers"] = [d.name for d in self.server_state.devices if d.has_clock()]
+            self._json(cfg)
+
+        elif path == "/api/maintenance/run":
+            threading.Thread(target=self.server_state.restart_clock_speakers,
+                             args=("manual run",), daemon=True).start()
+            self._json({"ok": True})
+
         elif path == "/api/reboot/status":
             did = qs.get("device_id",[""])[0]
             self._json(self.server_state.reboot_status.get(did, {"state": "unknown"}))
@@ -2749,6 +2825,7 @@ class AppState:
         self.audio_mode_store = AudioModeStore()
         self._audio_pending   = {}  # host → [mode, deadline, attempts] being enforced
         self.reboot_status    = {}  # deviceID → {state, host, name} after reboot_device()
+        self.maintenance_store = MaintenanceStore()
         threading.Thread(target=self._audio_mode_loop, daemon=True).start()
 
     def cancel_audio_mode_pending(self, host):
@@ -2910,24 +2987,62 @@ class AppState:
         didn't accept the command."""
         if not dev.reboot():
             return False
-        did, name = dev.device_id, dev.name
-        self.reboot_status[did] = {"state": "rebooting", "host": None, "name": name}
+        self.reboot_status[dev.device_id] = {"state": "rebooting", "host": None, "name": dev.name}
+        threading.Thread(target=self._rediscover, args=({dev.device_id: dev.name},),
+                         daemon=True).start()
+        return True
 
-        def rediscover():
-            time.sleep(40)   # an ST20 is back on the network in ~40 s
-            for _ in range(8):
-                self.scan()
+    def _rediscover(self, pending):
+        """After reboots: rescan until every deviceID in `pending` (id → name)
+        is back — a speaker can return on a new DHCP address. One scan loop
+        covers any number of speakers. Updates reboot_status; returns
+        {id: new host or None}."""
+        pending, found = dict(pending), {}
+        time.sleep(40)   # an ST20 is back on the network in ~40 s
+        for _ in range(8):
+            self.scan()
+            for did in list(pending):
                 back = next((d for d in self.devices if d.device_id == did), None)
                 if back:
-                    log.info(f"[REBOOT] {name} back at {back.host}")
-                    self.reboot_status[did] = {"state": "back", "host": back.host, "name": name}
-                    return
-                time.sleep(20)
+                    log.info(f"[REBOOT] {pending[did]} back at {back.host}")
+                    self.reboot_status[did] = {"state": "back", "host": back.host, "name": pending[did]}
+                    found[did] = back.host
+                    del pending[did]
+            if not pending:
+                break
+            time.sleep(20)
+        for did, name in pending.items():
             log.warning(f"[REBOOT] {name} not found after reboot")
             self.reboot_status[did] = {"state": "lost", "host": None, "name": name}
+            found[did] = None
+        return found
 
-        threading.Thread(target=rediscover, daemon=True).start()
-        return True
+    def restart_clock_speakers(self, reason):
+        """Restart every speaker with a front-panel clock, skipping any that
+        are playing, then wait for them all to come back. The outcome is saved
+        as last_run / last_result in the maintenance settings."""
+        with self._lock:
+            devices = list(self.devices)
+        started = _dt.datetime.now(ZoneInfo(self.maintenance_store.get().get("tz") or "UTC"))
+        log.info(f"[MAINT] {reason}: restarting clock speakers")
+        result, pending = {}, {}
+        for dev in devices:
+            if not dev.has_clock():
+                continue
+            if dev.is_playing():
+                result[dev.name] = "skipped (playing)"
+                continue
+            if dev.reboot():
+                self.reboot_status[dev.device_id] = {"state": "rebooting", "host": None, "name": dev.name}
+                pending[dev.device_id] = dev.name
+            else:
+                result[dev.name] = "restart refused"
+        for did, host in (self._rediscover(pending) if pending else {}).items():
+            result[pending[did]] = f"restarted ({host})" if host else "not back yet"
+        log.info(f"[MAINT] {reason} done: {result}")
+        self.maintenance_store.update(last_run=started.isoformat(timespec="seconds"),
+                                      last_result=result)
+        return result
 
     def scan(self):
         log.info("Scanning network…")

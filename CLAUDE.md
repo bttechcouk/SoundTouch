@@ -96,6 +96,7 @@ Key methods:
 - `detail_info()` — device details from `/info`
 - `set_name()` — rename via `POST /name`
 - `reboot()` — restarts the speaker via its TAP console on port 17000 (`sys reboot`; the 8090 API has no reboot). Never send anything else there — the console also has `sys factorydefault`. Fixes ST20s whose clock goes blank. `AppState.reboot_device()` then rescans until the deviceID reappears, since it can return on a new DHCP address; `GET /api/reboot?host=` / `/api/reboot/status?device_id=`
+- `has_clock()` — `<clockDisplay>true</clockDisplay>` in `/capabilities` (ST20s). **Weekly restart:** ST20 front-panel clocks go blank after running a while even though `/clockTime` stays correct (undetectable via the API); a restart fixes it. `MaintenanceStore` (`data/maintenance.json`, default Sunday 04:00 Europe/London) + `maintenance_due_key()` checked from `AlarmScheduler._tick`; `AppState.restart_clock_speakers()` reboots idle clock speakers (skips playing ones) and rediscovers them all in one `_rediscover()` pass. `GET /api/maintenance[/set]`, `/api/maintenance/run`; Settings → Weekly Restart
 
 **`PresetStore` (line 624)** — Reads/writes preset backups as JSON to `data/presets/<ip>.json` and custom station definitions to `data/stations/<id>.json`. `station_descriptor()` (line 706) returns the JSON the speaker fetches to resolve a `LOCAL_INTERNET_RADIO` stream URL.
 
