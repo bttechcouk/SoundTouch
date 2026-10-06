@@ -298,19 +298,28 @@
           <div id="alarms-list"></div>
           <div class="add-form" style="margin:10px 0 0">
             <label>Speaker</label>
-            <select id="alarm-speaker-select" class="form-select">
+            <select id="alarm-speaker-select" class="form-select" onchange="loadAlarmPresetNames()">
               <option value="">Select a speaker…</option>
             </select>
             <label>Name (optional)</label>
             <input id="alarm-name" placeholder="Morning Radio">
-            <label>Time</label>
-            <input id="alarm-time" type="time" value="07:00">
-            <label>Preset (1–6)</label>
-            <input id="alarm-preset" type="number" min="1" max="6" value="1">
-            <label>Volume (optional — leave blank to keep current)</label>
-            <input id="alarm-vol" type="number" min="0" max="100" placeholder="0–100">
+            <div class="form-grid">
+              <div>
+                <label>Time</label>
+                <input id="alarm-time" type="time" value="07:00">
+              </div>
+              <div>
+                <label>Preset</label>
+                <select id="alarm-preset" class="form-select">
+                  <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+                  <option value="4">4</option><option value="5">5</option><option value="6">6</option>
+                </select>
+              </div>
+            </div>
+            <label>Volume (optional)</label>
+            <input id="alarm-vol" type="number" inputmode="numeric" min="0" max="100" placeholder="Keep current volume">
             <label>Days</label>
-            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+            <div class="day-row">
               <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="0" checked>Mon</label>
               <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="1" checked>Tue</label>
               <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="2" checked>Wed</label>

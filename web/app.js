@@ -1585,9 +1585,12 @@ const ALARM_DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 function updateAlarmSpeakerSelect() {
   const sel=document.getElementById('alarm-speaker-select');
   if(!sel)return;
-  const cur=sel.value;
+  const cur=sel.value || activeHost || '';   // default to the speaker you're on
   sel.innerHTML='<option value="">Select a speaker…</option>'+
     speakers.map(s=>`<option value="${s.host}"${s.host===cur?' selected':''}>${s.name}</option>`).join('');
+  if (sel.value && sel.value !== sel.dataset.namesFor) {
+    sel.dataset.namesFor = sel.value; loadAlarmPresetNames();
+  }
 }
 
 // "2026-10-09T07:00:12+01:00" → "Fri 9 Oct 07:00" (the alarm's own local time)
@@ -1627,6 +1630,23 @@ async function loadAlarms() {
       ?alarms.map(a=>_alarmHtml(a)).join('')
       :'<p style="font-size:12px;color:var(--fg3);margin-bottom:10px">No alarms set.</p>';
   }catch(e){}
+}
+
+// Label the alarm preset choices with the chosen speaker's preset names
+async function loadAlarmPresetNames() {
+  const spk = document.getElementById('alarm-speaker-select');
+  const host = spk.value; spk.dataset.namesFor = host;
+  const sel = document.getElementById('alarm-preset');
+  const cur = sel.value || '1';
+  let presets = [];
+  if (host) {
+    try { presets = (await (await fetch('/api/state?host='+host)).json()).presets || []; } catch(e) {}
+  }
+  sel.innerHTML = [1,2,3,4,5,6].map(n => {
+    const p = presets.find(x => String(x.id) === String(n));
+    return `<option value="${n}">${n}${p && p.name ? ' · ' + p.name.replace(/</g,'&lt;') : ''}</option>`;
+  }).join('');
+  sel.value = cur;
 }
 
 async function addAlarm() {

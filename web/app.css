@@ -438,6 +438,14 @@ header{padding:calc(16px + env(safe-area-inset-top,0px)) 20px 0;
 .add-form input:focus{border-color:var(--blue)}
 .add-form input::placeholder{color:var(--fg3)}
 .form-row{display:flex;gap:8px;margin-top:12px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.form-grid > div{min-width:0}
+/* Native iOS date/time inputs ignore width and padding and render oversized —
+   strip the native look so they match the other fields. */
+.add-form input[type=time]{-webkit-appearance:none;appearance:none;display:block;
+  min-width:0;max-width:100%;height:38px;line-height:normal;text-align:left}
+.add-form input[type=time]::-webkit-date-and-time-value{text-align:left;margin:0}
+.add-form .form-select{height:38px}
 
 .alexa-hint{background:rgba(34,119,238,.07);border:1px solid var(--blue-dim);
   border-radius:var(--radius);padding:13px 16px;margin-bottom:14px;
@@ -576,9 +584,14 @@ header{padding:calc(16px + env(safe-area-inset-top,0px)) 20px 0;
 #all-vol-slider{background:linear-gradient(to right,var(--silver-dim) var(--pct,50%),var(--surface2) var(--pct,50%))}
 
 /* ── Alarm day buttons ───────────────────────────────────── */
-.day-btn{display:inline-flex;align-items:center;justify-content:center;
-  background:var(--surface2);border:1px solid var(--border);border-radius:6px;
-  padding:5px 10px;font-size:11px;font-weight:600;color:var(--fg2);cursor:pointer;
+/* Seven equal columns so Sun never wraps. The buttons are <label>s inside   */
+/* .add-form, so they must undo its block field-label margins — otherwise    */
+/* the first one (no top margin) sits higher and looks a different size.     */
+.day-row{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-top:2px}
+.add-form .day-btn{display:flex;align-items:center;justify-content:center;margin:0;
+  height:34px;padding:0;letter-spacing:0;
+  background:var(--surface2);border:1px solid var(--border);border-radius:8px;
+  font-size:11.5px;font-weight:600;color:var(--fg2);cursor:pointer;
   user-select:none;transition:all .15s}
 .day-btn:has(input:checked){background:var(--blue-dim);border-color:var(--blue);color:var(--blue-light)}
 .day-btn{position:relative}
