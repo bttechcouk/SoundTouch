@@ -33,6 +33,7 @@ import time
 import uuid as _uuid
 import datetime as _dt
 import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape as xml_escape, quoteattr
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
 from urllib.parse import parse_qs, urlparse, quote as urlquote
@@ -601,6 +602,8 @@ class SoundTouchDevice:
             ci = np.find("ContentItem")
             if ci is not None:
                 d["_upnp_location"] = ci.get("location", "")
+                d["presetable"] = ci.get("isPresetable") == "true" and bool(ci.get("location"))
+                d["item_name"]  = ci.findtext("itemName") or ""
         # cloud source warning
         src_key = d.get("source", "").upper()
         if src_key in CLOUD_SOURCES:
@@ -695,17 +698,34 @@ class SoundTouchDevice:
         self._post("/volume", f"<volume>{max(0,min(100,int(v)))}</volume>")
 
     # ── preset management ─────────────────────────────────────────────────────
-    def store_preset(self, preset_id, name, source, stype, location, account=""):
-        """Write a preset to the speaker via /storePreset."""
-        acct = f' sourceAccount="{account}"' if account else ''
+    def store_preset(self, preset_id, name, source, stype, location, account="", art=""):
+        """Write a preset to the speaker via /storePreset. Values are XML-escaped
+        (a "Rock & Roll" playlist or a URL with & would otherwise be rejected);
+        `art` becomes containerArt, which the preset tiles show."""
+        acct = f' sourceAccount={quoteattr(account)}' if account else ''
+        art_el = f'<containerArt>{xml_escape(art)}</containerArt>' if art else ''
         xml = (
-            f'<preset id="{preset_id}">'
-            f'<ContentItem source="{source}" type="{stype}" '
-            f'location="{location}"{acct}>'
-            f'<itemName>{name}</itemName>'
+            f'<preset id={quoteattr(str(preset_id))}>'
+            f'<ContentItem source={quoteattr(source)} type={quoteattr(stype or "")} '
+            f'location={quoteattr(location)}{acct}>'
+            f'<itemName>{xml_escape(name or "")}</itemName>{art_el}'
             f'</ContentItem></preset>'
         )
         return self._post("/storePreset", xml)
+
+    def now_playing_item(self):
+        """What's playing, as a preset-ready dict — or None when nothing
+        presettable is on (standby, TV, Bluetooth, AUX…). For Spotify this is
+        the playlist/album the track came from, not the single track."""
+        np = self._get("/now_playing")
+        ci = np.find("ContentItem") if np is not None else None
+        if ci is None or ci.get("isPresetable") != "true" or not ci.get("location"):
+            return None
+        return {"source": ci.get("source", ""), "type": ci.get("type", ""),
+                "location": ci.get("location", ""), "account": ci.get("sourceAccount", ""),
+                "name": (ci.findtext("itemName") or np.findtext("stationName")
+                         or np.findtext("track") or "Preset").strip(),
+                "art": (np.findtext("art") or "").strip()}
 
     def select_content(self, source, stype, location, name="", account=""):
         """Play a ContentItem immediately via /select."""
@@ -1426,6 +1446,25 @@ def audio_mode_for_transition(prev_source, source):
     if after == "music":
         return "normal"
     return None
+
+
+def preset_target_ok(item, sources):
+    """Can a speaker with `sources` (get_sources() output) play preset `item`?
+    Returns (ok, reason). Spotify needs the same linked account, ready; our
+    DLNA radio (UPNP) plays anywhere; anything else needs that source."""
+    src = item.get("source")
+    if src == "UPNP":
+        return True, ""
+    if not sources:
+        return False, "unreachable"
+    if src == "SPOTIFY":
+        if any(s["source"] == "SPOTIFY" and s["sourceAccount"] == item.get("account")
+               and s["status"] == "READY" for s in sources):
+            return True, ""
+        return False, "no Spotify account linked"
+    if any(s["source"] == src for s in sources):
+        return True, ""
+    return False, f"no {src} source"
 
 
 def tv_wake_action(woke_source, elapsed, source, playing, grace=TV_WAKE_GRACE):
@@ -2359,6 +2398,37 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": bool(ok), **dev.get_soundbar_settings()})
             else:
                 self._json(dev.get_soundbar_settings())
+
+        # ── save what's playing as a preset ───────────────────────────────────
+        elif path == "/api/presets/save-current":
+            st   = self.server_state
+            dev  = st.get_device(qs.get("host",[None])[0])
+            slot = qs.get("slot",[""])[0]
+            to_all = qs.get("all",["false"])[0].lower() == "true"
+            item = dev.now_playing_item() if dev else None
+            if not dev or not slot.isdigit() or not 1 <= int(slot) <= 6:
+                self._json({"ok": False, "error": "bad request"})
+            elif not item:
+                self._json({"ok": False, "error": "Nothing that can be saved is playing"})
+            else:
+                targets = [dev] + ([d for d in st.devices if d is not dev] if to_all else [])
+                results = {}
+                for d in targets:
+                    ok, why = (True, "") if d is dev else preset_target_ok(item, d.get_sources())
+                    if not ok:
+                        results[d.name] = f"skipped ({why})"
+                        continue
+                    if d.store_preset(slot, item["name"], item["source"], item["type"],
+                                      item["location"], item["account"], item["art"]):
+                        d.invalidate_preset_cache()
+                        # Keep the backup in step so a restore doesn't undo it
+                        st.store.backup_presets(d.host, d.get_presets_detail())
+                        d.has_backup = True
+                        results[d.name] = "saved"
+                    else:
+                        results[d.name] = "failed"
+                log.info(f"[PRESET] saved '{item['name']}' ({item['source']}) to slot {slot}: {results}")
+                self._json({"ok": True, "name": item["name"], "slot": int(slot), "results": results})
 
         # ── reboot ────────────────────────────────────────────────────────────
         elif path == "/api/reboot":

@@ -128,6 +128,7 @@ Key API endpoints:
 - `GET /api/bass?host=` / `GET /api/device-info?host=` / `GET /api/rename?host=&name=`
 - `GET /api/presets/backup?host=` / `GET /api/presets/restore?host=` — restore converts `LOCAL_INTERNET_RADIO` presets to `UPNP` for Kitchen-like speakers
 - `GET /api/presets/backup-all` / `GET /api/presets/health?host=`
+- `GET /api/presets/save-current?host=&slot=1-6&all=true|false` — store what's playing (`now_playing_item()`: the ContentItem, e.g. a Spotify playlist as `tracklisturl` + account, plus art as containerArt) into a slot, optionally on every speaker `preset_target_ok()` allows (Spotify needs the same linked account READY — the soundbar has none; UPNP radio goes anywhere). Updates each speaker's backup. UI: Presets panel → "+ Save what's playing"
 - `GET /api/group?host=` / `POST /api/group/create|remove|party|dissolve-all|join`
 - `GET /api/stations` / `POST /api/stations/add|delete` / `GET /api/stations/play?host=&id=` / `POST /api/stations/set-preset` / `GET /api/stations/stream-search`
 - `GET /api/scenes` / `POST /api/scenes|scenes/delete|scenes/activate`

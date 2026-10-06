@@ -417,6 +417,7 @@ function applyState(d) {
   syncSpeakerBar();
   // presets — populate dropdown art-tile grid
   renderPresetGrid(d.presets || []);
+  document.getElementById('preset-save-btn').style.display = d.presetable ? '' : 'none';
 }
 
 // ── Preset art tiles ──────────────────────────────────────────────────────────
@@ -465,7 +466,11 @@ function renderPresetGrid(presets) {
       + `<div class="preset-shade"></div>
          <div class="preset-num">${i+1}</div>
          <div class="preset-name">${nm||'—'}</div>`;
-    div.onclick=(e)=>{ ripple(div,e); if(navigator.vibrate)navigator.vibrate(8); cmd('preset'+(i+1)); closePresets(); };
+    div.onclick=(e)=>{
+      ripple(div,e); if(navigator.vibrate)navigator.vibrate(8);
+      if (_presetSaving) { savePresetSlot(i+1, nm); return; }
+      cmd('preset'+(i+1)); closePresets();
+    };
     g.appendChild(div);
   }
 }
@@ -800,7 +805,47 @@ function togglePresets() {
     btn.classList.add('open');
   }
 }
+// ── Save what's playing to a preset ──────────────────────────────────────────
+// Save mode re-labels the grid: tapping a tile stores the current playlist /
+// station into that slot (on this speaker, or every speaker that can play it).
+let _presetSaving = false;
+function enterPresetSave() {
+  const d = lastState || {};
+  if (!d.presetable) { toast('Nothing that can be saved is playing'); return; }
+  _presetSaving = true;
+  const what = d.item_name || d.track || 'what\'s playing';
+  document.getElementById('preset-save-msg').innerHTML =
+    `Tap a slot to save <b>${what.replace(/</g,'&lt;')}</b>`;
+  document.getElementById('preset-save-all').checked = false;
+  document.getElementById('preset-save-bar').style.display = '';
+  document.getElementById('preset-save-btn').style.visibility = 'hidden';
+  document.getElementById('presets-grid').classList.add('saving');
+}
+function exitPresetSave() {
+  _presetSaving = false;
+  document.getElementById('preset-save-bar').style.display = 'none';
+  document.getElementById('preset-save-btn').style.visibility = '';
+  document.getElementById('presets-grid').classList.remove('saving');
+}
+async function savePresetSlot(slot, currentName) {
+  const all = document.getElementById('preset-save-all').checked;
+  if (currentName && !confirm(`Replace preset ${slot} (${currentName})${all?' on every speaker that can play it':''}?`)) return;
+  let r;
+  try {
+    r = await (await fetch(`/api/presets/save-current?host=${activeHost}&slot=${slot}&all=${all}`)).json();
+  } catch(e) { r = {ok:false, error:'Could not reach the controller'}; }
+  if (!r.ok) { toast(r.error || 'Save failed'); return; }
+  exitPresetSave(); closePresets();
+  const res = Object.entries(r.results||{});
+  const saved = res.filter(([,v])=>v==='saved').length;
+  const missed = res.filter(([,v])=>v!=='saved').map(([n])=>n);
+  toast(all ? `Saved to preset ${slot} on ${saved} speaker${saved===1?'':'s'}${missed.length?` · not ${missed.join(', ')}`:''}`
+            : `Saved ${r.name} to preset ${slot}`);
+  _presetSig = ''; setTimeout(pollNow, 400);
+}
+
 function closePresets() {
+  if (_presetSaving) exitPresetSave();
   document.getElementById('presets-clip').classList.remove('open');
   document.getElementById('presets-backdrop').classList.remove('open');
   document.getElementById('preset-toggle').classList.remove('open');

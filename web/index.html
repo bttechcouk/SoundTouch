@@ -32,7 +32,22 @@
   <div id="presets-clip">
     <div id="presets-panel">
       <div id="presets-panel-inner">
-        <div id="presets-panel-label">Presets</div>
+        <div id="presets-panel-head">
+          <div id="presets-panel-label">Presets</div>
+          <button id="preset-save-btn" onclick="enterPresetSave()" style="display:none">+ Save what's playing</button>
+        </div>
+        <!-- Save mode: shown after "Save what's playing"; tapping a tile stores into that slot -->
+        <div id="preset-save-bar" style="display:none">
+          <div id="preset-save-msg"></div>
+          <div class="preset-save-row">
+            <label class="sw-pill">
+              <span>All speakers</span>
+              <input type="checkbox" id="preset-save-all">
+              <span class="sw-track"></span>
+            </label>
+            <button class="mc-btn" onclick="exitPresetSave()">Cancel</button>
+          </div>
+        </div>
         <div id="presets-grid"></div>
       </div>
     </div>

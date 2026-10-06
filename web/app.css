@@ -312,6 +312,18 @@ header{padding:calc(16px + env(safe-area-inset-top,0px)) 20px 0;
 #presets-panel-label{font-size:10px;font-weight:700;letter-spacing:.12em;
   color:var(--fg3);text-transform:uppercase;margin-bottom:10px}
 #presets-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+#presets-panel-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+#presets-panel-head #presets-panel-label{margin-bottom:0}
+#preset-save-btn{background:none;border:1px solid var(--blue-dim);color:var(--blue-light);
+  border-radius:14px;padding:4px 11px;font-size:11px;font-weight:600;cursor:pointer}
+#preset-save-btn:active{background:var(--blue-dim)}
+#preset-save-bar{background:rgba(34,119,238,.08);border:1px solid var(--blue-dim);
+  border-radius:12px;padding:10px 12px;margin-bottom:10px}
+#preset-save-msg{font-size:12px;color:var(--fg);margin-bottom:8px;line-height:1.4}
+#preset-save-msg b{color:var(--white)}
+.preset-save-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+#presets-grid.saving .preset{border-color:var(--blue-dim);animation:save-pulse 1.6s ease-in-out infinite}
+@keyframes save-pulse{50%{border-color:var(--blue)}}
 /* Art tiles: square, station artwork fills the tile behind a bottom shade */
 .preset{position:relative;aspect-ratio:1;background:var(--surface2);
   border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;
