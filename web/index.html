@@ -296,28 +296,29 @@
             Schedule a speaker to start playing a preset at a set time.
           </p>
           <div id="alarms-list"></div>
-          <div class="add-form" style="margin:10px 0 0">
+          <div class="add-form" id="alarm-form" style="margin:10px 0 0">
+            <div id="alarm-form-title">New alarm</div>
             <label>Speaker</label>
             <select id="alarm-speaker-select" class="form-select" onchange="loadAlarmPresetNames()">
               <option value="">Select a speaker…</option>
             </select>
             <label>Name (optional)</label>
             <input id="alarm-name" placeholder="Morning Radio">
+            <label>Preset</label>
+            <select id="alarm-preset" class="form-select">
+              <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+              <option value="4">4</option><option value="5">5</option><option value="6">6</option>
+            </select>
             <div class="form-grid">
               <div>
                 <label>Time</label>
                 <input id="alarm-time" type="time" value="07:00">
               </div>
               <div>
-                <label>Preset</label>
-                <select id="alarm-preset" class="form-select">
-                  <option value="1">1</option><option value="2">2</option><option value="3">3</option>
-                  <option value="4">4</option><option value="5">5</option><option value="6">6</option>
-                </select>
+                <label>Volume (optional)</label>
+                <input id="alarm-vol" type="number" inputmode="numeric" min="0" max="100" placeholder="Keep current">
               </div>
             </div>
-            <label>Volume (optional)</label>
-            <input id="alarm-vol" type="number" inputmode="numeric" min="0" max="100" placeholder="Keep current volume">
             <label>Days</label>
             <div class="day-row">
               <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="0" checked>Mon</label>
@@ -329,7 +330,8 @@
               <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="6">Sun</label>
             </div>
             <div class="form-row">
-              <button class="mc-btn primary" onclick="addAlarm()">Add Alarm</button>
+              <button class="mc-btn primary" id="alarm-save-btn" onclick="addAlarm()">Add Alarm</button>
+              <button class="mc-btn" id="alarm-cancel-btn" onclick="cancelAlarmEdit()" style="display:none">Cancel</button>
             </div>
           </div>
         </div>

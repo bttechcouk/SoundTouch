@@ -1534,8 +1534,9 @@ def alarm_tz(alarm):
 
 def alarm_due_key(alarm, now_utc):
     """Dedup key if `alarm` should ring at `now_utc` (an aware datetime), else
-    None. The key is unique per alarm per local day, so the 30 s ticks fire it
-    exactly once."""
+    None. The key is unique per alarm, local day and time, so the 30 s ticks
+    fire it exactly once — and an alarm edited to a later time the same day
+    still rings at the new time."""
     if not alarm.get("enabled"):
         return None
     now = now_utc.astimezone(alarm_tz(alarm))   # tz None → server local time
@@ -1543,7 +1544,7 @@ def alarm_due_key(alarm, now_utc):
         return None
     if now.weekday() not in alarm.get("days", list(range(7))):   # 0=Mon … 6=Sun
         return None
-    return f"{alarm['id']}_{now.date().isoformat()}"
+    return f"{alarm['id']}_{now.date().isoformat()}_{alarm['time']}"
 
 
 class AlarmScheduler:
@@ -2596,6 +2597,8 @@ class Handler(BaseHTTPRequestHandler):
                 if dev is None and a.get("device_id"):
                     dev = next((d for d in self.server_state.devices
                                 if d.device_id == a["device_id"]), None)
+                if dev:
+                    a["host"] = dev.host   # current address, in case DHCP moved it
                 p = next((x for x in (dev.get_presets_detail() if dev else [])
                           if x.get("id") == str(a.get("preset"))), None)
                 if p and p.get("name"):
@@ -2773,7 +2776,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/alarms":
             try:
                 data    = json.loads(body)
-                alarm_id = "alarm_" + str(int(time.time()))
+                # Editing: keep the alarm's id, on/off state and ring history
+                existing = next((a for a in self.server_state.alarm_store.list_alarms()
+                                 if data.get("id") and a["id"] == data["id"]), None)
+                alarm_id = existing["id"] if existing else "alarm_" + str(int(time.time()))
                 alarm = {
                     "id":      alarm_id,
                     "name":    data.get("name", "Alarm").strip() or "Alarm",
@@ -2781,9 +2787,12 @@ class Handler(BaseHTTPRequestHandler):
                     "preset":  int(data.get("preset", 1)),
                     "time":    data.get("time", "07:00"),
                     "days":    [int(d) for d in data.get("days", list(range(7)))],
-                    "enabled": True,
+                    "enabled": existing.get("enabled", True) if existing else True,
                     "volume":  int(data["volume"]) if data.get("volume") not in (None, "") else None,
                 }
+                if existing:
+                    for k in ("last_fired", "last_result"):
+                        if k in existing: alarm[k] = existing[k]
                 # The phone's timezone — the server clock is UTC
                 tz = (data.get("tz") or "").strip()
                 if tz:
@@ -2793,7 +2802,7 @@ class Handler(BaseHTTPRequestHandler):
                 if dev and dev.device_id:
                     alarm["device_id"] = dev.device_id
                 self.server_state.alarm_store.save_alarm(alarm)
-                log.info(f"[ALARM] Saved '{alarm['name']}' at {alarm['time']}")
+                log.info(f"[ALARM] {'Updated' if existing else 'Saved'} '{alarm['name']}' at {alarm['time']}")
                 self._json({"ok": True, "id": alarm_id})
             except Exception as e:
                 self._json({"ok": False, "error": str(e)})

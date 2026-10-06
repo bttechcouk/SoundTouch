@@ -17,19 +17,19 @@ def _alarm(**kw):
 
 def test_bst_alarm_fires_at_local_seven_not_utc_seven():
     # Fri 2 Oct 2026 — BST (UTC+1). 07:00 London is 06:00 UTC.
-    assert stc.alarm_due_key(_alarm(), dt.datetime(2026, 10, 2, 6, 0, 20, tzinfo=UTC)) == "a1_2026-10-02"
+    assert stc.alarm_due_key(_alarm(), dt.datetime(2026, 10, 2, 6, 0, 20, tzinfo=UTC)) == "a1_2026-10-02_07:00"
     assert stc.alarm_due_key(_alarm(), dt.datetime(2026, 10, 2, 7, 0, 20, tzinfo=UTC)) is None
 
 
 def test_gmt_alarm_after_clocks_go_back():
     # Fri 6 Nov 2026 — GMT, so 07:00 London is 07:00 UTC
-    assert stc.alarm_due_key(_alarm(), dt.datetime(2026, 11, 6, 7, 0, tzinfo=UTC)) == "a1_2026-11-06"
+    assert stc.alarm_due_key(_alarm(), dt.datetime(2026, 11, 6, 7, 0, tzinfo=UTC)) == "a1_2026-11-06_07:00"
 
 
 def test_day_matching_uses_local_date():
     # 23:30 Thu UTC is 00:30 Fri in London — a Friday 00:30 alarm must ring
     a = _alarm(time="00:30", days=[4])
-    assert stc.alarm_due_key(a, dt.datetime(2026, 10, 1, 23, 30, tzinfo=UTC)) == "a1_2026-10-02"
+    assert stc.alarm_due_key(a, dt.datetime(2026, 10, 1, 23, 30, tzinfo=UTC)) == "a1_2026-10-02_00:30"
     assert stc.alarm_due_key(_alarm(days=[3]), dt.datetime(2026, 10, 2, 6, 0, tzinfo=UTC)) is None
 
 
@@ -40,7 +40,7 @@ def test_disabled_alarm_never_due():
 def test_env_fallback_for_alarms_without_tz(monkeypatch):
     monkeypatch.setenv("SOUNDTOUCH_TZ", "Europe/London")
     a = _alarm(); del a["tz"]
-    assert stc.alarm_due_key(a, dt.datetime(2026, 10, 2, 6, 0, tzinfo=UTC)) == "a1_2026-10-02"
+    assert stc.alarm_due_key(a, dt.datetime(2026, 10, 2, 6, 0, tzinfo=UTC)) == "a1_2026-10-02_07:00"
 
 
 def test_bad_tz_falls_back_without_crashing(monkeypatch):
@@ -108,3 +108,9 @@ def test_switched_off_quickly_counts_as_played_and_is_not_restarted():
 def test_fire_retries_once_then_reports_failure():
     assert _fire([False, True])[0] == ["played (retry)"]
     assert _fire([False, False])[0] == ["failed"]
+
+
+def test_edited_to_later_time_same_day_rings_again():
+    first = stc.alarm_due_key(_alarm(time="06:15", days=[4]), dt.datetime(2026, 10, 2, 5, 15, tzinfo=UTC))
+    later = stc.alarm_due_key(_alarm(time="06:30", days=[4]), dt.datetime(2026, 10, 2, 5, 30, tzinfo=UTC))
+    assert first and later and first != later

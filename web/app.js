@@ -1614,6 +1614,7 @@ function _alarmHtml(a, closeModalId) {
       ${a.last_fired?`<div class="mc-meta">Last rang ${_alarmWhen(a.last_fired)} — ${a.last_result==='played'||a.last_result==='played (retry)'?'✓ '+a.last_result:'⚠ '+a.last_result}</div>`:''}
     </div>
     <div class="mc-actions">
+      <button class="mc-btn" onclick="editAlarm('${a.id}'${closeArg})">Edit</button>
       <button class="mc-btn${a.enabled?' primary':''}" onclick="toggleAlarm('${a.id}',${!a.enabled}${closeArg})">${a.enabled?'On':'Off'}</button>
       <button class="mc-btn danger" onclick="deleteAlarm('${a.id}'${closeArg})">✕</button>
     </div>
@@ -1623,9 +1624,14 @@ function _alarmHtml(a, closeModalId) {
 async function loadAlarms() {
   const el=document.getElementById('alarms-list');
   if(!el)return;
+  // A new alarm defaults to the speaker you're on now (not whichever was
+  // active when the list first loaded); an alarm being edited keeps its own
+  const spkSel=document.getElementById('alarm-speaker-select');
+  if (spkSel && !_editingAlarmId && activeHost) spkSel.value='';
   updateAlarmSpeakerSelect();
   try{
     const alarms=await(await fetch('/api/alarms')).json();
+    _alarmsCache=alarms;
     el.innerHTML=alarms.length
       ?alarms.map(a=>_alarmHtml(a)).join('')
       :'<p style="font-size:12px;color:var(--fg3);margin-bottom:10px">No alarms set.</p>';
@@ -1656,6 +1662,48 @@ async function loadAlarmPresetNames() {
   sel.value = cur;
 }
 
+// ── Edit an existing alarm: load it into the form, save back under its id ────
+let _alarmsCache=[], _editingAlarmId=null;
+async function editAlarm(id, modalId) {
+  if (!_alarmsCache.some(a=>a.id===id)) {
+    try { _alarmsCache = await (await fetch('/api/alarms')).json(); } catch(e) {}
+  }
+  const a = _alarmsCache.find(x=>x.id===id);
+  if (!a) { toast('Alarm not found'); return; }
+  if (modalId) closeModal(modalId);
+  // Make sure the Alarms section is visible (editing can start from the ⏱ modal)
+  if (document.querySelector('.tab.active')?.dataset?.tab !== 'settings') switchTab('settings');
+  const sec = document.getElementById('sec-alarms');
+  if (sec.style.display === 'none') toggleSection('sec-alarms','chev-alarms');
+  _editingAlarmId = id;
+  const spk = document.getElementById('alarm-speaker-select');
+  updateAlarmSpeakerSelect();
+  spk.value = a.host;
+  await loadAlarmPresetNames();
+  document.getElementById('alarm-preset').value = String(a.preset);
+  document.getElementById('alarm-name').value = a.name || '';
+  document.getElementById('alarm-time').value = a.time;
+  document.getElementById('alarm-vol').value = a.volume ?? '';
+  document.querySelectorAll('.alarm-day-chk').forEach(cb => cb.checked = a.days.includes(parseInt(cb.value)));
+  document.getElementById('alarm-form-title').textContent = `Editing "${a.name || 'Alarm'}"`;
+  document.getElementById('alarm-save-btn').textContent = 'Save changes';
+  document.getElementById('alarm-cancel-btn').style.display = '';
+  const form = document.getElementById('alarm-form');
+  form.classList.add('editing');
+  form.scrollIntoView({behavior:'smooth', block:'start'});
+}
+function cancelAlarmEdit() {
+  _editingAlarmId = null;
+  document.getElementById('alarm-form-title').textContent = 'New alarm';
+  document.getElementById('alarm-save-btn').textContent = 'Add Alarm';
+  document.getElementById('alarm-cancel-btn').style.display = 'none';
+  document.getElementById('alarm-form').classList.remove('editing');
+  document.getElementById('alarm-name').value = '';
+  document.getElementById('alarm-vol').value = '';
+  document.getElementById('alarm-time').value = '07:00';
+  document.querySelectorAll('.alarm-day-chk').forEach(cb => cb.checked = parseInt(cb.value) < 5);
+}
+
 async function addAlarm() {
   const host=document.getElementById('alarm-speaker-select').value;
   if(!host){toast('Select a speaker');return;}
@@ -1670,16 +1718,17 @@ async function addAlarm() {
   const volume=volRaw!==''?parseInt(volRaw):null;
   try{
     await fetch('/api/alarms',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({name,host,preset,time,days,volume,
+      body:JSON.stringify({id:_editingAlarmId,name,host,preset,time,days,volume,
         tz:Intl.DateTimeFormat().resolvedOptions().timeZone})});
-    document.getElementById('alarm-name').value='';
-    toast('Alarm saved'); loadAlarms();
+    toast(_editingAlarmId ? 'Alarm updated' : 'Alarm saved');
+    cancelAlarmEdit(); loadAlarms();
   }catch(e){toast('Failed to save alarm');}
 }
 
 async function deleteAlarm(id, modalId) {
   if(!confirm('Delete this alarm?'))return;
   await fetch('/api/alarms/delete?id='+id);
+  if (id === _editingAlarmId) cancelAlarmEdit();
   toast('Alarm deleted'); loadAlarms();
   if(modalId) _refreshAlarmsModal();
 }
@@ -1717,6 +1766,7 @@ async function _refreshAlarmsModal() {
   const el=document.getElementById('alarms-modal-body'); if(!el)return;
   try{
     const alarms=await(await fetch('/api/alarms')).json();
+    _alarmsCache=alarms;
     el.innerHTML=alarms.length
       ?alarms.map(a=>_alarmHtml(a,'alarms-modal')).join('')
       :'<p style="font-size:12px;color:var(--fg3)">No alarms set.</p>';

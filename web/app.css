@@ -439,6 +439,8 @@ header{padding:calc(16px + env(safe-area-inset-top,0px)) 20px 0;
 .add-form input::placeholder{color:var(--fg3)}
 .form-row{display:flex;gap:8px;margin-top:12px}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+#alarm-form-title{font-size:13px;font-weight:700;color:var(--white);margin-bottom:10px}
+#alarm-form.editing{border-color:var(--blue)}
 .form-grid > div{min-width:0}
 /* Native iOS date/time inputs ignore width and padding and render oversized —
    strip the native look so they match the other fields. */
