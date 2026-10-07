@@ -738,12 +738,21 @@ class SoundTouchDevice:
         )
         return self._post("/select", xml)
 
-    def play_via_avt(self, stream_url):
+    def play_via_avt(self, stream_url, title="", art=""):
         """Play a stream URL via UPnP AVTransport (port 8091).
         Used for speakers that lack LOCAL_INTERNET_RADIO. The URL must be HTTP
-        (not HTTPS) — the speaker follows redirects but rejects https:// URIs."""
+        (not HTTPS) — the speaker follows redirects but rejects https:// URIs.
+
+        The DIDL-Lite metadata is what the speaker shows on its display and in
+        now_playing. Sent empty, an ST20 showed just "Q". For our own station
+        URLs (/dlna/stream/<id>) the name and logo are looked up automatically."""
+        if not title and "/dlna/stream/" in stream_url:
+            st = PresetStore().get_station(stream_url.rstrip("/").split("/")[-1])
+            if st:
+                title, art = st.get("name", ""), art or st.get("art_url", "")
         avt = f"http://{self.host}:8091/AVTransport/Control"
-        esc = stream_url.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        esc = xml_escape(stream_url)
+        meta = xml_escape(avt_didl(stream_url, title, art)) if title else ""
         set_soap = (
             '<?xml version="1.0" encoding="utf-8"?>'
             '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
@@ -751,7 +760,7 @@ class SoundTouchDevice:
             '<s:Body><u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
             '<InstanceID>0</InstanceID>'
             f'<CurrentURI>{esc}</CurrentURI>'
-            '<CurrentURIMetaData></CurrentURIMetaData>'
+            f'<CurrentURIMetaData>{meta}</CurrentURIMetaData>'
             '</u:SetAVTransportURI></s:Body></s:Envelope>'
         )
         play_soap = (
@@ -1446,6 +1455,21 @@ def audio_mode_for_transition(prev_source, source):
     if after == "music":
         return "normal"
     return None
+
+
+def avt_didl(url, title, art=""):
+    """DIDL-Lite for AVTransport's CurrentURIMetaData: one radio-broadcast item
+    whose title (and album art) the speaker puts on its display."""
+    e = lambda v: xml_escape(v, {'"': "&quot;"})
+    art_el = f'<upnp:albumArtURI>{e(art)}</upnp:albumArtURI>' if art else ''
+    return ('<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+            'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">'
+            '<item id="1" parentID="0" restricted="1">'
+            f'<dc:title>{e(title)}</dc:title>'
+            '<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>'
+            f'{art_el}<res protocolInfo="http-get:*:audio/mpeg:*">{e(url)}</res>'
+            '</item></DIDL-Lite>')
 
 
 def preset_target_ok(item, sources):
