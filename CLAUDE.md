@@ -177,7 +177,7 @@ Commissioning state is persisted to `matter_bridge/data/matter/bridge.json`. Del
 
 ## Web UI (`web/` directory — `index.html`, `app.css`, `app.js`)
 
-**Tabs:** Player, Presets, Groups, Settings. Active tab is saved to `localStorage`.
+**Tabs:** Player, Spotify, Presets, Groups, Settings (`TAB_ORDER` in app.js; the indicator width is `/5` in app.css). Active tab is saved to `localStorage`.
 
 **Key JS functions:**
 - `setActive(host)` — switch active speaker; triggers poll and reloads any open Settings sections
@@ -187,6 +187,8 @@ Commissioning state is persisted to `matter_bridge/data/matter/bridge.json`. Del
 - `applyState(d)` — applies `/api/state` response to the Player UI
 - `toggleSection(bodyId, chevronId)` — expand/collapse a collapsible panel; triggers lazy-load of section data on first open
 - `switchTab(name)` — switches visible page
+
+**Spotify tab — `web/spotify.js`** (separate module, loaded after app.js and using its globals): `SP` state; views home / search / detail rendered into `#sp-root`; `spPlay()` → `/api/spotify/play` (active speaker, or several from the speaker sheet); track taps pass `offset`; ☆ Preset → `/api/spotify/save-preset`; Settings → Spotify (`#sp-settings`, lazy-loaded via `toggleSection`) lists accounts and runs the paste-back login. Search input is never re-rendered while typing (`spSyncSearchBox`).
 
 Settings sections (all collapsible via `toggleSection`): Discover Speakers, Speaker Details (with bass slider), Radio Presets (UPNP preset list with art + play, `loadUpnpStations()`), Preset Backup, Alarms, Scenes, Announce (TTS), Alexa Integration (Matter QR). When adding a new Settings section, register its lazy-load function in both `toggleSection()` and `setActive()`.
 

@@ -1986,7 +1986,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path in ("/wall", "/wall.html", "/tab", "/panel"):
             self._web("wall.html")
 
-        elif path in ("/app.css", "/app.js"):
+        elif path in ("/app.css", "/app.js", "/spotify.js"):
             self._web(path.lstrip("/"))
 
         # ── speaker list / scan ───────────────────────────────────────────────
@@ -2897,6 +2897,36 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
 
+    def _spotify_save_preset(self, sp, arg):
+        """Store a Spotify URI into preset slot N on one speaker, or every
+        speaker linked to the account (same rule as "Save what's playing")."""
+        st   = self.server_state
+        uid  = sp.account_for(arg("account") or None)
+        dev  = st.get_device(arg("host"))
+        slot = arg("slot")
+        uri  = arg("uri")
+        if not dev or not slot.isdigit() or not 1 <= int(slot) <= 6 or not uri.startswith("spotify:"):
+            raise SpotifyError("Bad preset request")
+        item = {"source": "SPOTIFY", "type": "tracklisturl", "location": spotify_location(uri),
+                "account": uid, "name": arg("name") or "Spotify", "art": arg("image")}
+        targets = [dev] + ([d for d in st.devices if d is not dev] if arg("all") == "true" else [])
+        results = {}
+        for d in targets:
+            ok, why = preset_target_ok(item, d.get_sources())
+            if not ok:
+                results[d.name] = f"skipped ({why})"
+                continue
+            if d.store_preset(slot, item["name"], item["source"], item["type"],
+                              item["location"], item["account"], item["art"]):
+                d.invalidate_preset_cache()
+                st.store.backup_presets(d.host, d.get_presets_detail())
+                d.has_backup = True
+                results[d.name] = "saved"
+            else:
+                results[d.name] = "failed"
+        log.info(f"[SPOTIFY] saved {uri} to preset {slot}: {results}")
+        return {"slot": int(slot), "name": item["name"], "results": results}
+
     def _spotify(self, action, qs):
         """GET /api/spotify/<action>. Errors come back as {ok: false, error}
         with a message fit for a toast; tokens never leave the controller."""
@@ -2923,6 +2953,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, **(sp.search(q, arg("type"), arg("account") or None) if q else {})})
             elif action == "item":
                 self._json({"ok": True, **sp.item(arg("uri"), arg("account") or None)})
+            elif action == "save-preset":
+                self._json({"ok": True, **self._spotify_save_preset(sp, arg)})
             elif action == "play":
                 hosts = [h for h in arg("hosts", arg("host")).split(",") if h]
                 devs  = [d for d in (self.server_state.get_device(h) for h in hosts) if d]

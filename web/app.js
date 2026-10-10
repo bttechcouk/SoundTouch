@@ -92,7 +92,7 @@ function collapseAll(pageId) {
   page.querySelectorAll('.qr-body').forEach(b => b.style.display = 'none');
   page.querySelectorAll('.qr-chevron').forEach(c => c.classList.remove('open'));
 }
-const TAB_ORDER = ['player', 'manage', 'groups', 'settings'];
+const TAB_ORDER = ['player', 'spotify', 'manage', 'groups', 'settings'];
 function switchTab(name) {
   const prev = document.querySelector('.tab.active')?.dataset?.tab;
   document.querySelectorAll('.tab').forEach(t =>
@@ -112,6 +112,7 @@ function switchTab(name) {
   collapseAll('page-' + name);
   if (name === 'manage')   { /* sections load on expand */ }
   if (name === 'groups')   { loadGroups(); }
+  if (name === 'spotify' && typeof spOpen === 'function') spOpen();
   if (name === 'settings') { /* sections load on expand */ }
   localStorage.setItem('activeTab', name);
 }
@@ -170,7 +171,11 @@ function syncSpeakerBar() {
   bar.classList.toggle('playing', !!row && row.classList.contains('playing'));
   bar.classList.toggle('offline', !!row && row.classList.contains('offline'));
   const others = document.querySelectorAll('#rooms-list .room-chip.playing:not(.active)').length;
-  document.getElementById('spk-others').textContent = others ? `+${others} playing` : '';
+  // Compact: the picker is half-width, and "+1 playing" squeezed the speaker
+  // name down to "D…". The title spells it out.
+  const oth = document.getElementById('spk-others');
+  oth.textContent = others ? `+${others}` : '';
+  oth.title = others ? `${others} other speaker${others>1?'s':''} playing` : '';
 }
 function toggleSpeakers() {
   const clip = document.getElementById('speakers-clip');
@@ -1363,6 +1368,7 @@ function toggleSection(bodyId, chevronId) {
   if (opening && bodyId === 'sec-stations')      loadStations();
   if (opening && bodyId === 'sec-scenes')        loadScenes();
   if (opening && bodyId === 'sec-alarms')        loadAlarms();
+  if (opening && bodyId === 'sec-spotify')       spLoadSettings();
   if (opening && bodyId === 'sec-maint')         loadMaint();
   if (opening && bodyId === 'sec-announce')      loadAnnounceSection();
 }
