@@ -117,6 +117,22 @@ New `SpotifyClient` class and `/api/spotify/*` endpoints (GET, matching the exis
 4. **Spotify-made playlists:** does `/v1/me/playlists` still *list* Spotify-made playlists you follow, with name, art and URI, even though their tracks are blocked? If so, Discover Weekly can still appear as a tile.
 5. **Account switching (decides the two-account design):** can the controller log a speaker into the second Duo account via ZeroConf `addUser` (port 8200, access token with `streaming`)? Then: does `/sources` show that account `READY`, does `/select` with its `sourceAccount` play one of its private playlists, and can we switch back to `turnerben37` cleanly? Test on one ST10 first. If it fails, the fallback is described under *Two Duo accounts*.
 
+### Phase 0 results so far (10 Oct)
+
+Linked `turnerben37` (Premium) through the paste-back flow on an iPhone. It worked first time. Silent checks:
+
+| Check | Result |
+|---|---|
+| Spike 3: login and renewal | ✅ PKCE paste-back works on iPhone. A forced refresh returned a new token, so the controller can stay logged in by itself. |
+| Your playlists | ✅ `/me/playlists`: 213 playlists with names, owners and artwork |
+| Liked Songs / saved albums | ✅ `/me/tracks` (460) and `/me/albums` (129) still work after the February 2026 changes |
+| Recently played | ✅ `/me/player/recently-played` gives contexts for "Jump back in" |
+| Search | ✅ songs, artists and albums are good. ⚠️ Playlist search is weak: most results come back `null` (Spotify-owned ones are filtered out), and the rest are random user playlists. Rank playlists last, or leave them out of "All". |
+| Spike 4: Spotify-made playlists | ⚠️ They're listed (name, URI), but details are `404` and tracks `403`. ✅ The public **oEmbed** endpoint (`open.spotify.com/oembed`, no auth) returns their **title and cover**, so they can still appear as tiles (e.g. "Hype Motivation Mix" from recently played) and be played by URI. No track list for them. |
+| Connect device list | ✅ `/me/player/devices` lists the speakers by name, so the Web API `offset` fallback for spike 2 is viable. It also lists Alexa groups ("Everywhere", "Downstairs") and an Echo. |
+
+Still to do (these make sound or need the second account): spikes 1, 2 and 5.
+
 **Phase 1: backend.** `SpotifyClient`, the token store, the endpoints above, and unit tests with mocked Web API responses. Done when `/api/spotify/home` returns real data and `/api/spotify/play` starts a playlist on an ST20.
 
 **Phase 2: UI.** Spotify tab (home, search, detail), the speaker sheet, and the Settings link card. Album art feeds the existing full-bleed background. Done when you can browse and play from the phone.
