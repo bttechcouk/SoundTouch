@@ -17,6 +17,15 @@
   .sp-acct .who{font-size:13px;font-weight:600;color:var(--white)}
   .sp-acct .who small{display:block;font-size:11px;font-weight:400;color:var(--fg2)}
   .sp-acct .powered{margin-left:auto;font-size:10px;color:var(--fg2);letter-spacing:.04em}
+  .acct-pill{display:flex;align-items:center;gap:7px;padding:4px 11px 4px 4px;border-radius:20px;
+    border:1px solid var(--border);background:var(--surface);font-size:12.5px;font-weight:600;color:var(--fg2)}
+  .acct-pill.on{border-color:var(--blue);background:rgba(34,119,238,.12);color:var(--blue-light)}
+  .acct-pill .sp-avatar{width:24px;height:24px;font-size:11px}
+  .sp-avatar.b2{background:linear-gradient(135deg,#f59e0b,#ef4444)}
+  .acct-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(44,48,71,.6)}
+  .acct-row .who{flex:1;font-size:13px;font-weight:600;color:var(--white)}
+  .acct-row .who small{display:block;font-size:11px;font-weight:400;color:var(--fg2)}
+  .ok{font-size:11px;color:#22c55e;font-weight:700}
   .sp-search{display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);
     border-radius:12px;padding:10px 12px;color:var(--fg2);font-size:14px;margin-bottom:16px}
   .sp-search.active{border-color:var(--blue);color:var(--white)}
@@ -116,8 +125,10 @@
 
   <!-- ── 1. Home ─────────────────────────────────────────────── -->
   <div class="screen sp-page" id="s-home">
-    <div class="sp-acct"><div class="sp-avatar">B</div>
-      <div class="who">Ben<small>turnerben37 · Premium</small></div><div class="powered">Content from Spotify</div></div>
+    <div class="sp-acct">
+      <div class="acct-pill on"><div class="sp-avatar">B</div>Ben</div>
+      <div class="acct-pill"><div class="sp-avatar b2">2</div>Duo 2</div>
+      <div class="powered">Content from Spotify</div></div>
     <div class="sp-search">⌕&nbsp; Search songs, albums, artists, playlists</div>
     <div class="sp-h">Jump back in</div>
     <div class="sp-row">
@@ -171,16 +182,18 @@
     <div class="qr-section" style="margin-top:0">
       <div class="qr-collapse-hdr"><span class="title">Spotify</span><span class="qr-chevron">▲</span></div>
       <div class="qr-body" style="display:block">
-        <p style="font-size:12px;color:var(--fg2);margin-bottom:6px;line-height:1.5">
-          Link the Spotify account your speakers use (turnerben37) to browse it here. One-off, takes a minute.</p>
+        <p style="font-size:12px;color:var(--fg2);margin-bottom:4px;line-height:1.5">
+          Link both Duo accounts to browse and play either of them. One-off per account.</p>
+        <div class="acct-row"><div class="sp-avatar">B</div><div class="who">Ben<small>turnerben37 · speakers' account</small></div><div class="ok">✓ Linked</div></div>
+        <div class="acct-row" style="margin-bottom:6px"><div class="sp-avatar b2">2</div><div class="who">Duo 2<small>Not linked yet</small></div><div class="mc-btn primary" style="font-size:12px">Link</div></div>
         <div class="step"><div class="num done">✓</div><div><b>Open Spotify login</b>
           <p>Approve read-only access: your playlists, library and recently played.</p></div></div>
         <div class="step"><div class="num">2</div><div><b>Paste the address you land on</b>
           <p>Spotify sends your phone to a page that won't load (127.0.0.1). That's expected — copy the whole address from the address bar and paste it here.</p>
           <div class="paste">http://127.0.0.1:8888/api/spotify/callback?code=AQB3x…&amp;state=f81c…</div></div></div>
         <div class="step"><div class="num">3</div><div><b>Done</b><p>The controller keeps the login and renews it itself.</p></div></div>
-        <div class="btn-play" style="margin-top:6px">Link account</div>
-        <div class="note">Anyone who can open this app on your network can browse this Spotify account (read-only — it can't change playlists or see payment details).</div>
+        <div class="btn-play" style="margin-top:6px">Link Duo 2</div>
+        <div class="note">Anyone who can open this app on your network can browse and play from linked accounts. It can't change playlists or see payment details.</div>
       </div>
     </div>
   </div>
@@ -192,7 +205,7 @@
   <div class="sheet">
     <div class="grab"></div>
     <h3>Play “Morning Wake-Up Indie Mix”</h3>
-    <div class="sub">Pick one speaker, or several to play in sync</div>
+    <div class="sub">Playing as <b style="color:var(--white)">Ben</b> · pick one speaker, or several to play in sync</div>
     <div class="spk on"><div class="box">✓</div><div class="nm">Dining Room</div><div class="md">ST 20</div></div>
     <div class="spk on"><div class="box">✓</div><div class="nm">Kitchen</div><div class="md">ST 10</div></div>
     <div class="spk"><div class="box"></div><div class="nm">Bedroom</div><div class="md">ST 20</div></div>
