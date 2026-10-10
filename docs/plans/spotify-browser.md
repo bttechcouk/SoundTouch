@@ -131,7 +131,29 @@ Linked `turnerben37` (Premium) through the paste-back flow on an iPhone. It work
 | Spike 4: Spotify-made playlists | ⚠️ They're listed (name, URI), but details are `404` and tracks `403`. ✅ The public **oEmbed** endpoint (`open.spotify.com/oembed`, no auth) returns their **title and cover**, so they can still appear as tiles (e.g. "Hype Motivation Mix" from recently played) and be played by URI. No track list for them. |
 | Connect device list | ✅ `/me/player/devices` lists the speakers by name, so the Web API `offset` fallback for spike 2 is viable. It also lists Alexa groups ("Everywhere", "Downstairs") and an Echo. |
 
-Still to do (these make sound or need the second account): spikes 1, 2 and 5.
+### Playback spikes on the Conservatory (10 Oct): the design changes
+
+| Finding | Detail |
+|---|---|
+| ❌ Local `/select` of a Spotify ContentItem is **not** reliable | From a cold speaker, every type (playlist, album, artist, Liked Songs, song) went to `INVALID_SOURCE`. So did a stored Spotify **preset**. |
+| 🔑 Why: the speaker had **no Spotify login** | ZeroConf `getInfo` showed `"activeUser": ""` while `/sources` still said `turnerben37 READY` (stale). A speaker only gets a login when a phone casts to it, and a restart clears it. The October Dining Room preset worked only because the phone had just cast to it. |
+| ✅ Spike 5 mechanism works for our own account | ZeroConf `addUser` (`userName`, `blob` = our access token with `streaming`, `clientKey` = the device's `clientID`, `tokenType=accesstoken`) gave `activeUser: turnerben37` in about 3 s, **with no phone**. It survives standby. |
+| ⚠️ After `addUser`, local `/select` still only half-works | Single songs and artists played. Playlists, albums and Liked Songs stuck in `BUFFERING`. |
+| ✅ After `addUser`, the speaker joins the account's **Connect device list** | `/me/player/devices` lists "Conservatory" as active. |
+| ✅ Spike 1 + 2 via Web API on that device | `PUT /me/player/play?device_id=…`: album ✅, playlist **starting at track 5** ✅ (exact track), Spotify-made playlist ✅, Liked Songs as a `uris` list ✅. Each started in 2–6 s. |
+| ℹ️ Feb 2026 API change confirmed | `/playlists/{id}/tracks` is `403`, and `/playlists/{id}/items` replaces it (`200`). |
+| 🐛 Side finding | The speakers return UTF-8 that `requests` decodes as Latin-1 ("Chance PeÃ±a"). The controller's `_get()` should parse `r.content`, not `r.text`. |
+
+**Revised playback design:**
+1. **Log in:** `addUser` pushes the chosen account's fresh token to the speaker (skipped if it's already logged in as that account).
+2. **Find the device:** look up its Connect device id via `/me/player/devices` (match by name, falling back to the ZeroConf `deviceID`).
+3. **Play:** `PUT /me/player/play` with the context or URIs, plus `offset` when a song is tapped.
+
+This needs the `streaming` and `user-modify-playback-state` scopes. It's also exactly how the **second Duo account** would work: push *its* token, and the speaker appears in *its* device list. That leaves spike 5b, linking the second account and testing the same steps.
+
+**Bonus fix this makes possible:** Spotify presets and Spotify alarms are currently only reliable on a speaker a phone has cast to since its last restart, and the weekly restart clears that. The controller can run steps 1–3 for any Spotify preset or alarm, so they work every time.
+
+Still to do: spike 5b (second account). Also check whether an old `activeUser` login keeps playing after its 1-hour token has expired.
 
 **Phase 1: backend.** `SpotifyClient`, the token store, the endpoints above, and unit tests with mocked Web API responses. Done when `/api/spotify/home` returns real data and `/api/spotify/play` starts a playlist on an ST20.
 
