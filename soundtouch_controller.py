@@ -18,13 +18,16 @@ Usage:
 """
 
 import argparse
+import base64
 import concurrent.futures
+import hashlib
 import ipaddress
 import json
 import logging
 import os
 import pathlib
 import re
+import secrets
 import socket
 import struct
 import sys
@@ -36,7 +39,7 @@ import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape, quoteattr
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
-from urllib.parse import parse_qs, urlparse, quote as urlquote
+from urllib.parse import parse_qs, urlparse, urlencode, quote as urlquote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
@@ -222,7 +225,7 @@ class SoundTouchDevice:
             r.raise_for_status()
             snippet = r.text[:400].replace("\n", " ")
             log.debug(f"[SPK GET ] ← {r.status_code}  {snippet}")
-            return ET.fromstring(r.text)
+            return ET.fromstring(r.content)   # bytes: requests would guess Latin-1 ("PeÃ±a")
         except Exception as e:
             log.warning(f"[SPK GET ] {url} → ERROR: {e}")
             return None
@@ -680,11 +683,22 @@ class SoundTouchDevice:
     def play_preset(self, n):
         """Play preset n the way that actually starts audio. UPNP presets (our
         DLNA radio stations): a key press only loads the ContentItem and the
-        speaker waits for an AVTransport Play, so send that directly. Anything
-        else: the preset key."""
+        speaker waits for an AVTransport Play, so send that directly. Spotify
+        presets go through the controller's Spotify login (see SpotifyClient).
+        Anything else: the preset key."""
+        self.invalidate_preset_cache()   # presets can be changed on the speaker itself
         p = next((x for x in self.get_presets_detail() if x.get("id") == str(n)), None)
         if p and p.get("source") == "UPNP" and p.get("location", ""):
             return self.play_via_avt(p["location"])
+        # Spotify presets only play while the speaker holds a Spotify login,
+        # which a restart clears — so log it in and start via the Web API.
+        uri = spotify_uri_from_location(p.get("location")) if p and p.get("source") == "SPOTIFY" else None
+        if uri and SPOTIFY and SPOTIFY.store.get(p.get("account", "")):
+            try:
+                SPOTIFY.play(uri, [self], p["account"])
+                return True
+            except Exception as e:
+                log.warning(f"[SPOTIFY] preset {n} on {self.host} via Web API failed ({e}); pressing the key")
         self.preset(n)
         return True
 
@@ -2455,6 +2469,10 @@ class Handler(BaseHTTPRequestHandler):
                 log.info(f"[PRESET] saved '{item['name']}' ({item['source']}) to slot {slot}: {results}")
                 self._json({"ok": True, "name": item["name"], "slot": int(slot), "results": results})
 
+        # ── Spotify (see the Spotify section above) ───────────────────────────
+        elif path.startswith("/api/spotify/"):
+            self._spotify(path[len("/api/spotify/"):], qs)
+
         # ── reboot ────────────────────────────────────────────────────────────
         elif path == "/api/reboot":
             dev = self.server_state.get_device(qs.get("host",[None])[0])
@@ -2879,6 +2897,47 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
 
+    def _spotify(self, action, qs):
+        """GET /api/spotify/<action>. Errors come back as {ok: false, error}
+        with a message fit for a toast; tokens never leave the controller."""
+        sp  = self.server_state.spotify
+        arg = lambda k, d="": qs.get(k, [d])[0]
+        try:
+            if action == "accounts":
+                self._json({"ok": True, "client_id_set": bool(sp.store.client_id()),
+                            "accounts": sp.store.accounts(),
+                            "speakers": [{"host": d.host, "name": d.name,
+                                          "accounts": [s["sourceAccount"] for s in d.get_sources()
+                                                       if s["source"] == "SPOTIFY" and s["status"] == "READY"]}
+                                         for d in self.server_state.devices]})
+            elif action == "login":
+                self._json({"ok": True, "url": sp.login_url()})
+            elif action == "link":
+                self._json({"ok": True, "account": sp.link(arg("url"))})
+            elif action == "unlink":
+                sp.store.remove(arg("account")); self._json({"ok": True})
+            elif action == "home":
+                self._json({"ok": True, **sp.home(arg("account") or None)})
+            elif action == "search":
+                q = arg("q").strip()
+                self._json({"ok": True, **(sp.search(q, arg("type"), arg("account") or None) if q else {})})
+            elif action == "item":
+                self._json({"ok": True, **sp.item(arg("uri"), arg("account") or None)})
+            elif action == "play":
+                hosts = [h for h in arg("hosts", arg("host")).split(",") if h]
+                devs  = [d for d in (self.server_state.get_device(h) for h in hosts) if d]
+                if len(devs) != len(hosts):
+                    raise SpotifyError("Speaker not found — try Discover Speakers")
+                names = sp.play(arg("uri"), devs, arg("account") or None, arg("offset") or None)
+                self._json({"ok": True, "playing_on": names})
+            else:
+                self._json({"ok": False, "error": "unknown Spotify action"})
+        except SpotifyError as e:
+            self._json({"ok": False, "error": str(e)})
+        except requests.RequestException as e:
+            log.warning(f"[SPOTIFY] {action}: {e}")
+            self._json({"ok": False, "error": "Couldn't reach Spotify or the speaker"})
+
     def _json(self, obj):
         payload = json.dumps(obj)
         p = urlparse(self.path).path
@@ -2914,6 +2973,555 @@ class Handler(BaseHTTPRequestHandler):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Spotify — browse via the Web API, play by logging the speaker in
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# A speaker can only play Spotify while its Connect ZeroConf endpoint (port
+# 8200) reports an activeUser. That login normally comes from a phone casting
+# to it, and a restart clears it, while /sources keeps claiming "READY". So
+# before playing, the controller pushes a fresh login itself (ZeroConf addUser
+# with the account's access token). The speaker then appears in that account's
+# Connect device list and the Web API starts playback on it. The same steps
+# work for any linked account (both halves of a Spotify Duo).
+#
+# Login is OAuth PKCE with a paste-back: Spotify only accepts https or
+# loopback redirect URIs, so it sends the phone to http://127.0.0.1:8888/…
+# (which doesn't load) and the user pastes that address back into the app.
+
+SPOTIFY_DIR      = DATA_DIR / "spotify"
+SPOTIFY_REDIRECT = "http://127.0.0.1:8888/api/spotify/callback"
+SPOTIFY_SCOPES   = ("playlist-read-private user-library-read user-read-recently-played "
+                    "user-read-private streaming user-read-playback-state user-modify-playback-state")
+SPOTIFY_LOGIN_MAX_AGE = 45 * 60   # re-push a speaker login before its 1 h token can lapse
+SPOTIFY = None                    # the AppState's SpotifyClient (play_preset uses it)
+
+
+class SpotifyError(Exception):
+    """A Spotify call failed; the message is safe to show the user."""
+
+
+def spotify_location(uri):
+    """spotify:playlist:abc → the ContentItem location SoundTouch presets use."""
+    return "/playback/container/" + base64.b64encode(uri.encode()).decode()
+
+
+def spotify_uri_from_location(location):
+    """Inverse of spotify_location(); None if it isn't one."""
+    pfx = "/playback/container/"
+    if not location or not location.startswith(pfx):
+        return None
+    try:
+        uri = base64.b64decode(location[len(pfx):]).decode()
+    except Exception:
+        return None
+    return uri if uri.startswith("spotify:") else None
+
+
+def _write_private(path, obj):
+    """Atomic JSON write readable only by this user (tokens live here)."""
+    path = pathlib.Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(obj, indent=2))
+    os.replace(tmp, path)
+
+
+class SpotifyAccountStore:
+    """Linked Spotify accounts, one file each: data/spotify/<user_id>.json.
+    The app's Client ID comes from $SPOTIFY_CLIENT_ID or data/spotify/app.json
+    (PKCE — there is no client secret)."""
+
+    def __init__(self, directory=SPOTIFY_DIR):
+        self._dir  = pathlib.Path(directory)
+        self._lock = threading.Lock()
+
+    def client_id(self):
+        cid = os.environ.get("SPOTIFY_CLIENT_ID", "").strip()
+        if cid:
+            return cid
+        try: return json.loads((self._dir / "app.json").read_text()).get("client_id", "")
+        except Exception: return ""
+
+    def _path(self, user_id):
+        if not re.fullmatch(r"[\w.\-]+", user_id or ""):
+            raise SpotifyError("bad account id")
+        return self._dir / f"{user_id}.json"
+
+    def accounts(self):
+        out = []
+        for p in sorted(self._dir.glob("*.json")) if self._dir.exists() else []:
+            if p.stem in ("app", "pending"):
+                continue
+            try: rec = json.loads(p.read_text())
+            except Exception: continue
+            out.append({"user_id": rec["user_id"], "display_name": rec.get("display_name") or rec["user_id"],
+                        "product": rec.get("product", ""), "image": rec.get("image", "")})
+        return out
+
+    def get(self, user_id):
+        try: return json.loads(self._path(user_id).read_text())
+        except FileNotFoundError: return None
+
+    def save(self, rec):
+        with self._lock:
+            _write_private(self._path(rec["user_id"]), rec)
+
+    def remove(self, user_id):
+        with self._lock:
+            try: self._path(user_id).unlink()
+            except FileNotFoundError: pass
+
+
+class SpotifyClient:
+    """Web API access for linked accounts, plus "play this on that speaker"."""
+
+    API  = "https://api.spotify.com/v1"
+    AUTH = "https://accounts.spotify.com"
+
+    def __init__(self, store, get_devices=None):
+        self.store        = store
+        self._get_devices = get_devices or (lambda: [])   # → list of SoundTouchDevice
+        self._http        = requests.Session()
+        self._pending     = {}    # login state → (code_verifier, created)
+        self._cache       = {}    # (user_id, path) → (expires, data)
+        self._pushed      = {}    # (host, user_id) → monotonic time of last addUser
+        self._lock        = threading.Lock()
+
+    # ── accounts / login ──────────────────────────────────────────────────────
+    def default_account(self):
+        accts = self.store.accounts()
+        return accts[0]["user_id"] if accts else None
+
+    def account_for(self, user_id):
+        uid = user_id or self.default_account()
+        if not uid or not self.store.get(uid):
+            raise SpotifyError("No Spotify account linked — link one in Settings → Spotify")
+        return uid
+
+    def login_url(self):
+        cid = self.store.client_id()
+        if not cid:
+            raise SpotifyError("No Spotify Client ID configured")
+        verifier  = secrets.token_urlsafe(64)[:96]
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+        state     = secrets.token_urlsafe(16)
+        now = time.monotonic()
+        with self._lock:
+            self._pending = {s: v for s, v in self._pending.items() if now - v[1] < 900}
+            self._pending[state] = (verifier, now)
+        q = {"client_id": cid, "response_type": "code", "redirect_uri": SPOTIFY_REDIRECT,
+             "code_challenge_method": "S256", "code_challenge": challenge, "state": state,
+             "scope": SPOTIFY_SCOPES, "show_dialog": "true"}
+        return f"{self.AUTH}/authorize?" + urlencode(q)
+
+    def link(self, pasted_url):
+        """Finish a login from the pasted callback address. Returns the account."""
+        qs = parse_qs(urlparse((pasted_url or "").strip()).query)
+        if qs.get("error"):
+            raise SpotifyError(f"Spotify said: {qs['error'][0]}")
+        code, state = qs.get("code", [""])[0], qs.get("state", [""])[0]
+        with self._lock:
+            pend = self._pending.pop(state, None)
+        if not code or not pend:
+            raise SpotifyError("That address doesn't match a login started here — start the login again")
+        r = self._http.post(f"{self.AUTH}/api/token", timeout=15, data={
+            "grant_type": "authorization_code", "code": code, "redirect_uri": SPOTIFY_REDIRECT,
+            "client_id": self.store.client_id(), "code_verifier": pend[0]})
+        if r.status_code != 200:
+            raise SpotifyError("Spotify rejected the login — it may have expired, try again")
+        tok = r.json()
+        me = self._http.get(f"{self.API}/me", timeout=15,
+                            headers={"Authorization": "Bearer " + tok["access_token"]}).json()
+        rec = {"user_id": me["id"], "display_name": me.get("display_name") or me["id"],
+               "product": me.get("product", ""), "image": _sp_image(me.get("images")),
+               "refresh_token": tok["refresh_token"], "access_token": tok["access_token"],
+               "expires_at": time.time() + tok.get("expires_in", 3600), "scope": tok.get("scope", "")}
+        self.store.save(rec)
+        log.info(f"[SPOTIFY] linked account {rec['user_id']} ({rec['product']})")
+        return {k: rec[k] for k in ("user_id", "display_name", "product", "image")}
+
+    def token(self, user_id, force=False):
+        rec = self.store.get(user_id)
+        if not rec:
+            raise SpotifyError("Spotify account not linked")
+        if force or time.time() > rec.get("expires_at", 0) - 60:
+            r = self._http.post(f"{self.AUTH}/api/token", timeout=15, data={
+                "grant_type": "refresh_token", "refresh_token": rec["refresh_token"],
+                "client_id": self.store.client_id()})
+            if r.status_code != 200:
+                log.warning(f"[SPOTIFY] token refresh for {user_id} failed: {r.status_code}")
+                raise SpotifyError("Spotify login has expired — link the account again in Settings")
+            t = r.json()
+            rec["access_token"], rec["expires_at"] = t["access_token"], time.time() + t.get("expires_in", 3600)
+            if t.get("refresh_token"):
+                rec["refresh_token"] = t["refresh_token"]
+            self.store.save(rec)
+        return rec["access_token"]
+
+    # ── Web API ───────────────────────────────────────────────────────────────
+    def api(self, user_id, path, method="GET", params=None, body=None, cache=0):
+        key = (user_id, method, path, json.dumps(params, sort_keys=True))
+        if cache and method == "GET":
+            hit = self._cache.get(key)
+            if hit and hit[0] > time.monotonic():
+                return hit[1]
+        r = None
+        for attempt in range(3):
+            force = r is not None and r.status_code == 401     # token rejected → refresh once
+            r = self._http.request(method, self.API + path, params=params, json=body, timeout=15,
+                                   headers={"Authorization": "Bearer " + self.token(user_id, force=force)})
+            if r.status_code == 429 and attempt < 2:
+                time.sleep(min(float(r.headers.get("Retry-After", 1)), 5))
+                continue
+            if r.status_code == 401 and attempt == 0:
+                continue
+            break
+        if r.status_code >= 400:
+            log.debug(f"[SPOTIFY] {method} {path} → {r.status_code} {r.text[:200]}")
+            raise SpotifyError(f"Spotify {r.status_code} for {path.split('?')[0]}")
+        data = r.json() if r.content and "json" in r.headers.get("content-type", "") else {}
+        if cache and method == "GET":
+            self._cache[key] = (time.monotonic() + cache, data)
+        return data
+
+    def oembed(self, uri):
+        """Title + cover for any public Spotify URI, no auth. The Web API won't
+        read Spotify-made playlists (Discover Weekly, mixes) for new apps; this
+        still names them."""
+        key = ("-", "oembed", uri, "")
+        hit = self._cache.get(key)
+        if hit and hit[0] > time.monotonic():
+            return hit[1]
+        out = {}
+        try:
+            r = self._http.get("https://open.spotify.com/oembed", timeout=8,
+                               params={"url": f"https://open.spotify.com/{uri.split(':')[1]}/{uri.split(':')[-1]}"})
+            if r.ok:
+                j = r.json(); out = {"name": j.get("title", ""), "image": j.get("thumbnail_url", "")}
+        except Exception:
+            pass
+        self._cache[key] = (time.monotonic() + 86400, out)
+        return out
+
+    # ── browse ────────────────────────────────────────────────────────────────
+    def playlists(self, uid):
+        out, offset = [], 0
+        while offset < 1000:
+            page = self.api(uid, "/me/playlists", params={"limit": 50, "offset": offset}, cache=300)
+            out += [_sp_card(p) for p in page.get("items", []) if p]
+            if not page.get("next"):
+                break
+            offset += 50
+        return out
+
+    def home(self, user_id=None):
+        uid = self.account_for(user_id)
+        playlists = self.playlists(uid)
+        by_uri = {p["uri"]: p for p in playlists}
+        recent, seen = [], set()
+        hist = self.api(uid, "/me/player/recently-played", params={"limit": 50}, cache=60)
+        for it in hist.get("items", []):
+            ctx = (it.get("context") or {}).get("uri")
+            if not ctx or ctx in seen:
+                continue
+            seen.add(ctx)
+            card = self._context_card(uid, ctx, by_uri)
+            if card:
+                recent.append(card)
+            if len(recent) >= 10:
+                break
+        albums = [_sp_card(a.get("album")) for a in
+                  self.api(uid, "/me/albums", params={"limit": 30}, cache=300).get("items", []) if a.get("album")]
+        liked_total = self.api(uid, "/me/tracks", params={"limit": 1}, cache=300).get("total", 0)
+        return {"account": uid, "recent": recent, "playlists": playlists, "albums": albums,
+                "liked": {"type": "collection", "uri": f"spotify:user:{uid}:collection",
+                          "name": "Liked Songs", "sub": f"{liked_total} songs", "image": ""}}
+
+    def _context_card(self, uid, uri, playlists_by_uri):
+        if uri in playlists_by_uri:
+            return playlists_by_uri[uri]
+        kind, sid = uri.split(":")[1], uri.split(":")[-1]
+        if uri.endswith(":collection"):
+            return {"type": "collection", "uri": uri, "name": "Liked Songs", "sub": "Your library", "image": ""}
+        try:
+            if kind in ("album", "artist", "playlist"):
+                return _sp_card(self.api(uid, f"/{kind}s/{sid}", cache=3600))
+        except SpotifyError:
+            pass
+        meta = self.oembed(uri)   # Spotify-made playlists: Web API 404s them
+        return {"type": kind, "uri": uri, "name": meta.get("name") or "Spotify mix",
+                "sub": "Made by Spotify", "image": meta.get("image", ""), "readonly": True} if meta else None
+
+    def search(self, q, kind="", user_id=None):
+        uid = self.account_for(user_id)
+        types = kind if kind in ("track", "album", "artist", "playlist") else "track,album,artist,playlist"
+        res = self.api(uid, "/search", params={"q": q, "type": types, "limit": 10}, cache=120)
+        out = {}
+        for key in ("artists", "albums", "tracks", "playlists"):
+            items = (res.get(key) or {}).get("items") or []
+            out[key] = [_sp_card(i) for i in items if i]   # Spotify returns nulls for filtered playlists
+        return out
+
+    def item(self, uri, user_id=None):
+        """Detail page: card + tracks (+ albums for an artist)."""
+        uid = self.account_for(user_id)
+        parts = uri.split(":")
+        kind, sid = parts[1], parts[-1]
+        if uri.endswith(":collection"):
+            page = self.api(uid, "/me/tracks", params={"limit": 50}, cache=120)
+            tracks = [_sp_track(i.get("track") or i.get("item"), n) for n, i in enumerate(page.get("items", []))]
+            return {"card": {"type": "collection", "uri": uri, "name": "Liked Songs",
+                             "sub": f"{page.get('total', len(tracks))} songs", "image": ""}, "tracks": tracks}
+        if kind == "album":
+            a = self.api(uid, f"/albums/{sid}", cache=3600)
+            tracks = [_sp_track({**t, "album": a}, n) for n, t in enumerate((a.get("tracks") or {}).get("items", []))]
+            return {"card": _sp_card(a), "tracks": tracks}
+        if kind == "artist":
+            a = self.api(uid, f"/artists/{sid}", cache=3600)
+            albums = self.api(uid, f"/artists/{sid}/albums",
+                              params={"include_groups": "album,single", "limit": 10}, cache=3600)  # Feb 2026: max 10
+            out = {"card": _sp_card(a), "tracks": [], "albums": [_sp_card(x) for x in albums.get("items", []) if x]}
+            try:
+                top = self.api(uid, f"/artists/{sid}/top-tracks", params={"market": "from_token"}, cache=3600)
+                out["tracks"] = [_sp_track(t, n) for n, t in enumerate(top.get("tracks", []))]
+            except SpotifyError:
+                pass   # 403 for development-mode apps since Feb 2026 — albums still work
+            return out
+        if kind == "playlist":
+            try:
+                p = self.api(uid, f"/playlists/{sid}", cache=300)
+            except SpotifyError:
+                meta = self.oembed(uri)   # Spotify-made: playable, but no track list
+                return {"card": {"type": "playlist", "uri": uri, "name": meta.get("name") or "Spotify mix",
+                                 "sub": "Made by Spotify", "image": meta.get("image", ""), "readonly": True},
+                        "tracks": []}
+            items = self.api(uid, f"/playlists/{sid}/items", params={"limit": 100}, cache=300)
+            tracks = [_sp_track(i.get("track") or i.get("item"), n) for n, i in enumerate(items.get("items", []))]
+            return {"card": _sp_card(p), "tracks": [t for t in tracks if t]}
+        if kind == "track":
+            t = self.api(uid, f"/tracks/{sid}", cache=3600)
+            return {"card": _sp_card(t), "tracks": [_sp_track(t, 0)]}
+        raise SpotifyError("Unsupported Spotify link")
+
+    # ── play ──────────────────────────────────────────────────────────────────
+    def ensure_login(self, dev, user_id, force=False):
+        """Make sure the speaker's Spotify is logged in as user_id (ZeroConf
+        addUser). Re-pushed when it's someone else, nobody, or getting old."""
+        base = f"http://{dev.host}:8200/zc"
+        info = self._http.get(base, params={"action": "getInfo"}, timeout=5).json()
+        fresh = time.monotonic() - self._pushed.get((dev.host, user_id), -1e9) < SPOTIFY_LOGIN_MAX_AGE
+        if not force and info.get("activeUser") == user_id and fresh:
+            return False
+        r = self._http.post(base, timeout=10, data={
+            "action": "addUser", "userName": user_id, "blob": self.token(user_id),
+            "clientKey": info.get("clientID", ""), "tokenType": info.get("tokenType", "accesstoken")})
+        ok = r.ok and r.json().get("status") == 101
+        if not ok:
+            raise SpotifyError(f"{dev.name} wouldn't accept the Spotify login")
+        self._pushed[(dev.host, user_id)] = time.monotonic()
+        log.info(f"[SPOTIFY] logged {dev.name} in as {user_id}")
+        return True
+
+    def _device_id(self, uid, dev, wait=10, active=False):
+        """The speaker's Connect device id in this account's device list. Just
+        after a login push the old listing can linger (play → 404), so callers
+        that just logged in ask for it to be listed as active."""
+        deadline = time.monotonic() + wait
+        while True:
+            devices = self.api(uid, "/me/player/devices").get("devices", [])
+            hit = next((d for d in devices if d.get("name", "").strip().lower() == dev.name.strip().lower()
+                        and (d.get("is_active") or not active)), None)
+            if hit or time.monotonic() > deadline:
+                return hit["id"] if hit else None
+            time.sleep(1.5)
+
+    def _play_body(self, uid, uri, offset=None):
+        """Web API play body. Liked Songs has no context URI, so it's sent as a
+        track list; a single song plays inside its album when we know it."""
+        if uri.endswith(":collection"):
+            page = self.api(uid, "/me/tracks", params={"limit": 50})
+            uris = [(i.get("track") or i.get("item") or {}).get("uri") for i in page.get("items", [])]
+            body = {"uris": [u for u in uris if u]}
+        elif uri.startswith("spotify:track:"):
+            body = {"uris": [uri]}
+        else:
+            body = {"context_uri": uri}
+        if offset not in (None, ""):
+            body["offset"] = {"position": int(offset)} if str(offset).isdigit() else {"uri": offset}
+        return body
+
+    def play(self, uri, devices, user_id=None, offset=None):
+        """Play `uri` on one speaker, or several in sync (grouped under the
+        first). Returns the speaker names it's playing on."""
+        uid = self.account_for(user_id)
+        if not devices:
+            raise SpotifyError("No speaker chosen")
+        master, slaves = devices[0], list(devices[1:])
+        if slaves:
+            master.set_zone(slaves)
+            master.invalidate_zone_cache()
+        body = self._play_body(uid, uri, offset)
+        # 1 wake, 2 log in (only if needed), 3 play, 4 confirm. A second login
+        # push resets the speaker's Spotify session, so it's the last resort.
+        self._wake(master, uid)
+        pushed = self.ensure_login(master, uid)
+        # After a fresh login, prefer the listing once it's active (the old one
+        # can linger and 404) but don't wait long — "active" often only flips
+        # once playback starts, and the retries below cover a 404.
+        dev_id = (self._device_id(uid, master, wait=4, active=True) if pushed else None) \
+            or self._device_id(uid, master, wait=6)
+        for attempt in (1, 2, 3):
+            if not dev_id:
+                dev_id = self._device_id(uid, master, wait=12)
+            if not dev_id and attempt < 3:
+                continue
+            if not dev_id:
+                raise SpotifyError(f"{master.name} didn't appear in Spotify — try again in a moment")
+            try:
+                self.api(uid, "/me/player/play", "PUT", params={"device_id": dev_id}, body=body)
+            except SpotifyError:
+                if attempt == 3:
+                    raise
+                if attempt == 2:          # still not found: fresh login, then wait for it
+                    self.ensure_login(master, uid, force=True)
+                    self._wake(master, uid)
+                    dev_id = self._device_id(uid, master, wait=12, active=True)
+                else:
+                    time.sleep(2)
+                    dev_id = self._device_id(uid, master, wait=8)
+                continue
+            if self._started(master, body):
+                break
+            log.info(f"[SPOTIFY] {master.name} accepted play but didn't start (attempt {attempt})")
+            if attempt == 3:
+                raise SpotifyError(f"{master.name} didn't start playing — try again")
+        log.info(f"[SPOTIFY] playing {uri} on {[d.name for d in devices]} as {uid}")
+        return [d.name for d in devices]
+
+    @staticmethod
+    def _source(dev):
+        np = dev._get("/now_playing") if hasattr(dev, "_get") else None
+        return (np.get("source"), np.get("playStatus") or np.findtext("playStatus") or "") if np is not None else (None, "")
+
+    def _wake(self, dev, uid):
+        """A speaker in standby is still listed in Spotify, but a Web API play
+        is accepted and then ignored. Wake it onto its Spotify input first
+        (not POWER, which would resume radio at full whack)."""
+        if self._source(dev)[0] != "STANDBY":
+            return
+        dev.select_source("SPOTIFY", uid)
+        for _ in range(12):
+            time.sleep(0.75)
+            if self._source(dev)[0] not in ("STANDBY", None):
+                return
+
+    def _started(self, dev, body, wait=8):
+        """True once the speaker is playing *what we asked for*. Just "Spotify
+        is playing" isn't enough: waking a speaker resumes its last Spotify
+        context, which would pass for success. Contexts are matched on the
+        ContentItem location (base64 of the context URI), track lists on
+        the current trackID."""
+        if not hasattr(dev, "_get"):
+            return True
+        want_ctx, want_tracks = body.get("context_uri"), set(body.get("uris") or [])
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            time.sleep(1)
+            np = dev._get("/now_playing")
+            if np is None or np.get("source") != "SPOTIFY":
+                continue
+            if (np.get("playStatus") or np.findtext("playStatus") or "") not in ("PLAY_STATE", "BUFFERING_STATE"):
+                continue
+            ci = np.find("ContentItem")
+            ctx = spotify_uri_from_location(ci.get("location") if ci is not None else "")
+            if want_ctx and ctx == want_ctx:
+                return True
+            if want_tracks and np.findtext("trackID") in want_tracks:
+                return True
+        return False
+
+    def keep_speakers_logged_in(self):
+        """Background (every few minutes): keep each speaker's Spotify login
+        fresh so a tap plays in ~2 s instead of waiting ~10 s for a login push.
+
+        Only the account the speaker is linked to (per /sources) is pushed, and
+        only when the speaker has no login, or has that same login and our last
+        push is getting old. A speaker logged in as someone else (e.g. the other
+        Duo account casting from a phone) is never touched, and neither is one
+        that's playing Spotify — a push resets its Spotify session."""
+        linked = {a["user_id"] for a in self.store.accounts()}
+        if not linked:
+            return
+        for dev in self._get_devices():
+            try:
+                acct = next((s["sourceAccount"] for s in dev.get_sources()
+                             if s["source"] == "SPOTIFY" and s["sourceAccount"] in linked), None)
+                if not acct:
+                    continue
+                info = self._http.get(f"http://{dev.host}:8200/zc", params={"action": "getInfo"}, timeout=5).json()
+                user = info.get("activeUser", "")
+                if user not in ("", acct):
+                    continue
+                age = time.monotonic() - self._pushed.get((dev.host, acct), -1e9)
+                if user == acct and age < SPOTIFY_LOGIN_MAX_AGE - 10 * 60:
+                    continue
+                src, status = self._source(dev)
+                if src == "SPOTIFY" and status in ("PLAY_STATE", "BUFFERING_STATE"):
+                    continue
+                self.ensure_login(dev, acct, force=True)
+            except Exception as e:
+                log.debug(f"[SPOTIFY] keep-login {dev.host}: {e}")
+
+def _sp_image(images):
+    """A ~300px image URL from a Spotify images list."""
+    imgs = [i for i in (images or []) if i and i.get("url")]
+    if not imgs:
+        return ""
+    mid = [i for i in imgs if (i.get("width") or 0) and 200 <= i["width"] <= 400]
+    return (mid or imgs)[0]["url"]
+
+
+def _sp_card(o):
+    """Compact UI card for a playlist / album / artist / track object."""
+    if not o:
+        return None
+    kind = o.get("type", "")
+    card = {"type": kind, "uri": o.get("uri", ""), "name": o.get("name", ""), "sub": "", "image": ""}
+    if kind == "playlist":
+        total = (o.get("items") or o.get("tracks") or {}).get("total")
+        owner = (o.get("owner") or {})
+        card["image"] = _sp_image(o.get("images"))
+        card["sub"] = " · ".join(x for x in [owner.get("display_name") or owner.get("id"),
+                                             f"{total} songs" if total is not None else ""] if x)
+        if owner.get("id") == "spotify":
+            card["readonly"] = True
+    elif kind == "album":
+        card["image"] = _sp_image(o.get("images"))
+        year = (o.get("release_date") or "")[:4]
+        card["sub"] = " · ".join(x for x in [", ".join(a["name"] for a in o.get("artists", [])), year] if x)
+    elif kind == "artist":
+        card["image"] = _sp_image(o.get("images"))
+        card["sub"] = "Artist"
+    elif kind == "track":
+        alb = o.get("album") or {}
+        card["image"] = _sp_image(alb.get("images"))
+        card["sub"] = " · ".join(x for x in [", ".join(a["name"] for a in o.get("artists", [])), alb.get("name", "")] if x)
+        card["album_uri"] = alb.get("uri", "")
+    return card
+
+
+def _sp_track(t, position):
+    if not t or not t.get("uri"):
+        return None
+    return {"uri": t["uri"], "name": t.get("name", ""), "position": position,
+            "sub": ", ".join(a["name"] for a in t.get("artists", [])),
+            "duration_ms": t.get("duration_ms", 0), "album_uri": (t.get("album") or {}).get("uri", "")}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # App state
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2946,6 +3554,19 @@ class AppState:
         self.reboot_status    = {}  # deviceID → {state, host, name} after reboot_device()
         self.maintenance_store = MaintenanceStore()
         threading.Thread(target=self._audio_mode_loop, daemon=True).start()
+
+        global SPOTIFY
+        self.spotify = SPOTIFY = SpotifyClient(SpotifyAccountStore(), lambda: list(self.devices))
+        threading.Thread(target=self._spotify_login_loop, daemon=True).start()
+
+    def _spotify_login_loop(self):
+        """Every 5 min, keep speakers' Spotify logins fresh (see
+        SpotifyClient.keep_speakers_logged_in)."""
+        time.sleep(30)
+        while True:
+            try: self.spotify.keep_speakers_logged_in()
+            except Exception as e: log.debug(f"[SPOTIFY] keep-login loop: {e}")
+            time.sleep(300)
 
     def cancel_audio_mode_pending(self, host):
         """Stop enforcing an automatic mode — called when the user sets one by hand."""
