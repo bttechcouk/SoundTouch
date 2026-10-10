@@ -24,16 +24,57 @@
   --fg3:        #353c52;
   --white:      #eef2fc;
   --radius:     14px;
+
+  /* How much of the bottom safe area the nav reserves.                     */
+  /* env(safe-area-inset-bottom) is 34px on Face ID iPhones. That inset is  */
+  /* the *home indicator*, not the Safari address bar — it applies in       */
+  /* standalone home-screen mode too, which is why the band doesn't go away */
+  /* when launched from the home screen. Honouring all 34px leaves a dead   */
+  /* strip under the tabs, so we keep half: enough that buttons don't sit   */
+  /* under the indicator's swipe area, without the wasted space.            */
+  /* Fully flush: set to 0px.  Apple-default: env(safe-area-inset-bottom).  */
+  --nav-safe: calc(env(safe-area-inset-bottom, 0px) / 2);
 }
 html,body{height:100%;background:var(--bg);color:var(--fg);
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
   -webkit-font-smoothing:antialiased;overscroll-behavior:none}
 
 /* ── Layout ──────────────────────────────────────────────── */
-#app{max-width:440px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column;position:relative}
+/* Fixed viewport height (not min-height) so the Player page can size itself   */
+/* to the screen instead of growing past it. Long pages scroll inside .page.   */
+/* Height ladder, worst to best:                                               */
+/*   100vh  — ignores browser chrome, wrong on iOS but universally supported   */
+/*   100dvh — tracks Safari's collapsing toolbar (iOS 15.4+)                   */
+/*   --vh   — measured from visualViewport by syncViewportChrome(), exact      */
+/* Bottom padding is the *measured* nav height (--nav-h), so it's correct on   */
+/* every device — notch, home indicator, Dynamic Island or none — instead of   */
+/* a hardcoded guess that only suits one screen.                               */
+#app{max-width:440px;margin:0 auto;height:100vh;height:100dvh;
+  display:flex;flex-direction:column;
+  position:relative;z-index:1;
+  padding-bottom:var(--nav-h,calc(82px + var(--nav-safe)))}
+#app.has-vv{height:var(--vh)}
+
+/* ── Full-bleed living background ─────────────────────────── */
+/* Two crossfading layers of the current album art, blurred and slowly  */
+/* drifting, behind a darkening veil so the foreground stays readable.   */
+#bg-stage{position:fixed;inset:0;z-index:0;overflow:hidden;background:var(--bg)}
+.bg-art{position:absolute;inset:-12%;background-size:cover;background-position:center;
+  filter:blur(64px) saturate(1.5) brightness(.9);opacity:0;transform:scale(1.12);
+  transition:opacity 1.3s ease;will-change:opacity,transform;pointer-events:none}
+.bg-art.show{opacity:.55;animation:bg-drift 38s ease-in-out infinite alternate}
+@keyframes bg-drift{
+  0%  {transform:scale(1.12) translate(0,0)}
+  50% {transform:scale(1.22) translate(-3%,-2%)}
+  100%{transform:scale(1.15) translate(3%,2%)}}
+#bg-veil{position:absolute;inset:0;pointer-events:none;
+  background:
+    radial-gradient(ellipse at 50% 22%, rgba(11,12,17,.30), rgba(11,12,17,.80) 72%),
+    linear-gradient(to bottom, rgba(11,12,17,.55) 0%, rgba(11,12,17,.78) 55%, rgba(11,12,17,.94) 100%)}
 
 /* ── Header ──────────────────────────────────────────────── */
-header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space-between}
+header{padding:calc(16px + env(safe-area-inset-top,0px)) 20px 0;
+  display:flex;align-items:center;justify-content:space-between}
 .logo{font-size:12px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;
   display:flex;align-items:center;gap:8px}
 .logo-stripe{width:28px;height:3px;
@@ -66,41 +107,107 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 .qr-chevron.open{transform:rotate(180deg)}
 .qr-body{padding:14px 4px 4px}
 
-/* ── Tabs ────────────────────────────────────────────────── */
-#tabs{display:flex;border-bottom:1px solid var(--border);margin:12px 20px 0;gap:0}
-.tab{flex:1;text-align:center;padding:9px 0;font-size:12px;font-weight:600;
-  letter-spacing:.08em;color:var(--fg3);text-transform:uppercase;cursor:pointer;
-  border-bottom:2px solid transparent;transition:all .15s}
-.tab.active{color:var(--blue-light);border-color:var(--blue)}
+/* ── Bottom tab bar ──────────────────────────────────────── */
+/* Fixed frosted-glass nav, thumb-reachable; a single pill indicator */
+/* glides between tabs (positioned by translateX from switchTab).    */
+#tabs{position:fixed;bottom:0;left:50%;transform:translateX(-50%);
+  width:100%;max-width:440px;display:flex;gap:0;z-index:80;
+  background:rgba(13,15,22,.78);
+  backdrop-filter:blur(20px) saturate(1.3);-webkit-backdrop-filter:blur(20px) saturate(1.3);
+  border-top:1px solid var(--border);
+  padding:8px 10px calc(8px + var(--nav-safe))}
+.tab{flex:1;position:relative;z-index:1;display:flex;flex-direction:column;
+  align-items:center;gap:3px;padding:7px 0 5px;font-size:9.5px;font-weight:700;
+  letter-spacing:.07em;color:var(--fg2);text-transform:uppercase;cursor:pointer;
+  border-radius:12px;transition:color .2s;user-select:none}
+.tab svg{display:block}
+.tab.active{color:var(--blue-light)}
+#tab-indicator{position:absolute;top:8px;left:10px;height:calc(100% - 16px - var(--nav-safe));
+  width:calc((100% - 20px)/4);border-radius:12px;
+  background:rgba(34,119,238,.13);box-shadow:inset 0 0 0 1px rgba(34,119,238,.22);
+  transition:transform .3s cubic-bezier(.3,.7,.3,1.1)}
 
 /* ── Speaker chips ───────────────────────────────────────── */
-#rooms-section{padding:12px 20px 0}
+#rooms-section{padding:12px 20px 0;position:relative;display:flex;gap:10px}
+/* Raised above the dropdown only while it's open, so the list slides out
+   from under the bar — but the Presets panel still covers it normally. */
+#rooms-section.open,#rooms-section.src-open{z-index:51}
 .section-label{font-size:10px;font-weight:700;letter-spacing:.12em;
   color:var(--fg3);text-transform:uppercase;margin-bottom:8px}
-#rooms-list{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
-.room-chip{background:var(--surface);border:1.5px solid var(--border);
-  border-radius:20px;padding:6px 14px;font-size:13px;cursor:pointer;
-  display:flex;align-items:center;gap:7px;transition:all .18s;
-  min-width:0;overflow:hidden;color:var(--fg2)}
-.room-chip .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.room-chip .dot{width:6px;height:6px;border-radius:50%;background:var(--fg3);flex-shrink:0}
-.room-chip.active{border-color:var(--blue);color:var(--blue-light);
-  background:linear-gradient(135deg,var(--surface2),var(--surface))}
-.room-chip.active .dot{background:var(--blue-light);box-shadow:0 0 6px var(--blue-glow)}
-.room-chip.playing .dot{background:var(--blue-light);
+
+/* Picker bar — mirrors the active speaker's row (dot / EQ / offline) */
+#spk-current,#src-current{flex:1 1 0;min-width:0;display:flex;align-items:center;gap:8px;
+  background:var(--surface);border:1.5px solid var(--border);border-radius:16px;
+  padding:8px 14px;color:var(--fg);cursor:pointer;text-align:left;font:inherit;
+  transition:border-color .18s,background .18s}
+#spk-current:active,#rooms-section.open #spk-current,
+#src-current:active,#rooms-section.src-open #src-current{border-color:var(--blue);background:var(--surface2)}
+.spk-text{display:flex;flex-direction:column;min-width:0;flex:1}
+#spk-name,#src-name{font-size:14px;font-weight:600;color:var(--white);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#spk-sub,#src-sub{font-size:11px;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#spk-sub:empty{display:none}
+#spk-others{font-size:10px;font-weight:700;letter-spacing:.05em;color:var(--blue-light);
+  background:rgba(34,119,238,.12);border:1px solid var(--blue-dim);
+  padding:2px 6px;border-radius:10px;white-space:nowrap;flex-shrink:0}
+#spk-others:empty{display:none}
+#spk-current .arrow,#src-current .arrow{font-size:9px;color:var(--fg2);transition:transform .2s;flex-shrink:0}
+#rooms-section.open #spk-current .arrow,#rooms-section.src-open #src-current .arrow{transform:rotate(180deg)}
+#src-current{justify-content:flex-end;text-align:right}
+#src-current .spk-text{align-items:flex-end}
+#src-current.unknown #src-name{color:var(--fg2);font-weight:500}
+#spk-current.offline{opacity:.55;border-style:dashed}
+
+/* Dropdown — same slide-down mechanics as the Presets panel */
+/* Each list drops from under its own bar: speakers on the left, sources on the right */
+#speakers-clip,#sources-clip{position:absolute;z-index:50;width:max(calc(50% - 25px),230px);
+  max-height:0;overflow:hidden;pointer-events:none;transition:max-height .22s ease}
+#speakers-clip{left:20px}
+#sources-clip{right:20px}
+#speakers-clip.open,#sources-clip.open{max-height:70vh;pointer-events:auto}
+#speakers-panel,#sources-panel{background:var(--surface);border:1px solid var(--border);border-top:0;
+  border-radius:0 0 14px 14px;
+  box-shadow:0 8px 32px rgba(0,0,0,.7);
+  transform:translateY(-100%);transition:transform .22s ease}
+#speakers-clip.open #speakers-panel,#sources-clip.open #sources-panel{transform:translateY(0)}
+#speakers-panel-inner,#sources-panel-inner{padding:8px 8px 10px;
+  max-height:70vh;overflow-y:auto;overscroll-behavior:contain}
+#speakers-backdrop{display:none;position:fixed;inset:0;z-index:49;background:rgba(0,0,0,.35)}
+#speakers-backdrop.open{display:block}
+#rooms-list,#sources-list{display:flex;flex-direction:column;gap:2px}
+#sources-list .src-empty{color:var(--fg3);font-size:13px;padding:10px 12px}
+
+/* Speaker rows (ids chip-<host>; the background poll toggles .playing/.offline) */
+.room-chip{display:flex;align-items:center;gap:10px;padding:11px 12px;
+  border-radius:12px;cursor:pointer;color:var(--fg);min-width:0;
+  border:1px solid transparent;transition:background .15s,border-color .15s}
+.room-chip:active{background:var(--surface2)}
+.room-chip .name{font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.room-chip .model{font-size:11px;color:var(--fg2);white-space:nowrap;margin-left:auto;flex-shrink:0}
+.room-chip .check{width:16px;flex-shrink:0;color:var(--blue-light);font-size:13px;text-align:center}
+.room-chip.active{background:rgba(34,119,238,.10);border-color:var(--blue-dim);color:var(--blue-light)}
+.room-chip.active .name{font-weight:600}
+.room-chip.offline{opacity:.4}
+.room-chip.offline .model::after{content:" · offline"}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--fg3);flex-shrink:0}
+.room-chip.active .dot,#spk-current .dot{background:var(--blue-light);box-shadow:0 0 6px var(--blue-glow)}
+.room-chip.playing .dot,#spk-current.playing .dot{background:var(--blue-light);
   box-shadow:0 0 8px var(--blue-glow);animation:pulse 2s infinite}
-.room-chip.offline{opacity:.4;border-style:dashed}
-.room-chip.offline .dot{background:var(--fg3);animation:none;box-shadow:none}
+.room-chip.offline .dot,#spk-current.offline .dot{background:var(--fg3);animation:none;box-shadow:none}
 @keyframes pulse{0%,100%{box-shadow:0 0 6px var(--blue-glow)}
                  50%{box-shadow:0 0 14px rgba(34,119,238,.1)}}
 #no-speakers{color:var(--fg3);font-size:13px;padding:4px 0}
 
 /* ── Page ────────────────────────────────────────────────── */
-.page{display:none;flex-direction:column;flex:1}
+.page{display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto}
 .page.visible{display:flex}
+/* Player never scrolls — the art absorbs the slack instead (see #art-wrap) */
+#page-player{overflow:hidden}
 
-/* Art — full square */
-#art-wrap{position:relative;width:100%;padding-bottom:100%;margin:12px 0 0;
+/* Art — square when there's room, shrinks to fit when there isn't, so the  */
+/* transport and power controls always stay above the fold.                 */
+#art-wrap{position:relative;width:100%;aspect-ratio:1/1;flex:0 1 auto;min-height:0;
+  margin:12px 0 0;
   background:var(--surface);border-radius:var(--radius);overflow:hidden;
   box-shadow:0 8px 32px rgba(0,0,0,.5),0 0 0 1px var(--border),
              0 1px 0 rgba(34,119,238,.15) inset}
@@ -110,7 +217,7 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   justify-content:center;font-size:52px;opacity:.1;color:var(--blue-light)}
 
 /* Track info */
-#track-info{padding:12px 4px 0;display:flex;align-items:flex-start;
+#track-info{padding:12px 4px 0;flex-shrink:0;display:flex;align-items:flex-start;
   justify-content:space-between;gap:10px}
 #track-text{min-width:0;flex:1}
 #track-name{font-size:18px;font-weight:700;color:var(--white);
@@ -120,28 +227,24 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 
 /* Bass */
 #bass-row{padding:6px 4px 0;display:flex;align-items:center;gap:10px}
-#bass-track{flex:1;position:relative;padding-top:22px}
-#bass-tooltip{position:absolute;top:0;transform:translateX(-50%);
+#bass-track,.eq-track{flex:1;position:relative;padding-top:22px}
+#bass-tooltip,.eq-tooltip{position:absolute;top:0;transform:translateX(-50%);
   background:var(--amber);color:#000;font-size:11px;font-weight:700;
   padding:2px 7px;border-radius:10px;pointer-events:none;
   opacity:0;transition:opacity .2s}
-#bass-tooltip.visible{opacity:1}
-#bass-slider{width:100%;height:4px;-webkit-appearance:none;appearance:none;
-  border-radius:2px;outline:none;cursor:pointer;
-  background:linear-gradient(to right,var(--amber) var(--pct,100%),var(--surface2) var(--pct,100%))}
-#bass-slider::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;
-  border-radius:50%;background:var(--silver);cursor:pointer;
-  box-shadow:0 0 6px rgba(245,158,11,.5)}
-#bass-slider::-moz-range-thumb{width:16px;height:16px;border-radius:50%;
-  background:var(--silver);cursor:pointer;border:none}
+#bass-tooltip.visible,.eq-tooltip.visible{opacity:1}
+#bass-slider,.eq-slider{background:linear-gradient(to right,var(--amber) var(--pct,100%),var(--surface2) var(--pct,100%))}
 .bass-label{font-size:10px;color:var(--fg3);flex-shrink:0;text-transform:uppercase;
   letter-spacing:.06em}
+.eq-head{display:flex;justify-content:space-between;align-items:baseline;margin:16px 0 6px;
+  font-size:12px;color:var(--fg3);font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+.eq-head .eq-val{font-weight:500;text-transform:none;letter-spacing:0;color:var(--fg2)}
 
 /* Chip backup warning */
 .chip-warn{font-size:9px;color:var(--amber);flex-shrink:0;margin-left:1px}
 
 /* Volume */
-#vol-row{padding:12px 4px 0;display:flex;align-items:center;gap:10px}
+#vol-row{padding:12px 4px 0;flex-shrink:0;display:flex;align-items:center;gap:10px}
 .vol-icon{color:var(--fg3);font-size:15px;flex-shrink:0}
 .vol-btn{cursor:pointer;user-select:none;transition:color .15s}
 .vol-btn:hover{color:var(--fg1)}
@@ -152,17 +255,25 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   padding:2px 7px;border-radius:10px;pointer-events:none;white-space:nowrap;
   opacity:0;transition:opacity .2s;left:var(--pct,20%)}
 #vol-tooltip.visible{opacity:1}
-#vol-slider{width:100%;height:4px;-webkit-appearance:none;appearance:none;
-  border-radius:2px;outline:none;cursor:pointer;
-  background:linear-gradient(to right,var(--blue) var(--pct,20%),var(--surface2) var(--pct,20%))}
-#vol-slider::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;
-  border-radius:50%;background:var(--silver);cursor:pointer;
-  box-shadow:0 0 8px var(--blue-glow)}
-#vol-slider::-moz-range-thumb{width:18px;height:18px;border-radius:50%;
-  background:var(--silver);cursor:pointer;border:none}
+#vol-slider{background:linear-gradient(to right,var(--blue) var(--pct,20%),var(--surface2) var(--pct,20%))}
+
+/* ── Capsule sliders ─────────────────────────────────────── */
+/* Thick iOS-style capsules: the colour fill IS the control — no thumb. */
+/* The fill edge is driven by the same --pct var the JS already sets.   */
+#vol-slider,#all-vol-slider,#bass-slider,.eq-slider{width:100%;height:32px;
+  -webkit-appearance:none;appearance:none;border-radius:16px;outline:none;
+  cursor:pointer;transition:transform .18s ease;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.07),0 2px 10px rgba(0,0,0,.35)}
+#vol-slider:active,#all-vol-slider:active,#bass-slider:active,.eq-slider:active{transform:scaleY(1.1)}
+#vol-slider::-webkit-slider-thumb,#all-vol-slider::-webkit-slider-thumb,
+#bass-slider::-webkit-slider-thumb,.eq-slider::-webkit-slider-thumb{-webkit-appearance:none;width:6px;height:32px;
+  background:transparent;border:none;box-shadow:none}
+#vol-slider::-moz-range-thumb,#all-vol-slider::-moz-range-thumb,
+#bass-slider::-moz-range-thumb,.eq-slider::-moz-range-thumb{width:6px;height:32px;border-radius:3px;
+  background:transparent;border:none}
 
 /* Transport */
-#transport{padding:14px 4px 6px;display:flex;align-items:center;justify-content:center;gap:20px}
+#transport{padding:14px 4px 6px;flex-shrink:0;display:flex;align-items:center;justify-content:center;gap:20px}
 .t-btn{background:none;border:none;color:var(--fg);cursor:pointer;
   padding:10px;border-radius:50%;transition:all .15s;flex-shrink:0;
   display:flex;align-items:center;justify-content:center}
@@ -171,6 +282,12 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 #btn-play{background:var(--blue);width:64px;height:64px;
   box-shadow:0 4px 22px var(--blue-glow),0 0 0 1px var(--blue-dim)}
 #btn-play:active{background:var(--blue-dim)}
+/* Play ⇄ pause morph: both icons stacked, crossfade + spin between states */
+#btn-play svg{position:absolute;inset:0;margin:auto;
+  transition:opacity .2s ease,transform .25s cubic-bezier(.3,.7,.3,1.2)}
+#btn-play #ico-pause{opacity:0;transform:scale(.4) rotate(90deg)}
+#btn-play.playing #ico-pause{opacity:1;transform:scale(1) rotate(0)}
+#btn-play.playing #ico-play{opacity:0;transform:scale(.4) rotate(-90deg)}
 .t-btn-sm{opacity:.75}.t-btn-sm:hover{opacity:1}
 
 /* Presets dropdown */
@@ -182,10 +299,10 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 #preset-toggle .arrow{font-size:9px;transition:transform .2s}
 #preset-toggle.open .arrow{transform:rotate(180deg)}
 /* Clip wrapper: positioned dynamically via JS below the tabs bar */
-#presets-clip{position:absolute;top:94px;left:0;right:0;z-index:50;
+#presets-clip{position:absolute;top:64px;left:0;right:0;z-index:50;
   max-height:0;overflow:hidden;pointer-events:none;
   transition:max-height .22s ease}
-#presets-clip.open{max-height:300px;pointer-events:auto}
+#presets-clip.open{max-height:420px;pointer-events:auto}
 /* Panel itself just slides within the clip wrapper */
 #presets-panel{background:var(--surface);border-bottom:1px solid var(--border);
   box-shadow:0 8px 32px rgba(0,0,0,.7);
@@ -195,15 +312,37 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 #presets-panel-label{font-size:10px;font-weight:700;letter-spacing:.12em;
   color:var(--fg3);text-transform:uppercase;margin-bottom:10px}
 #presets-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.preset{background:var(--surface2);border:1px solid var(--border);
-  border-radius:var(--radius);padding:12px 8px;cursor:pointer;
-  text-align:center;transition:all .15s;user-select:none}
-.preset:active{background:var(--blue-dim);border-color:var(--blue)}
-.preset-num{font-size:9px;font-weight:700;letter-spacing:.1em;
-  color:var(--fg3);text-transform:uppercase;margin-bottom:3px}
-.preset-name{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;
-  white-space:nowrap;color:var(--fg3)}
-.preset.has-name .preset-name{color:var(--fg)}
+#presets-panel-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+#presets-panel-head #presets-panel-label{margin-bottom:0}
+#preset-save-btn{background:none;border:1px solid var(--blue-dim);color:var(--blue-light);
+  border-radius:14px;padding:4px 11px;font-size:11px;font-weight:600;cursor:pointer}
+#preset-save-btn:active{background:var(--blue-dim)}
+#preset-save-bar{background:rgba(34,119,238,.08);border:1px solid var(--blue-dim);
+  border-radius:12px;padding:10px 12px;margin-bottom:10px}
+#preset-save-msg{font-size:12px;color:var(--fg);margin-bottom:8px;line-height:1.4}
+#preset-save-msg b{color:var(--white)}
+.preset-save-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+#presets-grid.saving .preset{border-color:var(--blue-dim);animation:save-pulse 1.6s ease-in-out infinite}
+@keyframes save-pulse{50%{border-color:var(--blue)}}
+/* Art tiles: square, station artwork fills the tile behind a bottom shade */
+.preset{position:relative;aspect-ratio:1;background:var(--surface2);
+  border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;
+  overflow:hidden;user-select:none;transition:transform .15s,border-color .15s}
+.preset:active{transform:scale(.95);border-color:var(--blue)}
+.preset.empty{border-style:dashed;background:var(--surface)}
+.preset-art{position:absolute;inset:0;background-size:cover;background-position:center}
+.preset-art-ph{display:flex;align-items:center;justify-content:center;
+  font-size:24px;color:var(--blue-light);opacity:.28}
+.preset-shade{position:absolute;inset:0;
+  background:linear-gradient(to top,rgba(7,8,12,.88) 0%,rgba(7,8,12,.30) 48%,rgba(7,8,12,.05) 75%)}
+.preset-num{position:absolute;top:6px;left:7px;font-size:9px;font-weight:700;
+  letter-spacing:.08em;color:var(--silver);line-height:1;
+  background:rgba(11,12,17,.55);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  padding:3px 7px;border-radius:8px}
+.preset-name{position:absolute;left:8px;right:8px;bottom:7px;font-size:11.5px;
+  font-weight:600;color:var(--white);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;text-shadow:0 1px 4px rgba(0,0,0,.8)}
+.preset.empty .preset-name{color:var(--fg3);text-shadow:none}
 #presets-backdrop{display:none;position:fixed;inset:0;z-index:49}
 #presets-backdrop.open{display:block}
 
@@ -213,17 +352,29 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 #group-badge{font-size:10px;font-weight:700;letter-spacing:.06em;
   color:var(--amber);background:var(--surface);border:1px solid var(--amber-dim);
   padding:3px 8px;border-radius:10px;white-space:nowrap;align-self:center;flex-shrink:0}
-#cloud-warn{margin:8px 20px 0;padding:8px 12px;
-  background:rgba(245,158,11,.08);border:1px solid var(--amber-dim);
-  border-radius:8px;font-size:11px;color:var(--amber);line-height:1.5}
-
 /* Power / Mute */
-#power-row{display:flex;justify-content:center;gap:10px;padding:10px 20px 18px}
+#power-row{display:flex;flex-shrink:0;justify-content:center;gap:10px;padding:10px 20px 18px}
 #btn-power,#btn-mute{background:var(--surface);border:1px solid var(--border);
   color:var(--fg2);border-radius:20px;padding:8px 22px;font-size:13px;
   cursor:pointer;display:flex;align-items:center;gap:7px;transition:all .18s}
 #btn-power:active,#btn-mute:active{background:var(--surface2);color:var(--silver);border-color:var(--silver-dim)}
 #btn-mute.muted,#btn-power.playing{background:rgba(34,119,238,.12);border-color:var(--blue);color:var(--blue-light)}
+/* Dialogue mode switches (soundbars). The power row gives up its bottom
+   padding while this row is showing, so the controls don't move down. */
+#power-row.tight{padding-bottom:8px}
+#dialog-row{display:flex;flex-shrink:0;justify-content:center;flex-wrap:wrap;gap:10px;padding:0 20px 14px}
+.sw-pill{display:flex;align-items:center;gap:9px;background:var(--surface);
+  border:1px solid var(--border);border-radius:20px;padding:6px 8px 6px 14px;
+  font-size:12px;color:var(--fg2);cursor:pointer;user-select:none;transition:all .18s}
+.sw-pill input{position:absolute;opacity:0;width:0;height:0}
+.sw-track{position:relative;width:34px;height:20px;border-radius:10px;
+  background:var(--surface3);border:1px solid var(--border);transition:background .18s,border-color .18s}
+.sw-track::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;
+  border-radius:50%;background:var(--silver-dim);transition:transform .18s,background .18s}
+.sw-pill input:checked + .sw-track{background:var(--blue);border-color:var(--blue)}
+.sw-pill input:checked + .sw-track::after{transform:translateX(14px);background:var(--white)}
+.sw-pill:has(input:checked){border-color:var(--blue);color:var(--blue-light);background:rgba(34,119,238,.12)}
+.sw-pill input:focus-visible + .sw-track{outline:2px solid var(--blue-light);outline-offset:2px}
 
 /* ── Page: Manage Presets ────────────────────────────────── */
 .manage-section{padding:14px 20px}
@@ -287,6 +438,16 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 .add-form input:focus{border-color:var(--blue)}
 .add-form input::placeholder{color:var(--fg3)}
 .form-row{display:flex;gap:8px;margin-top:12px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+#alarm-form-title{font-size:13px;font-weight:700;color:var(--white);margin-bottom:10px}
+#alarm-form.editing{border-color:var(--blue)}
+.form-grid > div{min-width:0}
+/* Native iOS date/time inputs ignore width and padding and render oversized —
+   strip the native look so they match the other fields. */
+.add-form input[type=time]{-webkit-appearance:none;appearance:none;display:block;
+  min-width:0;max-width:100%;height:38px;line-height:normal;text-align:left}
+.add-form input[type=time]::-webkit-date-and-time-value{text-align:left;margin:0}
+.add-form .form-select{height:38px}
 
 .alexa-hint{background:rgba(34,119,238,.07);border:1px solid var(--blue-dim);
   border-radius:var(--radius);padding:13px 16px;margin-bottom:14px;
@@ -333,14 +494,13 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 .eq-bars:not(.playing) .eq-bar{animation-play-state:paused}
 
 /* ── Play button pulse ring ──────────────────────────────── */
+/* Expanding box-shadow ring — a ::before ring would be clipped by the
+   button's overflow:hidden (needed for the ripple effect) */
 #btn-play{position:relative}
-#btn-play::before{content:'';position:absolute;inset:-4px;border-radius:50%;
-  border:2px solid var(--blue);opacity:0;pointer-events:none;
-  animation:play-ring 2.4s ease-out infinite;animation-play-state:paused}
-#btn-play.playing::before{animation-play-state:running}
+#btn-play.playing{animation:play-ring 2.4s ease-out infinite}
 @keyframes play-ring{
-  0%{opacity:.8;transform:scale(1)}
-  100%{opacity:0;transform:scale(1.55)}}
+  0%{box-shadow:0 4px 22px var(--blue-glow),0 0 0 0 rgba(34,119,238,.45)}
+  70%,100%{box-shadow:0 4px 22px var(--blue-glow),0 0 0 16px rgba(34,119,238,0)}}
 
 /* ── Track name marquee ──────────────────────────────────── */
 #track-name{overflow:hidden;white-space:nowrap}
@@ -348,9 +508,15 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 #track-name.marquee span{animation:marquee-scroll 10s linear 1.5s infinite}
 @keyframes marquee-scroll{0%,12%{transform:translateX(0)}88%,100%{transform:translateX(var(--sw,0))}}
 
-/* ── Tab page fade-in ────────────────────────────────────── */
+/* ── Tab page transitions ────────────────────────────────── */
+/* Default fade-up on first paint; directional slide when moving      */
+/* between tabs (slide class set by switchTab from the tab order).    */
 .page.visible{animation:page-in .18s ease forwards}
+.page.visible.slide-right{animation:page-in-right .24s cubic-bezier(.3,.7,.3,1) forwards}
+.page.visible.slide-left{animation:page-in-left .24s cubic-bezier(.3,.7,.3,1) forwards}
 @keyframes page-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+@keyframes page-in-right{from{opacity:0;transform:translateX(28px)}to{opacity:1;transform:translateX(0)}}
+@keyframes page-in-left{from{opacity:0;transform:translateX(-28px)}to{opacity:1;transform:translateX(0)}}
 
 /* ── Ripple ──────────────────────────────────────────────── */
 .t-btn,.preset,.mc-btn{overflow:hidden}
@@ -366,8 +532,8 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 /* ── Speaker chip mini-EQ ────────────────────────────────── */
 .chip-eq{display:none;align-items:flex-end;gap:1.5px;height:11px;
   margin-left:3px;flex-shrink:0}
-.room-chip.playing .chip-eq{display:flex}
-.room-chip.playing .dot{display:none}
+.room-chip.playing .chip-eq,#spk-current.playing .chip-eq{display:flex}
+.room-chip.playing .dot,#spk-current.playing .dot{display:none}
 .chip-eq-bar{width:2.5px;border-radius:1px 1px 0 0;background:var(--blue-light);
   transform-origin:bottom;animation:eq-bounce 1.2s ease-in-out infinite}
 .chip-eq-bar:nth-child(1){height:40%;animation-delay:.05s}
@@ -375,7 +541,8 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
 .chip-eq-bar:nth-child(3){height:60%;animation-delay:0s}
 
 /* ── Toast ───────────────────────────────────────────────── */
-#toast{position:fixed;bottom:32px;left:50%;transform:translateX(-50%);
+#toast{position:fixed;bottom:calc(var(--nav-h,calc(82px + var(--nav-safe))) + 10px);
+  left:50%;transform:translateX(-50%);
   background:rgba(19,21,29,.96);color:var(--blue-light);border:1px solid var(--blue-dim);
   padding:9px 20px;border-radius:22px;font-size:13px;font-weight:600;
   opacity:0;pointer-events:none;transition:opacity .25s;
@@ -416,27 +583,27 @@ header{padding:16px 20px 0;display:flex;align-items:center;justify-content:space
   padding:2px 7px;border-radius:10px;pointer-events:none;white-space:nowrap;
   opacity:0;transition:opacity .2s;left:var(--pct,50%)}
 #all-vol-tip.visible{opacity:1}
-#all-vol-slider{width:100%;height:4px;-webkit-appearance:none;appearance:none;
-  border-radius:2px;outline:none;cursor:pointer;
-  background:linear-gradient(to right,var(--silver-dim) var(--pct,50%),var(--surface2) var(--pct,50%))}
-#all-vol-slider::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;
-  border-radius:50%;background:var(--silver);cursor:pointer;
-  box-shadow:0 0 6px rgba(200,212,232,.3)}
-#all-vol-slider::-moz-range-thumb{width:18px;height:18px;border-radius:50%;
-  background:var(--silver);cursor:pointer;border:none}
+#all-vol-slider{background:linear-gradient(to right,var(--silver-dim) var(--pct,50%),var(--surface2) var(--pct,50%))}
 
 /* ── Alarm day buttons ───────────────────────────────────── */
-.day-btn{display:inline-flex;align-items:center;justify-content:center;
-  background:var(--surface2);border:1px solid var(--border);border-radius:6px;
-  padding:5px 10px;font-size:11px;font-weight:600;color:var(--fg2);cursor:pointer;
+/* Seven equal columns so Sun never wraps. The buttons are <label>s inside   */
+/* .add-form, so they must undo its block field-label margins — otherwise    */
+/* the first one (no top margin) sits higher and looks a different size.     */
+.day-row{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-top:2px}
+.add-form .day-btn{display:flex;align-items:center;justify-content:center;margin:0;
+  height:34px;padding:0;letter-spacing:0;
+  background:var(--surface2);border:1px solid var(--border);border-radius:8px;
+  font-size:11.5px;font-weight:600;color:var(--fg2);cursor:pointer;
   user-select:none;transition:all .15s}
 .day-btn:has(input:checked){background:var(--blue-dim);border-color:var(--blue);color:var(--blue-light)}
 .day-btn{position:relative}
 .day-btn input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
 
 /* ── PWA install banner (Android Chrome) ─────────────────── */
-#install-banner{display:none;position:fixed;bottom:0;left:50%;transform:translateX(-50%);
-  width:100%;max-width:440px;background:var(--surface2);border-top:1px solid var(--border);
+#install-banner{display:none;position:fixed;
+  bottom:var(--nav-h,calc(78px + var(--nav-safe)));left:50%;transform:translateX(-50%);
+  width:100%;max-width:440px;background:var(--surface2);
+  border-top:1px solid var(--border);border-bottom:1px solid var(--border);
   padding:12px 16px;align-items:center;gap:10px;z-index:90;
   backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
 #install-banner.show{display:flex}

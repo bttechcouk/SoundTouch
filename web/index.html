@@ -2,9 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<!-- "black", not "black-translucent": with translucent, iOS home-screen apps
+     start the web view under the status bar but don't make it taller, leaving a
+     status-bar-height black band below the tab bar that the page can't paint. -->
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="apple-mobile-web-app-title" content="SoundTouch">
 <meta name="theme-color" content="#0b0c11">
 <link rel="manifest" href="/manifest.json">
@@ -14,6 +17,14 @@
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
+
+<!-- Full-bleed living background: blurred current album art, slowly drifting -->
+<div id="bg-stage" aria-hidden="true">
+  <div id="bg-art-a" class="bg-art"></div>
+  <div id="bg-art-b" class="bg-art"></div>
+  <div id="bg-veil"></div>
+</div>
+
 <div id="app">
 
   <!-- Presets dropdown panel (sits at top of #app, slides down over content) -->
@@ -21,7 +32,22 @@
   <div id="presets-clip">
     <div id="presets-panel">
       <div id="presets-panel-inner">
-        <div id="presets-panel-label">Presets</div>
+        <div id="presets-panel-head">
+          <div id="presets-panel-label">Presets</div>
+          <button id="preset-save-btn" onclick="enterPresetSave()" style="display:none">+ Save what's playing</button>
+        </div>
+        <!-- Save mode: shown after "Save what's playing"; tapping a tile stores into that slot -->
+        <div id="preset-save-bar" style="display:none">
+          <div id="preset-save-msg"></div>
+          <div class="preset-save-row">
+            <label class="sw-pill">
+              <span>All speakers</span>
+              <input type="checkbox" id="preset-save-all">
+              <span class="sw-track"></span>
+            </label>
+            <button class="mc-btn" onclick="exitPresetSave()">Cancel</button>
+          </div>
+        </div>
         <div id="presets-grid"></div>
       </div>
     </div>
@@ -39,18 +65,44 @@
     </div>
   </header>
 
-  <!-- Tabs -->
-  <div id="tabs">
-    <div class="tab active" data-tab="player"   onclick="switchTab('player')">Player</div>
-    <div class="tab"        data-tab="manage"   onclick="switchTab('manage')">Presets</div>
-    <div class="tab"        data-tab="groups"   onclick="switchTab('groups')">Groups</div>
-    <div class="tab"        data-tab="settings" onclick="switchTab('settings')">Settings</div>
+  <!-- Speaker picker (left) and source picker (right); each opens its own list -->
+  <div id="rooms-section">
+    <button id="spk-current" onclick="toggleSpeakers()" aria-haspopup="listbox" aria-expanded="false">
+      <span class="dot"></span>
+      <span class="chip-eq"><span class="chip-eq-bar"></span><span class="chip-eq-bar"></span><span class="chip-eq-bar"></span></span>
+      <span class="spk-text">
+        <span id="spk-name">Scanning…</span>
+        <span id="spk-sub"></span>
+      </span>
+      <span id="spk-others"></span>
+      <span class="arrow">▼</span>
+    </button>
+    <button id="src-current" onclick="toggleSources()" aria-haspopup="listbox" aria-expanded="false">
+      <span class="spk-text">
+        <span id="src-name">—</span>
+        <span id="src-sub">Source</span>
+      </span>
+      <span class="arrow">▼</span>
+    </button>
   </div>
 
-  <!-- Speaker chips -->
-  <div id="rooms-section">
-    <div class="section-label">Speakers</div>
-    <div id="rooms-list"><div id="no-speakers">Scanning…</div></div>
+  <!-- Sources dropdown panel (inputs the active speaker can switch to) -->
+  <div id="sources-clip">
+    <div id="sources-panel">
+      <div id="sources-panel-inner">
+        <div id="sources-list" role="listbox"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Speakers dropdown panel (slides down from under the picker bar) -->
+  <div id="speakers-backdrop" onclick="closeSpeakers();closeSources()"></div>
+  <div id="speakers-clip">
+    <div id="speakers-panel">
+      <div id="speakers-panel-inner">
+        <div id="rooms-list" role="listbox"><div id="no-speakers">Scanning…</div></div>
+      </div>
+    </div>
   </div>
 
   <!-- ═══ PAGE: Player ═══ -->
@@ -74,7 +126,6 @@
       <div id="group-badge" style="display:none"></div>
       <div id="source-badge" style="display:none"></div>
     </div>
-    <div id="cloud-warn" style="display:none"></div>
 
     <div id="vol-row">
       <span class="vol-icon vol-btn" onclick="nudgeVol(-1)">&#128264;</span>
@@ -97,7 +148,7 @@
         <svg id="ico-play" width="30" height="30" viewBox="0 0 32 32">
           <polygon points="8,4 28,16 8,28" fill="currentColor"/>
         </svg>
-        <svg id="ico-pause" width="30" height="30" viewBox="0 0 32 32" style="display:none">
+        <svg id="ico-pause" width="30" height="30" viewBox="0 0 32 32">
           <rect x="5" y="4" width="8" height="24" rx="2" fill="currentColor"/>
           <rect x="19" y="4" width="8" height="24" rx="2" fill="currentColor"/>
         </svg>
@@ -129,6 +180,20 @@
         </svg>
         Mute
       </button>
+    </div>
+
+    <!-- Dialogue mode — soundbars only (hidden unless the speaker supports it) -->
+    <div id="dialog-row" style="display:none">
+      <label class="sw-pill" title="Clearer speech for TV and films">
+        <span>Dialogue mode</span>
+        <input type="checkbox" id="sw-dialog" onchange="setDialogMode(this.checked)">
+        <span class="sw-track"></span>
+      </label>
+      <label class="sw-pill" title="Turn dialogue mode on for the TV input and off for music">
+        <span>Auto on TV</span>
+        <input type="checkbox" id="sw-dialog-auto" onchange="setDialogAuto(this.checked)">
+        <span class="sw-track"></span>
+      </label>
     </div>
 
   </div>
@@ -231,21 +296,31 @@
             Schedule a speaker to start playing a preset at a set time.
           </p>
           <div id="alarms-list"></div>
-          <div class="add-form" style="margin:10px 0 0">
+          <div class="add-form" id="alarm-form" style="margin:10px 0 0">
+            <div id="alarm-form-title">New alarm</div>
             <label>Speaker</label>
-            <select id="alarm-speaker-select" class="form-select">
+            <select id="alarm-speaker-select" class="form-select" onchange="loadAlarmPresetNames()">
               <option value="">Select a speaker…</option>
             </select>
             <label>Name (optional)</label>
             <input id="alarm-name" placeholder="Morning Radio">
-            <label>Time</label>
-            <input id="alarm-time" type="time" value="07:00">
-            <label>Preset (1–6)</label>
-            <input id="alarm-preset" type="number" min="1" max="6" value="1">
-            <label>Volume (optional — leave blank to keep current)</label>
-            <input id="alarm-vol" type="number" min="0" max="100" placeholder="0–100">
+            <label>Preset</label>
+            <select id="alarm-preset" class="form-select">
+              <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+              <option value="4">4</option><option value="5">5</option><option value="6">6</option>
+            </select>
+            <div class="form-grid">
+              <div>
+                <label>Time</label>
+                <input id="alarm-time" type="time" value="07:00">
+              </div>
+              <div>
+                <label>Volume (optional)</label>
+                <input id="alarm-vol" type="number" inputmode="numeric" min="0" max="100" placeholder="Keep current">
+              </div>
+            </div>
             <label>Days</label>
-            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+            <div class="day-row">
               <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="0" checked>Mon</label>
               <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="1" checked>Tue</label>
               <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="2" checked>Wed</label>
@@ -255,9 +330,42 @@
               <label class="day-btn"><input type="checkbox" class="alarm-day-chk" value="6">Sun</label>
             </div>
             <div class="form-row">
-              <button class="mc-btn primary" onclick="addAlarm()">Add Alarm</button>
+              <button class="mc-btn primary" id="alarm-save-btn" onclick="addAlarm()">Add Alarm</button>
+              <button class="mc-btn" id="alarm-cancel-btn" onclick="cancelAlarmEdit()" style="display:none">Cancel</button>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- Weekly restart (ST20 clock fix) -->
+      <div class="qr-section">
+        <div class="qr-collapse-hdr" onclick="toggleSection('sec-maint','chev-maint')">
+          <span class="title">Weekly Restart</span>
+          <span id="chev-maint" class="qr-chevron">&#9660;</span>
+        </div>
+        <div id="sec-maint" class="qr-body" style="display:none">
+          <p style="font-size:12px;color:var(--fg3);margin-bottom:12px">
+            Restarts speakers with a front-panel clock once a week, which stops the
+            clock going blank. Speakers that are playing are left alone.
+          </p>
+          <label class="sw-pill" style="display:inline-flex;margin-bottom:12px">
+            <span>Weekly restart</span>
+            <input type="checkbox" id="maint-enabled" onchange="saveMaint()">
+            <span class="sw-track"></span>
+          </label>
+          <div class="add-form" style="margin:0">
+            <label>Day</label>
+            <select id="maint-day" class="form-select" onchange="saveMaint()">
+              <option value="0">Monday</option><option value="1">Tuesday</option>
+              <option value="2">Wednesday</option><option value="3">Thursday</option>
+              <option value="4">Friday</option><option value="5">Saturday</option>
+              <option value="6">Sunday</option>
+            </select>
+            <label>Time</label>
+            <input id="maint-time" type="time" value="04:00" onchange="saveMaint()">
+          </div>
+          <div id="maint-info" style="font-size:12px;color:var(--fg2);margin-top:12px;line-height:1.6"></div>
+          <button class="mc-btn" id="maint-run" style="margin-top:10px" onclick="runMaintNow()">Restart them now</button>
         </div>
       </div>
 
@@ -471,6 +579,45 @@
   </div>
 
 </div>
+
+<!-- Bottom tab bar — frosted glass, gliding pill indicator -->
+<nav id="tabs">
+  <div id="tab-indicator"></div>
+  <div class="tab active" data-tab="player" onclick="switchTab('player')">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+      <circle cx="12" cy="12" r="8.6" stroke="currentColor" stroke-width="1.7"/>
+      <polygon points="10,8.6 16,12 10,15.4" fill="currentColor"/>
+    </svg>
+    <span>Player</span>
+  </div>
+  <div class="tab" data-tab="manage" onclick="switchTab('manage')">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+      <rect x="3.5" y="3.5" width="7.4" height="7.4" rx="2"/>
+      <rect x="13.1" y="3.5" width="7.4" height="7.4" rx="2"/>
+      <rect x="3.5" y="13.1" width="7.4" height="7.4" rx="2"/>
+      <rect x="13.1" y="13.1" width="7.4" height="7.4" rx="2"/>
+    </svg>
+    <span>Presets</span>
+  </div>
+  <div class="tab" data-tab="groups" onclick="switchTab('groups')">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+      <rect x="3.5" y="4.5" width="7.2" height="15" rx="2"/>
+      <rect x="13.3" y="4.5" width="7.2" height="15" rx="2"/>
+      <circle cx="7.1" cy="14.4" r="2"/>
+      <circle cx="16.9" cy="14.4" r="2"/>
+    </svg>
+    <span>Groups</span>
+  </div>
+  <div class="tab" data-tab="settings" onclick="switchTab('settings')">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+      <path d="M4 7h16M4 12h16M4 17h16"/>
+      <circle cx="15" cy="7" r="2.3" fill="#0d0f16"/>
+      <circle cx="8" cy="12" r="2.3" fill="#0d0f16"/>
+      <circle cx="12" cy="17" r="2.3" fill="#0d0f16"/>
+    </svg>
+    <span>Settings</span>
+  </div>
+</nav>
 
 <!-- PWA install banner (shown by beforeinstallprompt on Android Chrome) -->
 <div id="install-banner">

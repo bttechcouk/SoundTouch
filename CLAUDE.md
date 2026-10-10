@@ -49,6 +49,7 @@ journalctl --user -u soundtouch-matter -f                # bridge live logs
 | 8090 | TCP | SoundTouch speaker API (outbound to speaker) |
 | 8091 | TCP | UPnP AVTransport on speaker (outbound, used for UPNP-only speakers) |
 | 1900 | UDP | SSDP multicast — DLNA server announcements |
+| 17000 | TCP | Speaker diagnostic console (TAP), outbound — used only to send `sys reboot` |
 | 5540 | UDP | Matter protocol (Alexa smart home) |
 
 ## Logs
@@ -68,7 +69,7 @@ pip3 install -r requirements-dev.txt   # pytest + runtime deps
 pytest                                 # runs tests/ (config in pytest.ini)
 ```
 
-Unit tests live in `tests/` and cover the pure/near-pure logic that has historically needed the most fixing — DLNA DIDL-Lite/Browse generation, `PresetStore.station_descriptor()` and custom-station/backup round-trips, the `LOCAL_INTERNET_RADIO → UPNP` restore conversion (`plan_preset_restore()`), and `get_sources()` / `has_local_internet_radio()` parsing (with mocked `/sources` XML). No speaker hardware required; `_get` is stubbed where needed. CI runs them on push/PR via `.github/workflows/tests.yml`.
+Unit tests live in `tests/` and cover the pure/near-pure logic that has historically needed the most fixing — DLNA DIDL-Lite/Browse generation, `PresetStore.station_descriptor()` and custom-station/backup round-trips, the `LOCAL_INTERNET_RADIO → UPNP` restore conversion (`plan_preset_restore()`), and `get_sources()` / `has_local_internet_radio()` parsing (with mocked `/sources` XML), plus bass routing (`/bass` vs the soundbar's `/audioproducttonecontrols`) and the capability-gated soundbar settings. No speaker hardware required; `_get` is stubbed where needed. CI runs them on push/PR via `.github/workflows/tests.yml`.
 
 No linter configuration.
 
@@ -88,10 +89,15 @@ Key methods:
 - `state()` — aggregates volume, now-playing, presets, and zone role into a dict for the web UI. Includes `_upnp_location` (ContentItem location from now_playing) which the `/api/state` handler uses to overlay station metadata for UPNP speakers.
 - `has_local_internet_radio()` (line 368) — checks `/sources` for `LOCAL_INTERNET_RADIO`. Returns `True` on error (fail-safe for normal speakers). Used to detect "Kitchen-like" speakers provisioned after Bose disabled internet radio.
 - `play_via_avt(stream_url)` (line 511) — plays a stream via UPnP AVTransport SOAP on port 8091. Used for speakers without `LOCAL_INTERNET_RADIO`. URL must be HTTP (not HTTPS); the speaker follows 302 redirects.
+  `play_via_avt()` sends DIDL-Lite `CurrentURIMetaData` (`avt_didl()`: title + albumArtURI, auto-looked-up for `/dlna/stream/<id>` URLs). That metadata is what the speaker's display and `now_playing` show; sent empty, ST20s displayed just "Q". There is no API to write arbitrary display text — the display follows now-playing metadata.
 - `get_zone()` / `set_zone()` / `remove_zone()` — multi-room zone management
-- `get_bass_capabilities()` / `get_bass()` / `set_bass()` — bass control
+- `get_bass_capabilities()` / `get_bass()` / `set_bass()` — bass control. Soundbars report `bassAvailable=false` and go through `get_audio_controls("tone")` / `set_audio_control()` (`/audioproducttonecontrols`, -100…100 step 25) instead. The same pair handles treble and the centre/rear levels (`/audioproductlevelcontrols`), exposed at `/api/audio-controls[/set]?host=&group=tone|level&name=&value=`
+- `supports_dialog_mode()` / `get_audio_mode()` / `set_audio_mode()` — dialogue mode via `/audiodspcontrols` (SoundTouch 300 only; other models 404, cached as unsupported)
+- `capabilities()` / `get_soundbar_settings()` / `set_soundbar_setting()` — lip-sync delay (`/audiodspcontrols` videosyncaudiodelay, clamped 0–300 ms), auto-off (`/systemtimeoutcontrol`), HDMI-CEC on/off (`/productcechdmicontrol`) and attached rear/bass speakers (`/audiospeakerattributeandsetting`); `/api/soundbar[/set]?host=&name=&value=`. Only endpoints listed in `/capabilities` are read — **never GET-probe unknown speaker paths: `GET /lowPowerStandby` puts the speaker into network-off standby**
 - `detail_info()` — device details from `/info`
 - `set_name()` — rename via `POST /name`
+- `reboot()` — restarts the speaker via its TAP console on port 17000 (`sys reboot`; the 8090 API has no reboot). Never send anything else there — the console also has `sys factorydefault`. Fixes ST20s whose clock goes blank. `AppState.reboot_device()` then rescans until the deviceID reappears, since it can return on a new DHCP address; `GET /api/reboot?host=` / `/api/reboot/status?device_id=`
+- `has_clock()` — `<clockDisplay>true</clockDisplay>` in `/capabilities` (ST20s). **Weekly restart:** ST20 front-panel clocks go blank after running a while even though `/clockTime` stays correct (undetectable via the API); a restart fixes it. `MaintenanceStore` (`data/maintenance.json`, default Sunday 04:00 Europe/London) + `maintenance_due_key()` checked from `AlarmScheduler._tick`; `AppState.restart_clock_speakers()` reboots idle clock speakers (skips playing ones) and rediscovers them all in one `_rediscover()` pass. `GET /api/maintenance[/set]`, `/api/maintenance/run`; Settings → Weekly Restart
 
 **`PresetStore` (line 624)** — Reads/writes preset backups as JSON to `data/presets/<ip>.json` and custom station definitions to `data/stations/<id>.json`. `station_descriptor()` (line 706) returns the JSON the speaker fetches to resolve a `LOCAL_INTERNET_RADIO` stream URL.
 
@@ -107,6 +113,8 @@ Key methods:
 
 **`AlarmStore` / `AlarmScheduler` (lines 1074, 1113)** — Persist alarm definitions to `data/alarms.json`; background thread fires alarms at scheduled times.
 
+Alarm times are in the phone's timezone: the UI sends `tz` (IANA name) and `alarm_due_key()` evaluates each alarm in it — the server runs in UTC, so ignoring this made 07:00 alarms ring at 08:00 BST. Old alarms without `tz` fall back to `$SOUNDTOUCH_TZ`, then server local time. Firing uses `SoundTouchDevice.play_preset()` (AVTransport for UPNP station presets, key press otherwise — shared with `/api/cmd`), checks `is_playing()` after 15 s, retries once, and stores `last_fired` / `last_result` on the alarm (the main log only holds ~1 hour). Alarms also store `device_id` so they survive a DHCP IP change.
+
 **Discovery (line 1173)** — `discover_mdns()` uses zeroconf for `_soundtouch._tcp.local.`; `discover_subnet_scan()` concurrently probes all 254 hosts on the local /24. Both run in parallel via `discover_all()`.
 
 **Web UI assets (`web/` directory)** — The single-page web UI lives in `web/` and is served from disk (cached) by `web_asset()` / `Handler._web()`: `web/index.html` (markup), `web/app.css` (styles), `web/app.js` (logic), plus `web/wall.html` (kiosk panel) and `web/sw.js` (service worker). Tabs: Player, Presets, Groups, Settings. Editing the UI no longer means editing a Python string.
@@ -121,6 +129,7 @@ Key API endpoints:
 - `GET /api/bass?host=` / `GET /api/device-info?host=` / `GET /api/rename?host=&name=`
 - `GET /api/presets/backup?host=` / `GET /api/presets/restore?host=` — restore converts `LOCAL_INTERNET_RADIO` presets to `UPNP` for Kitchen-like speakers
 - `GET /api/presets/backup-all` / `GET /api/presets/health?host=`
+- `GET /api/presets/save-current?host=&slot=1-6&all=true|false` — store what's playing (`now_playing_item()`: the ContentItem, e.g. a Spotify playlist as `tracklisturl` + account, plus art as containerArt) into a slot, optionally on every speaker `preset_target_ok()` allows (Spotify needs the same linked account READY — the soundbar has none; UPNP radio goes anywhere). Updates each speaker's backup. UI: Presets panel → "+ Save what's playing"
 - `GET /api/group?host=` / `POST /api/group/create|remove|party|dissolve-all|join`
 - `GET /api/stations` / `POST /api/stations/add|delete` / `GET /api/stations/play?host=&id=` / `POST /api/stations/set-preset` / `GET /api/stations/stream-search`
 - `GET /api/scenes` / `POST /api/scenes|scenes/delete|scenes/activate`
@@ -128,10 +137,15 @@ Key API endpoints:
 - `POST /api/tts/announce` / `GET /api/tts/status`
 - `GET /api/volume/all` / `GET /api/sources?host=` / `POST /api/select`
 - `GET /api/matter/qr`
+- `GET /api/audio-mode?host=` / `/api/audio-mode/set?host=&mode=dialog|normal` / `/api/audio-mode/auto?host=&enabled=` — dialogue mode + per-speaker "Auto on TV" setting
 
 **`AppState` (line 5074)** — Singleton holding the device list, `PresetStore`, `SceneStore`, `AlarmStore`, `AlarmScheduler`, and `DLNAServer`. On init, starts the DLNA server and the `_upnp_autoplay_loop` daemon thread.
 
 `_upnp_autoplay_loop` (line 5098) — Polls Kitchen-like speakers every 2s. Fires `play_via_avt()` when it detects either `source=UPNP`+stopped (ContentItem has our DLNA URL) or a fresh transition into `source=INVALID_SOURCE` (the more common case when a physical preset button is pressed). Uses `prev_source`, `last_upnp_loc`, and `last_fired` dicts for debounce.
+
+`_audio_mode_loop` — Polls dialogue-capable soundbars every 2s. Entering the TV input (`source=PRODUCT`, from music or standby) sets dialogue mode; entering a music source sets normal. Rules live in the pure `audio_mode_for_transition()`. The target mode is re-applied for ~10s in case the bar resets it while settling. Settings in `AudioModeStore` (`data/audio_mode.json`, keyed by deviceID, default on).
+
+**TV wake** (`tv_wake_action()`, also in `_audio_mode_loop`) — turning the TV on wakes the soundbar over HDMI-CEC, but it comes up on its last source. If a soundbar (`has_tv_input()`: `PRODUCT/TV` in `/sources`) goes `STANDBY` → a music source and isn't playing within `TV_WAKE_GRACE` (8 s), the watcher selects `PRODUCT/TV`. Don't select the TV input while the TV may be off: with CEC on that turns a Samsung TV on (Anynet+ has no separate setting for it), which is why an earlier "park on TV before power-off" approach was reverted. `_upnp_autoplay_loop` likewise won't auto-play a soundbar coming out of standby onto its last radio station.
 
 **`main()` (line 5225)** — Parses `--port`, `--ip`, `--daemon`, runs `_check_network()`, starts `AppState.scan()`, launches `ThreadingHTTPServer`.
 
@@ -165,6 +179,7 @@ Commissioning state is persisted to `matter_bridge/data/matter/bridge.json`. Del
 
 **Key JS functions:**
 - `setActive(host)` — switch active speaker; triggers poll and reloads any open Settings sections
+- `renderRooms()` / `syncSpeakerBar()` / `toggleSpeakers()` — speaker picker: a bar showing the active speaker that opens a slide-down list (same mechanics as the Presets panel). Rows keep `chip-<host>` ids; the polls toggle `.playing`/`.offline` on them and the bar mirrors the active row
 - `pollNow()` / `schedPoll()` — 3s active-speaker poll loop
 - `bgPollAll()` — 12s background poll of all non-active speakers
 - `applyState(d)` — applies `/api/state` response to the Player UI
@@ -181,6 +196,7 @@ data/
   stations/<id>.json    # custom station definitions (name, stream_url, art_url)
   scenes/<id>.json      # named multi-speaker scenes
   alarms.json           # alarm definitions
+  audio_mode.json       # per-soundbar "auto dialogue mode on TV" setting
   dlna_uuid.txt         # persistent UUID for the embedded DLNA server
 ```
 

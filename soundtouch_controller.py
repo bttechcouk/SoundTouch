@@ -31,10 +31,13 @@ import sys
 import threading
 import time
 import uuid as _uuid
+import datetime as _dt
 import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape as xml_escape, quoteattr
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
 from urllib.parse import parse_qs, urlparse, quote as urlquote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
     import requests
@@ -61,6 +64,11 @@ STATIONS_DIR  = DATA_DIR / "stations"
 LOG_FILE      = pathlib.Path(__file__).parent / "soundtouch.log"
 SCENES_DIR    = DATA_DIR / "scenes"
 ALARMS_FILE   = DATA_DIR / "alarms.json"
+AUDIO_MODE_FILE = DATA_DIR / "audio_mode.json"
+MAINTENANCE_FILE = DATA_DIR / "maintenance.json"
+# A soundbar that wakes from standby into a music source and hasn't started
+# playing after this many seconds was woken by the TV (CEC) → switch to TV.
+TV_WAKE_GRACE   = 8
 
 # Sources that route through the Bose cloud — will break on 6 May 2026
 CLOUD_SOURCES = {
@@ -198,6 +206,12 @@ class SoundTouchDevice:
         self._presets_ts    = 0.0        # monotonic time of last preset fetch
         self._zone_cache    = None       # cached zone info
         self._zone_ts       = 0.0        # monotonic time of last zone fetch
+        self._dsp_supported = None       # dialogue-mode support, probed lazily
+        self._dsp_checked   = None       # monotonic time of last failed probe
+        self._tv_input      = None       # soundbar with a PRODUCT/TV source?
+        self._tone_supported = None      # /audioproducttonecontrols (soundbars), probed lazily
+        self._capabilities  = None       # capability names from /capabilities, read once
+        self._has_clock     = None       # front-panel clock (ST20)? read once
 
     # ── low-level ─────────────────────────────────────────────────────────────
     def _get(self, path, timeout=4):
@@ -300,14 +314,21 @@ class SoundTouchDevice:
 
     def get_bass_capabilities(self):
         xml = self._get("/bassCapabilities")
-        if xml is None:
-            return {"available": False, "min": -9, "max": 0, "default": 0}
-        return {
-            "available": (xml.findtext("bassAvailable") or "false").lower() == "true",
-            "min":     int(xml.findtext("bassMin")     or "-9"),
-            "max":     int(xml.findtext("bassMax")     or "0"),
-            "default": int(xml.findtext("bassDefault") or "0"),
-        }
+        if xml is not None and (xml.findtext("bassAvailable") or "false").lower() == "true":
+            return {
+                "available": True, "kind": "bass", "step": 1,
+                "min":     int(xml.findtext("bassMin")     or "-9"),
+                "max":     int(xml.findtext("bassMax")     or "0"),
+                "default": int(xml.findtext("bassDefault") or "0"),
+            }
+        # Soundbars (SoundTouch 300) report bassAvailable=false and expose
+        # bass through the tone controls instead (-100…100 in steps of 25).
+        tone = self.get_audio_controls("tone")
+        if tone and "bass" in tone:
+            b = tone["bass"]
+            return {"available": True, "kind": "tone", "min": b["min"], "max": b["max"],
+                    "step": b["step"], "default": 0, "current": b["value"]}
+        return {"available": False, "min": -9, "max": 0, "default": 0}
 
     def get_bass(self):
         xml = self._get("/bass")
@@ -315,7 +336,160 @@ class SoundTouchDevice:
         return int(xml.findtext("actualbass") or "0")
 
     def set_bass(self, value):
-        self._post("/bass", f"<bass>{max(-9, min(9, int(value)))}</bass>")
+        if self._tone_supported:
+            return self.set_audio_control("tone", "bass", value)
+        return self._post("/bass", f"<bass>{max(-9, min(9, int(value)))}</bass>")
+
+    # ── tone & speaker-level controls — SoundTouch 300 / soundbars only ─────
+    # /audioproducttonecontrols holds bass + treble, /audioproductlevelcontrols
+    # the centre and rear-surround levels; both use -100…100 in steps.
+    AUDIO_CONTROL_PATHS = {"tone":  "/audioproducttonecontrols",
+                           "level": "/audioproductlevelcontrols"}
+
+    def get_audio_controls(self, group):
+        """{name: {value, min, max, step}} for a control group, or None on
+        speakers without it. Only a soundbar's positive answer is cached —
+        _get can't tell a 404 from the speaker being offline."""
+        path = self.AUDIO_CONTROL_PATHS[group]
+        caps = self.capabilities()
+        if caps is not None and path.lstrip("/") not in caps:
+            return None
+        xml = self._get(path)
+        if xml is None or xml.tag != path.lstrip("/"):
+            return None
+        if group == "tone": self._tone_supported = True
+        out = {}
+        for el in xml:
+            try:
+                out[el.tag] = {k: int(el.get(a)) for k, a in
+                               (("value","value"),("min","minValue"),("max","maxValue"),("step","step"))}
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def set_audio_control(self, group, name, value):
+        """Set one control, resending the rest of its group unchanged (the bar
+        expects every control in the body). Clamped to the bar's range."""
+        ctl = self.get_audio_controls(group)
+        if not ctl or name not in ctl: return False
+        c = ctl[name]
+        c["value"] = max(c["min"], min(c["max"], int(value)))
+        tag  = self.AUDIO_CONTROL_PATHS[group].lstrip("/")
+        body = "".join(f'<{k} value="{v["value"]}"/>' for k, v in ctl.items())
+        return self._post(self.AUDIO_CONTROL_PATHS[group], f"<{tag}>{body}</{tag}>")
+
+    # ── soundbar settings: AV delay, auto-off, HDMI-CEC, attached speakers ──
+    # Read only the endpoints the speaker lists in /capabilities — some
+    # SoundTouch paths act on a plain GET (/lowPowerStandby drops the speaker
+    # off the network), so never probe blind.
+    AV_DELAY_MAX = 300   # ms; the bar accepts more but nothing sensible needs it
+
+    def capabilities(self):
+        """Set of capability names from /capabilities, or None if it couldn't
+        be read (only a successful read is cached)."""
+        if self._capabilities is not None:
+            return self._capabilities
+        xml = self._get("/capabilities")
+        if xml is None or xml.tag != "capabilities":
+            return None
+        self._capabilities = {c.get("name") for c in xml.findall("capability")}
+        return self._capabilities
+
+    def has_clock(self):
+        """True for speakers with a front-panel clock (ST20) — /capabilities
+        carries <clockDisplay>true</clockDisplay>."""
+        if self._has_clock is None:
+            xml = self._get("/capabilities")
+            if xml is None or xml.tag != "capabilities":
+                return False
+            self._has_clock = (xml.findtext("clockDisplay") or "").strip().lower() == "true"
+        return self._has_clock
+
+    def get_soundbar_settings(self):
+        """Whatever subset this speaker supports, e.g. {av_delay: 0,
+        auto_off: True, cec: True, rear: False, subwoofer: False}."""
+        caps, out = self.capabilities() or set(), {}
+        if "audiodspcontrols" in caps:
+            x = self._get("/audiodspcontrols")
+            if x is not None and x.get("videosyncaudiodelay") is not None:
+                out["av_delay"] = int(x.get("videosyncaudiodelay"))
+        if "systemtimeoutcontrol" in caps:
+            x = self._get("/systemtimeoutcontrol")
+            if x is not None and x.get("autopowerdown") is not None:
+                out["auto_off"] = x.get("autopowerdown") == "true"
+        if "productcechdmicontrol" in caps:
+            x = self._get("/productcechdmicontrol")
+            if x is not None and x.get("cecmode"):
+                out["cec"] = x.get("cecmode") != "CEC_MODE_OFF"
+        if "audiospeakerattributeandsetting" in caps:
+            x = self._get("/audiospeakerattributeandsetting")
+            if x is not None:
+                for tag, key in (("rear", "rear"), ("subwoofer01", "subwoofer")):
+                    el = x.find(tag)
+                    if el is not None: out[key] = el.get("available") == "true"
+        return out
+
+    def set_soundbar_setting(self, name, value):
+        """name: av_delay (ms, clamped 0…AV_DELAY_MAX) / auto_off / cec (bool-ish)."""
+        caps = self.capabilities() or set()
+        on = str(value).lower() in ("1", "true", "on", "yes")
+        if name == "av_delay" and "audiodspcontrols" in caps:
+            ms = max(0, min(self.AV_DELAY_MAX, int(value)))
+            return self._post("/audiodspcontrols", f'<audiodspcontrols videosyncaudiodelay="{ms}"/>')
+        if name == "auto_off" and "systemtimeoutcontrol" in caps:
+            return self._post("/systemtimeoutcontrol",
+                              f'<systemtimeoutcontrol autopowerdown="{str(on).lower()}"/>')
+        if name == "cec" and "productcechdmicontrol" in caps:
+            mode = "CEC_MODE_ON" if on else "CEC_MODE_OFF"
+            return self._post("/productcechdmicontrol", f'<productcechdmicontrol cecmode="{mode}"/>')
+        return False
+
+    # ── audio DSP (dialogue mode) — SoundTouch 300 / soundbars only ──────────
+    def supports_dialog_mode(self):
+        """True if /audiodspcontrols lists AUDIO_MODE_DIALOG. Speakers without
+        it (ST10/20/30) 404 the endpoint — that answer is cached for good. A
+        network error is re-probed after 10 min so a speaker that was briefly
+        offline doesn't lose the feature until restart."""
+        if self._dsp_supported is not None:
+            return self._dsp_supported
+        now = time.monotonic()
+        if self._dsp_checked is not None and now - self._dsp_checked < 600:
+            return False
+        self._dsp_checked = now
+        try:
+            r = self._session.get(f"{self.url}/audiodspcontrols", timeout=4)
+        except Exception as e:
+            log.debug(f"[DSP] {self.host} probe failed, will retry: {e}")
+            return False
+        try:
+            xml = ET.fromstring(r.text) if r.status_code == 200 else None
+        except ET.ParseError:
+            xml = None
+        self._dsp_supported = (xml is not None and xml.tag == "audiodspcontrols" and
+                               "AUDIO_MODE_DIALOG" in xml.get("supportedaudiomodes", ""))
+        log.info(f"[DSP] {self.host} dialogue mode supported: {self._dsp_supported}")
+        return self._dsp_supported
+
+    def get_audio_mode(self):
+        """Return "dialog" / "normal", or None if dialogue mode is unsupported."""
+        xml = self._get("/audiodspcontrols")
+        if xml is None or xml.tag != "audiodspcontrols":
+            return None
+        return "dialog" if xml.get("audiomode") == "AUDIO_MODE_DIALOG" else "normal"
+
+    def has_tv_input(self):
+        """True for soundbars — speakers whose /sources include PRODUCT/TV.
+        Cached once /sources answers; an unreachable speaker is re-checked."""
+        if self._tv_input is None:
+            sources = self.get_sources()
+            if sources:
+                self._tv_input = any(s["source"] == "PRODUCT" and s["sourceAccount"] == "TV"
+                                     for s in sources)
+        return bool(self._tv_input)
+
+    def set_audio_mode(self, mode):
+        am = "AUDIO_MODE_DIALOG" if mode == "dialog" else "AUDIO_MODE_NORMAL"
+        return self._post("/audiodspcontrols", f'<audiodspcontrols audiomode="{am}"/>')
 
     def get_sources(self):
         xml = self._get("/sources")
@@ -340,7 +514,7 @@ class SoundTouchDevice:
 
     def select_source(self, source, account=""):
         body = f'<ContentItem source="{source}" sourceAccount="{account}"></ContentItem>'
-        self._post("/select", body)
+        return self._post("/select", body)
 
     def has_local_internet_radio(self):
         try:
@@ -355,6 +529,32 @@ class SoundTouchDevice:
         except Exception:
             return True  # assume available on error so existing speakers aren't broken
 
+    def reboot(self):
+        """Restart the speaker. There's no reboot in the port-8090 API, but every
+        SoundTouch runs a diagnostic console (TAP) on TCP 17000 that takes
+        `sys reboot`. Only that exact command is ever sent — the same console
+        has `sys factorydefault`. Returns True once the speaker confirms.
+
+        Fixes ST20s whose front-panel clock goes blank. The speaker may come
+        back on a new DHCP address — see AppState.reboot_device()."""
+        try:
+            with socket.create_connection((self.host, 17000), timeout=5) as s:
+                s.settimeout(3)
+                s.recv(256)                      # "->" prompt
+                s.sendall(b"sys reboot\r\n")
+                reply = b""
+                deadline = time.monotonic() + 3
+                while b"Rebooting" not in reply and time.monotonic() < deadline:
+                    chunk = s.recv(256)
+                    if not chunk: break
+                    reply += chunk
+            ok = b"Rebooting" in reply
+            log.info(f"[REBOOT] {self.host} ({self.name}) → {reply.decode(errors='replace').strip()!r}")
+            return ok
+        except Exception as e:
+            log.warning(f"[REBOOT] {self.host} console error: {e}")
+            return False
+
     def set_name(self, new_name):
         self._post("/name", f"<name>{new_name}</name>")
 
@@ -364,12 +564,17 @@ class SoundTouchDevice:
                  volume=0, muted=False, source="", track="", artist="",
                  album="", art="", playing=False, presets=[])
 
-        # Fetch all four endpoints in parallel to minimise poll latency
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        # Fetch all endpoints in parallel to minimise poll latency
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
             f_vol  = ex.submit(self._get, "/volume")
             f_np   = ex.submit(self._get, "/now_playing")
             f_pre  = ex.submit(self.get_presets_detail)
             f_zone = ex.submit(self.get_zone)
+            f_dsp  = ex.submit(lambda: self.get_audio_mode()
+                               if self.supports_dialog_mode() else None)
+
+        # dialogue mode — None means unsupported (UI hides the toggle)
+        d["audio_mode"] = f_dsp.result()
 
         # volume
         vx = f_vol.result()
@@ -385,6 +590,7 @@ class SoundTouchDevice:
         np = f_np.result()
         if np is not None:
             d["source"]     = np.get("source","")
+            d["source_account"] = np.get("sourceAccount","")
             play_status     = np.get("playStatus") or np.findtext("playStatus") or ""
             d["playing"]    = play_status in ("PLAY_STATE", "BUFFERING_STATE")
             d["playStatus"] = play_status
@@ -396,6 +602,8 @@ class SoundTouchDevice:
             ci = np.find("ContentItem")
             if ci is not None:
                 d["_upnp_location"] = ci.get("location", "")
+                d["presetable"] = ci.get("isPresetable") == "true" and bool(ci.get("location"))
+                d["item_name"]  = ci.findtext("itemName") or ""
         # cloud source warning
         src_key = d.get("source", "").upper()
         if src_key in CLOUD_SOURCES:
@@ -441,6 +649,7 @@ class SoundTouchDevice:
                     "type":     "",
                     "location": "",
                     "account":  "",
+                    "art":      "",
                 }
                 if ci is not None:
                     rec["source"]   = ci.get("source","")
@@ -450,6 +659,9 @@ class SoundTouchDevice:
                     nm = ci.find("itemName")
                     if nm is not None:
                         rec["name"] = nm.text or ""
+                    ca = ci.find("containerArt")
+                    if ca is not None:
+                        rec["art"] = ca.text or ""
                 out.append(rec)
         self._presets_cache = out
         self._presets_ts    = time.monotonic()
@@ -465,21 +677,55 @@ class SoundTouchDevice:
     def volume_down(self): self._key("VOLUME_DOWN")
     def preset(self, n):   self._key(f"PRESET_{n}")
 
+    def play_preset(self, n):
+        """Play preset n the way that actually starts audio. UPNP presets (our
+        DLNA radio stations): a key press only loads the ContentItem and the
+        speaker waits for an AVTransport Play, so send that directly. Anything
+        else: the preset key."""
+        p = next((x for x in self.get_presets_detail() if x.get("id") == str(n)), None)
+        if p and p.get("source") == "UPNP" and p.get("location", ""):
+            return self.play_via_avt(p["location"])
+        self.preset(n)
+        return True
+
+    def is_playing(self):
+        np = self._get("/now_playing")
+        if np is None: return False
+        ps = np.get("playStatus") or np.findtext("playStatus") or ""
+        return ps in ("PLAY_STATE", "BUFFERING_STATE")
+
     def set_volume(self, v):
         self._post("/volume", f"<volume>{max(0,min(100,int(v)))}</volume>")
 
     # ── preset management ─────────────────────────────────────────────────────
-    def store_preset(self, preset_id, name, source, stype, location, account=""):
-        """Write a preset to the speaker via /storePreset."""
-        acct = f' sourceAccount="{account}"' if account else ''
+    def store_preset(self, preset_id, name, source, stype, location, account="", art=""):
+        """Write a preset to the speaker via /storePreset. Values are XML-escaped
+        (a "Rock & Roll" playlist or a URL with & would otherwise be rejected);
+        `art` becomes containerArt, which the preset tiles show."""
+        acct = f' sourceAccount={quoteattr(account)}' if account else ''
+        art_el = f'<containerArt>{xml_escape(art)}</containerArt>' if art else ''
         xml = (
-            f'<preset id="{preset_id}">'
-            f'<ContentItem source="{source}" type="{stype}" '
-            f'location="{location}"{acct}>'
-            f'<itemName>{name}</itemName>'
+            f'<preset id={quoteattr(str(preset_id))}>'
+            f'<ContentItem source={quoteattr(source)} type={quoteattr(stype or "")} '
+            f'location={quoteattr(location)}{acct}>'
+            f'<itemName>{xml_escape(name or "")}</itemName>{art_el}'
             f'</ContentItem></preset>'
         )
         return self._post("/storePreset", xml)
+
+    def now_playing_item(self):
+        """What's playing, as a preset-ready dict — or None when nothing
+        presettable is on (standby, TV, Bluetooth, AUX…). For Spotify this is
+        the playlist/album the track came from, not the single track."""
+        np = self._get("/now_playing")
+        ci = np.find("ContentItem") if np is not None else None
+        if ci is None or ci.get("isPresetable") != "true" or not ci.get("location"):
+            return None
+        return {"source": ci.get("source", ""), "type": ci.get("type", ""),
+                "location": ci.get("location", ""), "account": ci.get("sourceAccount", ""),
+                "name": (ci.findtext("itemName") or np.findtext("stationName")
+                         or np.findtext("track") or "Preset").strip(),
+                "art": (np.findtext("art") or "").strip()}
 
     def select_content(self, source, stype, location, name="", account=""):
         """Play a ContentItem immediately via /select."""
@@ -492,12 +738,21 @@ class SoundTouchDevice:
         )
         return self._post("/select", xml)
 
-    def play_via_avt(self, stream_url):
+    def play_via_avt(self, stream_url, title="", art=""):
         """Play a stream URL via UPnP AVTransport (port 8091).
         Used for speakers that lack LOCAL_INTERNET_RADIO. The URL must be HTTP
-        (not HTTPS) — the speaker follows redirects but rejects https:// URIs."""
+        (not HTTPS) — the speaker follows redirects but rejects https:// URIs.
+
+        The DIDL-Lite metadata is what the speaker shows on its display and in
+        now_playing. Sent empty, an ST20 showed just "Q". For our own station
+        URLs (/dlna/stream/<id>) the name and logo are looked up automatically."""
+        if not title and "/dlna/stream/" in stream_url:
+            st = PresetStore().get_station(stream_url.rstrip("/").split("/")[-1])
+            if st:
+                title, art = st.get("name", ""), art or st.get("art_url", "")
         avt = f"http://{self.host}:8091/AVTransport/Control"
-        esc = stream_url.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        esc = xml_escape(stream_url)
+        meta = xml_escape(avt_didl(stream_url, title, art)) if title else ""
         set_soap = (
             '<?xml version="1.0" encoding="utf-8"?>'
             '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
@@ -505,7 +760,7 @@ class SoundTouchDevice:
             '<s:Body><u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
             '<InstanceID>0</InstanceID>'
             f'<CurrentURI>{esc}</CurrentURI>'
-            '<CurrentURIMetaData></CurrentURIMetaData>'
+            f'<CurrentURIMetaData>{meta}</CurrentURIMetaData>'
             '</u:SetAVTransportURI></s:Body></s:Envelope>'
         )
         play_soap = (
@@ -1131,14 +1386,200 @@ class AlarmStore:
                 if a["id"] == alarm_id: a["enabled"] = enabled; break
             self._save(alarms)
 
+    def record_result(self, alarm_id, fired_at, result):
+        """Keep the outcome of the last ring on the alarm itself — the main
+        log rotates in about an hour, so this is the only lasting record."""
+        with self._lock:
+            alarms = self._load()
+            for a in alarms:
+                if a["id"] == alarm_id:
+                    a["last_fired"], a["last_result"] = fired_at, result
+                    break
+            self._save(alarms)
+
+
+class AudioModeStore:
+    """Per-speaker "auto dialogue mode on TV" setting, persisted to
+    data/audio_mode.json. Keyed by deviceID (falls back to IP) so the setting
+    survives DHCP address changes. Defaults to enabled."""
+
+    def __init__(self, path=AUDIO_MODE_FILE):
+        self._file = pathlib.Path(path)
+        self._lock = threading.Lock()
+
+    def _load(self):
+        if not self._file.exists(): return {}
+        try: return json.loads(self._file.read_text())
+        except Exception: return {}
+
+    @staticmethod
+    def _key(dev):
+        return dev.device_id or dev.host
+
+    def auto_enabled(self, dev):
+        with self._lock:
+            return bool(self._load().get(self._key(dev), {}).get("auto_tv", True))
+
+    def set_auto(self, dev, enabled):
+        with self._lock:
+            data = self._load()
+            data.setdefault(self._key(dev), {})["auto_tv"] = bool(enabled)
+            _atomic_write(self._file, json.dumps(data, indent=2))
+
+
+def _source_kind(source):
+    """Classify a now_playing source: "tv" (PRODUCT = TV/HDMI input), "idle"
+    (standby / nothing selected), or "music" (everything else)."""
+    if source == "PRODUCT":
+        return "tv"
+    if source in ("", "STANDBY", "INVALID_SOURCE"):
+        return "idle"
+    return "music"
+
+
+def audio_mode_for_transition(prev_source, source):
+    """Audio mode to apply when a soundbar moves prev_source → source, or None.
+
+    Entering the TV input (from music *or* standby — the bar tends to drop
+    dialogue mode when it sleeps) → "dialog". Entering a music source from TV
+    or standby → "normal". Music → music and TV → TV leave the mode alone, so
+    a manual change made mid-session sticks. prev_source=None (first time we
+    see the speaker) never acts, so starting the controller doesn't override."""
+    if prev_source is None:
+        return None
+    before, after = _source_kind(prev_source), _source_kind(source)
+    if before == after:
+        return None
+    if after == "tv":
+        return "dialog"
+    if after == "music":
+        return "normal"
+    return None
+
+
+def avt_didl(url, title, art=""):
+    """DIDL-Lite for AVTransport's CurrentURIMetaData: one radio-broadcast item
+    whose title (and album art) the speaker puts on its display."""
+    e = lambda v: xml_escape(v, {'"': "&quot;"})
+    art_el = f'<upnp:albumArtURI>{e(art)}</upnp:albumArtURI>' if art else ''
+    return ('<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+            'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">'
+            '<item id="1" parentID="0" restricted="1">'
+            f'<dc:title>{e(title)}</dc:title>'
+            '<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>'
+            f'{art_el}<res protocolInfo="http-get:*:audio/mpeg:*">{e(url)}</res>'
+            '</item></DIDL-Lite>')
+
+
+def preset_target_ok(item, sources):
+    """Can a speaker with `sources` (get_sources() output) play preset `item`?
+    Returns (ok, reason). Spotify needs the same linked account, ready; our
+    DLNA radio (UPNP) plays anywhere; anything else needs that source."""
+    src = item.get("source")
+    if src == "UPNP":
+        return True, ""
+    if not sources:
+        return False, "unreachable"
+    if src == "SPOTIFY":
+        if any(s["source"] == "SPOTIFY" and s["sourceAccount"] == item.get("account")
+               and s["status"] == "READY" for s in sources):
+            return True, ""
+        return False, "no Spotify account linked"
+    if any(s["source"] == src for s in sources):
+        return True, ""
+    return False, f"no {src} source"
+
+
+def tv_wake_action(woke_source, elapsed, source, playing, grace=TV_WAKE_GRACE):
+    """Decide what to do after a soundbar woke from standby into a music source.
+
+    Turning the TV on wakes the bar over HDMI-CEC, but the bar comes up on
+    whatever source it was last on, not the TV. A wake you caused (Spotify,
+    AirPlay, the app, Alexa) starts playing within a few seconds; a CEC wake
+    from the TV just sits there silent. So: still on the same music source
+    and not playing once `grace` seconds have passed → switch to TV.
+
+    This never selects the TV input while the TV might be off, which is what
+    would turn the TV on over CEC.
+
+    Returns "switch" (select PRODUCT/TV), "done" (stop watching — it played,
+    or the source changed) or "wait"."""
+    if playing or source != woke_source:
+        return "done"
+    return "switch" if elapsed >= grace else "wait"
+
+
+class MaintenanceStore:
+    """Scheduled restart of the clock speakers (ST20s), persisted to
+    data/maintenance.json. Their front-panel clock stalls after running for a
+    while — the API still reports the right time — and a restart fixes it."""
+
+    DEFAULTS = {"enabled": True, "day": 6, "time": "04:00", "tz": "Europe/London"}
+
+    def __init__(self, path=MAINTENANCE_FILE):
+        self._file = pathlib.Path(path)
+        self._lock = threading.Lock()
+
+    def _load(self):
+        try: return json.loads(self._file.read_text())
+        except Exception: return {}
+
+    def get(self):
+        with self._lock:
+            return {**self.DEFAULTS, **self._load()}
+
+    def update(self, **fields):
+        with self._lock:
+            data = {**self.DEFAULTS, **self._load(), **fields}
+            _atomic_write(self._file, json.dumps(data, indent=2))
+            return data
+
+
+def maintenance_due_key(cfg, now_utc):
+    """Same rules as an alarm: weekly on cfg["day"] (0=Mon … 6=Sun) at
+    cfg["time"] in cfg["tz"]."""
+    return alarm_due_key({"id": "auto_restart", "enabled": cfg.get("enabled"),
+                          "time": cfg.get("time"), "days": [int(cfg.get("day", 6))],
+                          "tz": cfg.get("tz")}, now_utc)
+
+
+def alarm_tz(alarm):
+    """The timezone an alarm's time is written in. New alarms carry the phone's
+    zone ("Europe/London"); older ones fall back to SOUNDTOUCH_TZ, then the
+    server's local time. The server runs in UTC, so without this a 07:00 alarm
+    rang at 08:00 during British Summer Time."""
+    for name in (alarm.get("tz"), os.environ.get("SOUNDTOUCH_TZ")):
+        if name:
+            try: return ZoneInfo(name)
+            except (ZoneInfoNotFoundError, ValueError): pass
+    return None   # → server local time
+
+
+def alarm_due_key(alarm, now_utc):
+    """Dedup key if `alarm` should ring at `now_utc` (an aware datetime), else
+    None. The key is unique per alarm, local day and time, so the 30 s ticks
+    fire it exactly once — and an alarm edited to a later time the same day
+    still rings at the new time."""
+    if not alarm.get("enabled"):
+        return None
+    now = now_utc.astimezone(alarm_tz(alarm))   # tz None → server local time
+    if alarm.get("time") != now.strftime("%H:%M"):
+        return None
+    if now.weekday() not in alarm.get("days", list(range(7))):   # 0=Mon … 6=Sun
+        return None
+    return f"{alarm['id']}_{now.date().isoformat()}_{alarm['time']}"
+
 
 class AlarmScheduler:
     """Background thread that fires alarms at their scheduled time."""
 
+    VERIFY_AFTER = 15   # seconds to wait for the speaker to start before retrying
+
     def __init__(self, alarm_store, app_state):
         self._store     = alarm_store
         self._app       = app_state
-        self._fired     = {}   # alarm_id+date key → True
+        self._fired     = {}   # alarm_due_key → True
         self._thread    = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         log.info("[ALARM] Scheduler started")
@@ -1150,29 +1591,67 @@ class AlarmScheduler:
             time.sleep(30)
 
     def _tick(self):
-        now    = time.localtime()
-        hhmm   = f"{now.tm_hour:02d}:{now.tm_min:02d}"
-        wday   = now.tm_wday   # 0=Mon … 6=Sun
-        today  = f"{now.tm_year}{now.tm_yday}"
+        now = _dt.datetime.now(_dt.timezone.utc)
+        store = getattr(self._app, "maintenance_store", None)
+        if store:
+            key = maintenance_due_key(store.get(), now)
+            if key and not self._fired.get(key):
+                self._fired[key] = True
+                threading.Thread(target=self._app.restart_clock_speakers,
+                                 args=("weekly restart",), daemon=True).start()
         for alarm in self._store.list_alarms():
-            if not alarm.get("enabled"): continue
-            if alarm.get("time") != hhmm: continue
-            if wday not in alarm.get("days", list(range(7))): continue
-            key = f"{alarm['id']}_{hhmm}_{today}"
-            if self._fired.get(key): continue
+            key = alarm_due_key(alarm, now)
+            if not key or self._fired.get(key): continue
             self._fired[key] = True
             threading.Thread(target=self._fire, args=(alarm,), daemon=True).start()
 
+    def _device(self, alarm):
+        """Find the alarm's speaker by IP, falling back to its deviceID in case
+        DHCP has moved it since the alarm was set."""
+        dev = self._app.get_device(alarm.get("host"))
+        if dev or not alarm.get("device_id"):
+            return dev
+        with self._app._lock:
+            return next((d for d in self._app.devices
+                         if d.device_id == alarm["device_id"]), None)
+
+    def _wait_playing(self, dev):
+        """Poll once a second until the speaker plays (True) or VERIFY_AFTER
+        runs out (False). Returning as soon as it plays matters: a single check
+        at the end missed alarms that were switched off within 15 s, and the
+        retry then turned the radio back on."""
+        deadline = time.monotonic() + self.VERIFY_AFTER
+        while True:
+            if dev.is_playing():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(1)
+
     def _fire(self, alarm):
-        host = alarm.get("host")
-        dev  = self._app.get_device(host) if host else None
+        name, n = alarm.get("name"), alarm.get("preset", 1)
+        fired_at = _dt.datetime.now(alarm_tz(alarm) or _dt.timezone.utc).isoformat(timespec="seconds")
+        dev = self._device(alarm)
         if not dev:
-            log.warning(f"[ALARM] Device not found for alarm '{alarm.get('name')}'"); return
-        vol = alarm.get("volume")
-        if vol is not None:
-            dev.set_volume(vol); time.sleep(0.5)
-        dev.preset(alarm.get("preset", 1))
-        log.info(f"[ALARM] Fired '{alarm.get('name')}' — {host} preset {alarm.get('preset',1)}")
+            log.warning(f"[ALARM] '{name}': speaker {alarm.get('host')} not found")
+            self._store.record_result(alarm["id"], fired_at, "speaker not found")
+            return
+        log.info(f"[ALARM] Firing '{name}' — {dev.name} ({dev.host}) preset {n}")
+        result = "failed"
+        for attempt in (1, 2):
+            vol = alarm.get("volume")
+            if vol is not None:
+                dev.set_volume(vol); time.sleep(0.5)
+            dev.invalidate_preset_cache()
+            dev.play_preset(n)
+            if self._wait_playing(dev):
+                result = "played" if attempt == 1 else "played (retry)"
+                if vol is not None:
+                    dev.set_volume(vol)   # a speaker in standby can ignore the first one
+                break
+            log.warning(f"[ALARM] '{name}' not playing after attempt {attempt}")
+        log.info(f"[ALARM] '{name}' result: {result}")
+        self._store.record_result(alarm["id"], fired_at, result)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1541,6 +2020,8 @@ class Handler(BaseHTTPRequestHandler):
                             st["track"] = station.get("name", "")
                         if not st.get("art"):
                             st["art"] = station.get("art_url", "")
+                if st.get("audio_mode") is not None:
+                    st["auto_dialog_tv"] = self.server_state.audio_mode_store.auto_enabled(dev)
                 self._json(st)
 
         elif path == "/api/cmd":
@@ -1558,16 +2039,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif action=="volume" and value: dev.set_volume(value); ok=True
                 elif action=="bass"   and value: dev.set_bass(value);   ok=True
                 elif action.startswith("preset"):
-                    n = int(action.replace("preset",""))
-                    # UPNP presets: key press loads the ContentItem but the speaker
-                    # waits for an external AVTransport Play to start audio.
-                    # Detect this case from the cached preset list and use AVTransport.
-                    presets = dev.get_presets_detail()
-                    p = next((x for x in presets if x.get("id") == str(n)), None)
-                    if p and p.get("source") == "UPNP" and p.get("location",""):
-                        ok = dev.play_via_avt(p["location"])
-                    else:
-                        dev.preset(n); ok=True
+                    ok = dev.play_preset(int(action.replace("preset","")))
             self._json({"ok":ok})
 
         # ── preset backup / restore ───────────────────────────────────────────
@@ -1917,8 +2389,128 @@ class Handler(BaseHTTPRequestHandler):
             if not dev: self._json({"error":"no_device"})
             else:
                 caps = dev.get_bass_capabilities()
-                caps["current"] = dev.get_bass()
+                if "current" not in caps: caps["current"] = dev.get_bass()
                 self._json(caps)
+
+        # ── soundbar tone / speaker levels (bass has its own slider) ─────────
+        elif path in ("/api/audio-controls", "/api/audio-controls/set"):
+            host = qs.get("host",[None])[0]
+            dev  = self.server_state.get_device(host)
+            if not dev: self._json({"error":"no_device"})
+            elif path.endswith("/set"):
+                group = qs.get("group",[""])[0]
+                name  = qs.get("name", [""])[0]
+                value = qs.get("value",[""])[0]
+                try:
+                    ok = (group in dev.AUDIO_CONTROL_PATHS and
+                          dev.set_audio_control(group, name, int(value)))
+                except ValueError:
+                    ok = False
+                self._json({"ok": bool(ok)})
+            else:
+                self._json({g: dev.get_audio_controls(g) for g in dev.AUDIO_CONTROL_PATHS})
+
+        # ── soundbar settings (AV delay, auto-off, CEC, attached speakers) ───
+        elif path in ("/api/soundbar", "/api/soundbar/set"):
+            host = qs.get("host",[None])[0]
+            dev  = self.server_state.get_device(host)
+            if not dev: self._json({"error":"no_device"})
+            elif path.endswith("/set"):
+                try:
+                    ok = dev.set_soundbar_setting(qs.get("name",[""])[0], qs.get("value",[""])[0])
+                except ValueError:
+                    ok = False
+                self._json({"ok": bool(ok), **dev.get_soundbar_settings()})
+            else:
+                self._json(dev.get_soundbar_settings())
+
+        # ── save what's playing as a preset ───────────────────────────────────
+        elif path == "/api/presets/save-current":
+            st   = self.server_state
+            dev  = st.get_device(qs.get("host",[None])[0])
+            slot = qs.get("slot",[""])[0]
+            to_all = qs.get("all",["false"])[0].lower() == "true"
+            item = dev.now_playing_item() if dev else None
+            if not dev or not slot.isdigit() or not 1 <= int(slot) <= 6:
+                self._json({"ok": False, "error": "bad request"})
+            elif not item:
+                self._json({"ok": False, "error": "Nothing that can be saved is playing"})
+            else:
+                targets = [dev] + ([d for d in st.devices if d is not dev] if to_all else [])
+                results = {}
+                for d in targets:
+                    ok, why = (True, "") if d is dev else preset_target_ok(item, d.get_sources())
+                    if not ok:
+                        results[d.name] = f"skipped ({why})"
+                        continue
+                    if d.store_preset(slot, item["name"], item["source"], item["type"],
+                                      item["location"], item["account"], item["art"]):
+                        d.invalidate_preset_cache()
+                        # Keep the backup in step so a restore doesn't undo it
+                        st.store.backup_presets(d.host, d.get_presets_detail())
+                        d.has_backup = True
+                        results[d.name] = "saved"
+                    else:
+                        results[d.name] = "failed"
+                log.info(f"[PRESET] saved '{item['name']}' ({item['source']}) to slot {slot}: {results}")
+                self._json({"ok": True, "name": item["name"], "slot": int(slot), "results": results})
+
+        # ── reboot ────────────────────────────────────────────────────────────
+        elif path == "/api/reboot":
+            dev = self.server_state.get_device(qs.get("host",[None])[0])
+            if not dev:
+                self._json({"ok": False, "error": "no_device"})
+            elif self.server_state.reboot_device(dev):
+                self._json({"ok": True, "device_id": dev.device_id})
+            else:
+                self._json({"ok": False, "error": "speaker didn't accept the reboot"})
+
+        elif path in ("/api/maintenance", "/api/maintenance/set"):
+            ms = self.server_state.maintenance_store
+            if path.endswith("/set"):
+                fields = {}
+                if "enabled" in qs: fields["enabled"] = qs["enabled"][0].lower() == "true"
+                if "day" in qs and qs["day"][0].isdigit() and 0 <= int(qs["day"][0]) <= 6:
+                    fields["day"] = int(qs["day"][0])
+                if "time" in qs and re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", qs["time"][0]):
+                    fields["time"] = qs["time"][0]
+                if "tz" in qs:
+                    try: ZoneInfo(qs["tz"][0]); fields["tz"] = qs["tz"][0]
+                    except (ZoneInfoNotFoundError, ValueError): pass
+                ms.update(**fields)
+                log.info(f"[MAINT] settings → {ms.get()}")
+            cfg = ms.get()
+            cfg["speakers"] = [d.name for d in self.server_state.devices if d.has_clock()]
+            self._json(cfg)
+
+        elif path == "/api/maintenance/run":
+            threading.Thread(target=self.server_state.restart_clock_speakers,
+                             args=("manual run",), daemon=True).start()
+            self._json({"ok": True})
+
+        elif path == "/api/reboot/status":
+            did = qs.get("device_id",[""])[0]
+            self._json(self.server_state.reboot_status.get(did, {"state": "unknown"}))
+
+        # ── dialogue mode (soundbars) ─────────────────────────────────────────
+        elif path in ("/api/audio-mode", "/api/audio-mode/set", "/api/audio-mode/auto"):
+            host = qs.get("host",[None])[0]
+            dev  = self.server_state.get_device(host)
+            st   = self.server_state
+            if not dev or not dev.supports_dialog_mode():
+                self._json({"supported": False})
+            else:
+                if path.endswith("/set"):
+                    mode = qs.get("mode",[""])[0]
+                    if mode in ("dialog", "normal"):
+                        st.cancel_audio_mode_pending(dev.host)
+                        dev.set_audio_mode(mode)
+                elif path.endswith("/auto"):
+                    enabled = qs.get("enabled",["true"])[0].lower() == "true"
+                    st.audio_mode_store.set_auto(dev, enabled)
+                    log.info(f"[DSP] {dev.host} auto dialogue mode on TV: {enabled}")
+                self._json({"supported": True, "mode": dev.get_audio_mode(),
+                            "auto_tv": st.audio_mode_store.auto_enabled(dev)})
 
         # ── sources ───────────────────────────────────────────────────────────
         elif path == "/api/sources":
@@ -1931,8 +2523,7 @@ class Handler(BaseHTTPRequestHandler):
             source  = qs.get("source", [""])[0]
             account = qs.get("account",[""])[0]
             dev     = self.server_state.get_device(host)
-            if dev and source: dev.select_source(source, account); self._json({"ok":True})
-            else:              self._json({"ok":False})
+            self._json({"ok": bool(dev and source and dev.select_source(source, account))})
 
         # ── rename ────────────────────────────────────────────────────────────
         elif path == "/api/rename":
@@ -2022,7 +2613,21 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── alarms ────────────────────────────────────────────────────────────
         elif path == "/api/alarms":
-            self._json(self.server_state.alarm_store.list_alarms())
+            # Add each alarm's current preset name/source (looked up live, so
+            # the card follows a preset that's been re-saved since)
+            alarms = self.server_state.alarm_store.list_alarms()
+            for a in alarms:
+                dev = self.server_state.get_device(a.get("host"))
+                if dev is None and a.get("device_id"):
+                    dev = next((d for d in self.server_state.devices
+                                if d.device_id == a["device_id"]), None)
+                if dev:
+                    a["host"] = dev.host   # current address, in case DHCP moved it
+                p = next((x for x in (dev.get_presets_detail() if dev else [])
+                          if x.get("id") == str(a.get("preset"))), None)
+                if p and p.get("name"):
+                    a["preset_name"], a["preset_source"] = p["name"], p.get("source", "")
+            self._json(alarms)
 
         elif path == "/api/alarms/delete":
             aid = qs.get("id", [""])[0]
@@ -2195,7 +2800,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/alarms":
             try:
                 data    = json.loads(body)
-                alarm_id = "alarm_" + str(int(time.time()))
+                # Editing: keep the alarm's id, on/off state and ring history
+                existing = next((a for a in self.server_state.alarm_store.list_alarms()
+                                 if data.get("id") and a["id"] == data["id"]), None)
+                alarm_id = existing["id"] if existing else "alarm_" + str(int(time.time()))
                 alarm = {
                     "id":      alarm_id,
                     "name":    data.get("name", "Alarm").strip() or "Alarm",
@@ -2203,11 +2811,22 @@ class Handler(BaseHTTPRequestHandler):
                     "preset":  int(data.get("preset", 1)),
                     "time":    data.get("time", "07:00"),
                     "days":    [int(d) for d in data.get("days", list(range(7)))],
-                    "enabled": True,
+                    "enabled": existing.get("enabled", True) if existing else True,
                     "volume":  int(data["volume"]) if data.get("volume") not in (None, "") else None,
                 }
+                if existing:
+                    for k in ("last_fired", "last_result"):
+                        if k in existing: alarm[k] = existing[k]
+                # The phone's timezone — the server clock is UTC
+                tz = (data.get("tz") or "").strip()
+                if tz:
+                    try: ZoneInfo(tz); alarm["tz"] = tz
+                    except (ZoneInfoNotFoundError, ValueError): pass
+                dev = self.server_state.get_device(alarm["host"])
+                if dev and dev.device_id:
+                    alarm["device_id"] = dev.device_id
                 self.server_state.alarm_store.save_alarm(alarm)
-                log.info(f"[ALARM] Saved '{alarm['name']}' at {alarm['time']}")
+                log.info(f"[ALARM] {'Updated' if existing else 'Saved'} '{alarm['name']}' at {alarm['time']}")
                 self._json({"ok": True, "id": alarm_id})
             except Exception as e:
                 self._json({"ok": False, "error": str(e)})
@@ -2277,15 +2896,19 @@ class Handler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             self._respond(404, "text/plain", b"Not found")
             return
-        self._respond(200, ctype, body)
+        # no-cache: the browser may keep a copy but must check it's current, so
+        # a deploy reaches phones on the next open
+        self._respond(200, ctype, body, extra={"Cache-Control": "no-cache"})
 
-    def _respond(self, code, ctype, body):
+    def _respond(self, code, ctype, body, extra=None):
         if code >= 400:
             log.warning(f"[API RESP] {code} {ctype}  {body[:200].decode('utf-8','replace')}")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", len(body))
         self.send_header("Access-Control-Allow-Origin", "*")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
@@ -2317,6 +2940,83 @@ class AppState:
         self._kitchen_like = {}  # host → bool, cached after first check
         t = threading.Thread(target=self._upnp_autoplay_loop, daemon=True)
         t.start()
+
+        self.audio_mode_store = AudioModeStore()
+        self._audio_pending   = {}  # host → [mode, deadline, attempts] being enforced
+        self.reboot_status    = {}  # deviceID → {state, host, name} after reboot_device()
+        self.maintenance_store = MaintenanceStore()
+        threading.Thread(target=self._audio_mode_loop, daemon=True).start()
+
+    def cancel_audio_mode_pending(self, host):
+        """Stop enforcing an automatic mode — called when the user sets one by hand."""
+        self._audio_pending.pop(host, None)
+
+    def _audio_mode_loop(self):
+        """Soundbar watcher (every 2 s, soundbars only):
+
+        - TV wake: the bar woke from standby into a music source and nothing
+          started playing within TV_WAKE_GRACE → the TV woke it over CEC, so
+          switch it to the TV input (see tv_wake_action).
+        - Auto dialogue mode: dialogue mode when the TV input is selected,
+          normal for music sources. After a switch the target mode is re-checked
+          for a few seconds and re-applied if the bar reverts it — it can reset
+          its DSP mode while still settling into the new input."""
+        prev_source = {}   # host → source from the previous poll
+        woke        = {}   # host → (music source it woke into, monotonic time)
+        while True:
+            time.sleep(2)
+            with self._lock:
+                devices = list(self.devices)
+            for dev in devices:
+                try:
+                    if not dev.has_tv_input():
+                        continue
+                    np = dev._get("/now_playing")
+                    if np is None:
+                        continue
+                    source = np.get("source", "")
+                    if source == "NOTIFICATION":
+                        continue   # TTS announcement — not a real source change
+                    play_status = np.get("playStatus") or np.findtext("playStatus") or ""
+                    playing = play_status in ("PLAY_STATE", "BUFFERING_STATE")
+                    prev = prev_source.get(dev.host)
+                    prev_source[dev.host] = source
+
+                    if prev == "STANDBY" and _source_kind(source) == "music":
+                        woke[dev.host] = (source, time.monotonic())
+                        log.info(f"[TV-WAKE] {dev.host} woke into {source} — "
+                                 f"switching to TV unless it plays within {TV_WAKE_GRACE}s")
+                    if dev.host in woke:
+                        wsrc, t0 = woke[dev.host]
+                        action = tv_wake_action(wsrc, time.monotonic() - t0, source, playing)
+                        if action == "switch":
+                            log.info(f"[TV-WAKE] {dev.host} still silent on {source} → TV")
+                            dev.select_source("PRODUCT", "TV")
+                        if action != "wait":
+                            woke.pop(dev.host, None)
+
+                    if not (dev.supports_dialog_mode() and self.audio_mode_store.auto_enabled(dev)):
+                        self._audio_pending.pop(dev.host, None)
+                        continue
+                    target = audio_mode_for_transition(prev, source)
+                    if target:
+                        log.info(f"[DSP-AUTO] {dev.host} source → {source}: want {target} mode")
+                        self._audio_pending[dev.host] = [target, time.monotonic() + 10, 0]
+
+                    pend = self._audio_pending.get(dev.host)
+                    if not pend:
+                        continue
+                    mode, deadline, attempts = pend
+                    if time.monotonic() > deadline or attempts >= 4:
+                        self._audio_pending.pop(dev.host, None)
+                        continue
+                    current = dev.get_audio_mode()
+                    if current is not None and current != mode:
+                        log.info(f"[DSP-AUTO] {dev.host} {current} → {mode}")
+                        dev.set_audio_mode(mode)
+                        pend[2] += 1
+                except Exception as e:
+                    log.debug(f"[DSP-AUTO] {dev.host} error: {e}")
 
     def _upnp_autoplay_loop(self):
         """Watch Kitchen-like speakers (no LOCAL_INTERNET_RADIO) for UPNP preset presses.
@@ -2358,6 +3058,14 @@ class AppState:
                             # Now playing — allow the same location to be re-triggered later
                             last_fired.pop(dev.host, None)
                             inv_retry.pop(dev.host, None)
+                        elif (loc and loc.startswith(dlna_prefix) and loc != last_fired.get(dev.host)
+                              and prev_source.get(dev.host) == "STANDBY" and dev.has_tv_input()):
+                            # A soundbar coming out of standby onto its last radio
+                            # station is almost always the TV waking it over CEC —
+                            # auto-playing would start the radio over the TV. Leave
+                            # it for the TV-wake check in _audio_mode_loop.
+                            log.info(f"[AVT-AUTO] {dev.host} soundbar woke onto {loc} — not auto-playing")
+                            last_fired[dev.host] = loc
                         elif loc and loc.startswith(dlna_prefix) and loc != last_fired.get(dev.host):
                             log.info(f"[AVT-AUTO] {dev.host} UPNP+stopped → auto-play {loc}")
                             if dev.play_via_avt(loc):
@@ -2391,6 +3099,69 @@ class AppState:
                     prev_source[dev.host] = source
                 except Exception as e:
                     log.debug(f"[AVT-AUTO] {dev.host} error: {e}")
+
+    def reboot_device(self, dev):
+        """Reboot a speaker, then rescan until it's back (matched by deviceID —
+        it can come back on a different IP). Returns False if the speaker
+        didn't accept the command."""
+        if not dev.reboot():
+            return False
+        self.reboot_status[dev.device_id] = {"state": "rebooting", "host": None, "name": dev.name}
+        threading.Thread(target=self._rediscover, args=({dev.device_id: dev.name},),
+                         daemon=True).start()
+        return True
+
+    def _rediscover(self, pending):
+        """After reboots: rescan until every deviceID in `pending` (id → name)
+        is back — a speaker can return on a new DHCP address. One scan loop
+        covers any number of speakers. Updates reboot_status; returns
+        {id: new host or None}."""
+        pending, found = dict(pending), {}
+        time.sleep(40)   # an ST20 is back on the network in ~40 s
+        for _ in range(8):
+            self.scan()
+            for did in list(pending):
+                back = next((d for d in self.devices if d.device_id == did), None)
+                if back:
+                    log.info(f"[REBOOT] {pending[did]} back at {back.host}")
+                    self.reboot_status[did] = {"state": "back", "host": back.host, "name": pending[did]}
+                    found[did] = back.host
+                    del pending[did]
+            if not pending:
+                break
+            time.sleep(20)
+        for did, name in pending.items():
+            log.warning(f"[REBOOT] {name} not found after reboot")
+            self.reboot_status[did] = {"state": "lost", "host": None, "name": name}
+            found[did] = None
+        return found
+
+    def restart_clock_speakers(self, reason):
+        """Restart every speaker with a front-panel clock, skipping any that
+        are playing, then wait for them all to come back. The outcome is saved
+        as last_run / last_result in the maintenance settings."""
+        with self._lock:
+            devices = list(self.devices)
+        started = _dt.datetime.now(ZoneInfo(self.maintenance_store.get().get("tz") or "UTC"))
+        log.info(f"[MAINT] {reason}: restarting clock speakers")
+        result, pending = {}, {}
+        for dev in devices:
+            if not dev.has_clock():
+                continue
+            if dev.is_playing():
+                result[dev.name] = "skipped (playing)"
+                continue
+            if dev.reboot():
+                self.reboot_status[dev.device_id] = {"state": "rebooting", "host": None, "name": dev.name}
+                pending[dev.device_id] = dev.name
+            else:
+                result[dev.name] = "restart refused"
+        for did, host in (self._rediscover(pending) if pending else {}).items():
+            result[pending[did]] = f"restarted ({host})" if host else "not back yet"
+        log.info(f"[MAINT] {reason} done: {result}")
+        self.maintenance_store.update(last_run=started.isoformat(timespec="seconds"),
+                                      last_result=result)
+        return result
 
     def scan(self):
         log.info("Scanning network…")

@@ -7,3 +7,13 @@ data/stations/
 matter_bridge/data/
 matter_bridge/node_modules/
 .claude/
+
+# Runtime state written by the controller (home setup, not code)
+data/
+
+# Logs
+*.log
+
+# macOS metadata (e.g. from browsing the share in Finder)
+.DS_Store
+._*

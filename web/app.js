@@ -31,7 +31,48 @@ window.addEventListener('DOMContentLoaded', () => {
   fetchSpeakers(false); schedPoll();
   const savedTab = localStorage.getItem('activeTab');
   if (savedTab) switchTab(savedTab);
+  initViewportChrome();
 });
+
+// ── Viewport chrome sync ─────────────────────────────────────────────────────
+// iOS reports no model in its user agent — every iPhone just says "iPhone" —
+// so there is no reliable way to detect a Pro or Pro Max and hardcode offsets
+// for it. Instead we measure the two things that actually vary at runtime:
+//
+//   --nav-h  the tab bar's real height. It already includes its own
+//            env(safe-area-inset-bottom) padding, so the home indicator /
+//            Dynamic Island is accounted for on any device that has one.
+//   --vh     the true visible viewport height from visualViewport, which on
+//            iOS Safari shrinks and grows as the bottom toolbar collapses.
+//
+// This self-corrects on every screen, including models that don't exist yet.
+function syncViewportChrome() {
+  const nav = document.getElementById('tabs');
+  if (nav) {
+    const h = nav.getBoundingClientRect().height;
+    if (h > 0) document.documentElement.style.setProperty('--nav-h', h + 'px');
+  }
+  const vv = window.visualViewport, app = document.getElementById('app');
+  if (!vv || !app) return;
+  // Skip while typing: the software keyboard shrinks the visual viewport, and
+  // resizing the app to match makes the whole layout lurch mid-edit.
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '')) return;
+  document.documentElement.style.setProperty('--vh', vv.height + 'px');
+  app.classList.add('has-vv');
+}
+
+function initViewportChrome() {
+  syncViewportChrome();
+  // Nav height settles after first paint (web fonts, icon layout).
+  requestAnimationFrame(syncViewportChrome);
+  const nav = document.getElementById('tabs');
+  if (nav && window.ResizeObserver) new ResizeObserver(syncViewportChrome).observe(nav);
+  window.visualViewport?.addEventListener('resize', syncViewportChrome);
+  window.addEventListener('resize', syncViewportChrome);
+  window.addEventListener('orientationchange', () => setTimeout(syncViewportChrome, 250));
+  // Restore full height once the keyboard closes.
+  document.addEventListener('focusout', () => setTimeout(syncViewportChrome, 100));
+}
 
 // ── Page Visibility — pause polls when tab is hidden ─────────────────────────
 document.addEventListener('visibilitychange', () => {
@@ -51,11 +92,23 @@ function collapseAll(pageId) {
   page.querySelectorAll('.qr-body').forEach(b => b.style.display = 'none');
   page.querySelectorAll('.qr-chevron').forEach(c => c.classList.remove('open'));
 }
+const TAB_ORDER = ['player', 'manage', 'groups', 'settings'];
 function switchTab(name) {
+  const prev = document.querySelector('.tab.active')?.dataset?.tab;
   document.querySelectorAll('.tab').forEach(t =>
     t.classList.toggle('active', t.dataset.tab === name));
-  document.querySelectorAll('.page').forEach(p =>
-    p.classList.toggle('visible', p.id === 'page-' + name));
+  // slide direction follows the tab order; plain fade on first paint / same tab
+  const dir = prev && prev !== name
+    ? (TAB_ORDER.indexOf(name) > TAB_ORDER.indexOf(prev) ? 'slide-right' : 'slide-left') : '';
+  document.querySelectorAll('.page').forEach(p => {
+    const vis = p.id === 'page-' + name;
+    p.classList.remove('slide-left', 'slide-right');
+    p.classList.toggle('visible', vis);
+    if (vis && dir) p.classList.add(dir);
+  });
+  const ind = document.getElementById('tab-indicator');
+  if (ind) ind.style.transform = `translateX(${Math.max(0, TAB_ORDER.indexOf(name)) * 100}%)`;
+  closePresets();
   collapseAll('page-' + name);
   if (name === 'manage')   { /* sections load on expand */ }
   if (name === 'groups')   { loadGroups(); }
@@ -84,20 +137,141 @@ async function rescan() {
 function renderRooms() {
   const el = document.getElementById('rooms-list');
   if (!speakers.length) { el.innerHTML='<div id="no-speakers">No speakers found</div>';
-    document.getElementById('all-vol-row')?.classList.remove('visible'); return; }
-  // Single speaker: full-width; 2+: 2-column grid
-  el.style.gridTemplateColumns = speakers.length === 1 ? '1fr' : 'repeat(2,1fr)';
-  el.innerHTML = speakers.map(s=>`
-    <div class="room-chip${s.host===activeHost?' active':''}"
-         id="chip-${s.host.replace(/\./g,'_')}"
-         onclick="setActive('${s.host}')">
+    document.getElementById('all-vol-row')?.classList.remove('visible'); syncSpeakerBar(); return; }
+  // Re-rendering must not lose the playing/offline state the polls set
+  const prev = {};
+  el.querySelectorAll('.room-chip').forEach(c => prev[c.id] = c.className);
+  const sorted = [...speakers].sort((a,b)=>a.name.localeCompare(b.name));
+  el.innerHTML = sorted.map(s=>{
+    const id = 'chip-'+s.host.replace(/\./g,'_');
+    const keep = (prev[id]||'').split(' ').filter(c=>c==='playing'||c==='offline');
+    const cls = ['room-chip', ...(s.host===activeHost?['active']:[]), ...keep].join(' ');
+    return `
+    <div class="${cls}" id="${id}" role="option" aria-selected="${s.host===activeHost}"
+         onclick="pickSpeaker('${s.host}')">
+      <span class="check">${s.host===activeHost?'✓':''}</span>
       <span class="dot"></span>
       <span class="chip-eq"><span class="chip-eq-bar"></span><span class="chip-eq-bar"></span><span class="chip-eq-bar"></span></span>
-      <span class="name">${s.name}</span>${s.has_backup===false?'<span class="chip-warn" title="No preset backup">⚠</span>':''}</div>`).join('');
+      <span class="name">${s.name}</span>${s.has_backup===false?'<span class="chip-warn" title="No preset backup">⚠</span>':''}
+      <span class="model">${(s.model||'').replace(/^SoundTouch\s*/,'ST ')}</span>
+    </div>`;}).join('');
+  syncSpeakerBar();
   updateAlarmSpeakerSelect();
 }
+// Picker bar mirrors the active speaker's row, plus a count of other
+// speakers currently playing so you can see activity without opening it.
+function syncSpeakerBar() {
+  const bar = document.getElementById('spk-current');
+  const sp  = speakers.find(s=>s.host===activeHost);
+  document.getElementById('spk-name').textContent =
+    sp ? sp.name : (speakers.length ? 'Choose a speaker' : 'No speakers found');
+  document.getElementById('spk-sub').textContent = sp ? (sp.model||'') : '';
+  const row = activeHost && document.getElementById('chip-'+activeHost.replace(/\./g,'_'));
+  bar.classList.toggle('playing', !!row && row.classList.contains('playing'));
+  bar.classList.toggle('offline', !!row && row.classList.contains('offline'));
+  const others = document.querySelectorAll('#rooms-list .room-chip.playing:not(.active)').length;
+  document.getElementById('spk-others').textContent = others ? `+${others} playing` : '';
+}
+function toggleSpeakers() {
+  const clip = document.getElementById('speakers-clip');
+  if (clip.classList.contains('open')) { closeSpeakers(); return; }
+  closePresets(); closeSources();
+  const sec = document.getElementById('rooms-section');
+  clip.style.top = (sec.offsetTop + sec.offsetHeight) + 'px';
+  clip.classList.add('open');
+  sec.classList.add('open');
+  document.getElementById('speakers-backdrop').classList.add('open');
+  document.getElementById('spk-current').setAttribute('aria-expanded','true');
+}
+function closeSpeakers() {
+  document.getElementById('speakers-clip').classList.remove('open');
+  document.getElementById('rooms-section').classList.remove('open');
+  document.getElementById('speakers-backdrop').classList.remove('open');
+  document.getElementById('spk-current').setAttribute('aria-expanded','false');
+}
+// ── Source picker ─────────────────────────────────────────────────────────────
+// Only inputs a speaker can switch to without content: TV/HDMI on soundbars,
+// AUX, and Bluetooth (always offered — selecting it enters pairing mode).
+// Streaming services (Spotify, Amazon…) need a track to play, so they're
+// started from their apps or the presets instead.
+const SELECTABLE_SOURCES = new Set(['PRODUCT','AUX','BLUETOOTH']);
+let sourcesCache = {};   // host → [{source, sourceAccount, …}]
+function sourceKey(src, acct) { return src + '|' + (src === 'PRODUCT' ? acct||'' : ''); }
+function syncSourceBar() {
+  const bar = document.getElementById('src-current');
+  const d = lastState && lastState.host === activeHost ? lastState : null;
+  const label = d ? sourceLabel(d.source, d.source_account) : '';
+  document.getElementById('src-name').textContent = label || '—';
+  bar.classList.toggle('unknown', !label);
+}
+function renderSources() {
+  const el = document.getElementById('sources-list');
+  const list = sourcesCache[activeHost];
+  if (!list) { el.innerHTML = '<div class="src-empty">Loading…</div>'; return; }
+  const opts = list.filter(x => SELECTABLE_SOURCES.has(x.source) &&
+                                (x.status === 'READY' || x.source === 'BLUETOOTH'));
+  if (!opts.length) { el.innerHTML = '<div class="src-empty">No switchable inputs</div>'; return; }
+  const d = lastState && lastState.host === activeHost ? lastState : null;
+  const cur = d ? sourceKey(d.source, d.source_account) : '';
+  el.innerHTML = opts.map(x => {
+    const on = sourceKey(x.source, x.sourceAccount) === cur;
+    return `
+    <div class="room-chip${on?' active':''}" role="option" aria-selected="${on}"
+         onclick="pickSource('${x.source}','${(x.sourceAccount||'').replace(/'/g,"\\'")}')">
+      <span class="check">${on?'✓':''}</span>
+      <span class="name">${sourceLabel(x.source, x.sourceAccount)}</span>
+    </div>`;}).join('');
+}
+async function loadSources() {
+  const h = activeHost; if (!h) return;
+  try {
+    const list = await (await fetch('/api/sources?host='+encodeURIComponent(h))).json();
+    if (list.length) sourcesCache[h] = list;
+  } catch(e) {}
+  if (h === activeHost) { sourcesCache[h] = sourcesCache[h] || []; renderSources(); }
+}
+function toggleSources() {
+  const clip = document.getElementById('sources-clip');
+  if (clip.classList.contains('open')) { closeSources(); return; }
+  if (!activeHost) return;
+  closePresets(); closeSpeakers();
+  const sec = document.getElementById('rooms-section');
+  clip.style.top = (sec.offsetTop + sec.offsetHeight) + 'px';
+  renderSources(); loadSources();   // show cached list now, refresh behind it
+  clip.classList.add('open');
+  sec.classList.add('src-open');
+  document.getElementById('speakers-backdrop').classList.add('open');
+  document.getElementById('src-current').setAttribute('aria-expanded','true');
+}
+function closeSources() {
+  document.getElementById('sources-clip').classList.remove('open');
+  document.getElementById('rooms-section').classList.remove('src-open');
+  if (!document.getElementById('speakers-clip').classList.contains('open'))
+    document.getElementById('speakers-backdrop').classList.remove('open');
+  document.getElementById('src-current').setAttribute('aria-expanded','false');
+}
+async function pickSource(source, account) {
+  if (navigator.vibrate) navigator.vibrate(8);
+  closeSources();
+  const h = activeHost, label = sourceLabel(source, account);
+  document.getElementById('src-name').textContent = label;
+  try {
+    const r = await (await fetch(`/api/select?host=${encodeURIComponent(h)}`+
+      `&source=${encodeURIComponent(source)}&account=${encodeURIComponent(account)}`)).json();
+    toast(r.ok ? `Switched to ${label}` : `Couldn't switch to ${label}`);
+  } catch(e) { toast(`Couldn't switch to ${label}`); }
+  if (h === activeHost) { clearTimeout(pollTimer); setTimeout(pollNow, 800); }
+}
+function pickSpeaker(h) {
+  if (navigator.vibrate) navigator.vibrate(8);
+  closeSpeakers();
+  if (h !== activeHost) setActive(h);
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeSpeakers(); closeSources(); closePresets(); }
+});
 function setActive(h) {
-  activeHost=h; clearTimeout(pollTimer); renderRooms(); pollNow();
+  activeHost=h; clearTimeout(pollTimer); renderRooms(); syncSourceBar(); pollNow();
   const tab = document.querySelector('.tab.active')?.dataset?.tab;
   if (tab === 'manage') {
     const sec = document.getElementById('sec-manage-backup');
@@ -131,6 +305,7 @@ async function pollNow() {
 function setChipOffline(host, offline) {
   const chip = document.getElementById('chip-'+host.replace(/\./g,'_'));
   if (chip) chip.classList.toggle('offline', offline);
+  syncSpeakerBar();
 }
 
 // Background poll — updates playing/offline state for all non-active speakers
@@ -150,6 +325,7 @@ async function bgPollAll() {
       setChipOffline(s.host, !st.online);
       const chip = document.getElementById('chip-'+s.host.replace(/\./g,'_'));
       if (chip) chip.classList.toggle('playing', st.playing);
+      syncSpeakerBar();
     } catch(e) {
       speakerErrors[s.host] = (speakerErrors[s.host]||0) + 1;
       if (speakerErrors[s.host] >= 2) setChipOffline(s.host, true);
@@ -175,15 +351,24 @@ function setTrackName(text) {
     }
   });
 }
+// Speaker source codes → readable names (PRODUCT is the soundbar's TV/HDMI input)
+const SOURCE_LABELS = {STANDBY:'Standby', INVALID_SOURCE:'No source', BLUETOOTH:'Bluetooth',
+  AUX:'AUX', AIRPLAY:'AirPlay', SPOTIFY:'Spotify', UPNP:'Radio', LOCAL_INTERNET_RADIO:'Radio',
+  TUNEIN:'TuneIn', AMAZON:'Amazon Music', DEEZER:'Deezer', PANDORA:'Pandora',
+  IHEART:'iHeartRadio', STORED_MUSIC:'Music Library', QPLAY:'QPlay', NOTIFICATION:'Announcement'};
+function sourceLabel(src, acct) {
+  if (!src) return '';
+  if (src === 'PRODUCT') return acct === 'TV' ? 'TV' : (acct||'').replace(/_/g,' ') || 'TV';
+  return SOURCE_LABELS[src] || src;
+}
 function applyState(d) {
-  if (!d) return; lastState = d;
-  const track = d.track||(d.source||'—'), artist = d.artist||d.album||'';
+  if (!d) return; lastState = d; syncSourceBar();
+  const src = sourceLabel(d.source, d.source_account);
+  const track = d.track||(src||'—'), artist = d.artist||d.album||'';
   setTrackName(track); setText('track-artist',artist);
   const badge=document.getElementById('source-badge');
-  badge.textContent=d.source||''; badge.style.display=d.source?'':'none';
-  const cw=document.getElementById('cloud-warn');
-  if(d.cloud_warning){cw.textContent='⚠ '+d.cloud_warning; cw.style.display='';}
-  else{cw.style.display='none';}
+  // Skip the badge when the title is already just the source name ("TV" twice)
+  badge.textContent=src; badge.style.display=(src && d.track)?'':'none';
   const gbadge=document.getElementById('group-badge');
   if (d.group_role==='master') {
     gbadge.textContent=`GROUP MASTER (${d.group_members||0})`; gbadge.style.display='';
@@ -206,14 +391,14 @@ function applyState(d) {
       if(glowEl){glowEl.src=''; glowEl.classList.remove('visible');}
     };
     tmp.src=d.art;
+    updateBackground(d.art);   // full-bleed living background
   } else if (!d.art) {
     artEl.classList.add('hidden'); ph.style.display='';
     if(glowEl){glowEl.src=''; glowEl.classList.remove('visible');}
+    updateBackground('');
   }
-  // EQ visualiser + play button ring
+  // EQ visualiser + play button ring (.playing also drives the icon morph)
   document.getElementById('eq-bars')?.classList.toggle('playing', d.playing);
-  document.getElementById('ico-play').style.display=d.playing?'none':'';
-  document.getElementById('ico-pause').style.display=d.playing?'':'none';
   document.getElementById('btn-play').classList.toggle('playing', d.playing);
   // power button — highlight while playing
   document.getElementById('btn-power').classList.toggle('playing', d.playing);
@@ -222,33 +407,93 @@ function applyState(d) {
   muteBtn.classList.toggle('muted', !!d.muted);
   document.getElementById('ico-mute-lines').style.display=d.muted?'none':'';
   document.getElementById('ico-mute-cross').style.display=d.muted?'':'none';
+  applyDialogState(d);
   // volume
   const sl=document.getElementById('vol-slider');
   if (!sl.matches(':active')) { sl.value=d.volume; updateVol(d.volume); }
   // chip
   const chip=document.getElementById('chip-'+activeHost.replace(/\./g,'_'));
   if (chip) { chip.classList.toggle('playing',d.playing); chip.classList.add('active'); }
-  // presets — populate dropdown grid
-  const g=document.getElementById('presets-grid');
-  const presets = d.presets || [];
-  if (g.children.length===0) {
-    g.innerHTML='';
-    for (let i=0;i<6;i++) {
-      const nm=presets[i]?.name||'';
-      const div=document.createElement('div');
-      div.className='preset'+(nm?' has-name':'');
-      div.innerHTML=`<div class="preset-num">Preset ${i+1}</div>
-                     <div class="preset-name">${nm||'—'}</div>`;
-      div.onclick=(e)=>{ ripple(div,e); if(navigator.vibrate)navigator.vibrate(8); cmd('preset'+(i+1)); closePresets(); };
-      g.appendChild(div);
-    }
-  } else {
-    [...g.children].forEach((el,i)=>{
-      const nm=presets[i]?.name||'';
-      el.className='preset'+(nm?' has-name':'');
-      el.querySelector('.preset-name').textContent=nm||'—';
-    });
+  syncSpeakerBar();
+  // presets — populate dropdown art-tile grid
+  renderPresetGrid(d.presets || []);
+  document.getElementById('preset-save-btn').style.display = d.presetable ? '' : 'none';
+}
+
+// ── Preset art tiles ──────────────────────────────────────────────────────────
+// Tiles show the preset's containerArt; UPNP presets pointing at our DLNA
+// redirect fall back to the custom station's art_url (fetched once, cached).
+let _presetSig='', _stationArt=null, _stationArtLoading=false;
+
+function presetArt(p) {
+  if (p.art) return p.art;
+  const loc = p.location || '';
+  // TuneIn presets carry no containerArt, but the station id maps to a
+  // public logo CDN (verified pattern used by the TuneIn apps themselves)
+  if (p.source === 'TUNEIN') {
+    const m = loc.match(/\/station\/(s\d+)/);
+    if (m) return `https://cdn-radiotime-logos.tunein.com/${m[1]}d.png`;
   }
+  // Our own stations: UPNP DLNA redirects and LOCAL_INTERNET_RADIO descriptors
+  if (!loc.includes('/dlna/stream/') && !loc.includes('/api/station-desc/')) return '';
+  const sid = loc.split('/').pop();
+  if (_stationArt) return _stationArt[sid] || '';
+  if (!_stationArtLoading) {
+    _stationArtLoading = true;
+    fetch('/api/stations').then(r=>r.json()).then(list=>{
+      _stationArt = {};
+      list.forEach(s => { _stationArt[s.id] = s.art_url || ''; });
+      _presetSig = '';                       // force re-render with art
+      if (lastState) applyState(lastState);
+    }).catch(()=>{ _stationArtLoading = false; });
+  }
+  return '';
+}
+
+function renderPresetGrid(presets) {
+  const g = document.getElementById('presets-grid');
+  const sig = JSON.stringify(presets.map(p=>[p?.name||'', presetArt(p||{})]));
+  if (sig === _presetSig) return;
+  _presetSig = sig;
+  g.innerHTML = '';
+  for (let i=0; i<6; i++) {
+    const p = presets[i]||{}, nm = p.name||'', art = presetArt(p);
+    const div = document.createElement('div');
+    div.className = 'preset' + (nm ? '' : ' empty');
+    div.innerHTML = (art
+        ? `<div class="preset-art" style="background-image:url('${art.replace(/'/g,'%27')}')"></div>`
+        : `<div class="preset-art preset-art-ph">${nm?'&#9835;':''}</div>`)
+      + `<div class="preset-shade"></div>
+         <div class="preset-num">${i+1}</div>
+         <div class="preset-name">${nm||'—'}</div>`;
+    div.onclick=(e)=>{
+      ripple(div,e); if(navigator.vibrate)navigator.vibrate(8);
+      if (_presetSaving) { savePresetSlot(i+1, nm); return; }
+      cmd('preset'+(i+1)); closePresets();
+    };
+    g.appendChild(div);
+  }
+}
+
+// ── Living background ─────────────────────────────────────────────────────────
+// The current album art drives a slow-drifting, blurred full-bleed backdrop.
+// Two layers crossfade so track changes melt rather than flash.
+let _bgWhich='b';            // last layer shown; first call flips to 'a'
+
+function updateBackground(artUrl){
+  const a=document.getElementById('bg-art-a'), b=document.getElementById('bg-art-b');
+  if(!a||!b) return;
+  if(!artUrl){ a.classList.remove('show'); b.classList.remove('show'); return; }
+  const next=_bgWhich==='a'?b:a, cur=_bgWhich==='a'?a:b;
+  const probe=new Image();
+  probe.onload=()=>{
+    next.style.backgroundImage=`url("${artUrl}")`;
+    next.classList.add('show');
+    cur.classList.remove('show');
+    _bgWhich=_bgWhich==='a'?'b':'a';
+  };
+  probe.onerror=()=>{};
+  probe.src=artUrl;
 }
 
 // ── Volume ───────────────────────────────────────────────────────────────────
@@ -294,6 +539,43 @@ async function cmd(a, el, e) {
   if (!activeHost) { toast('No speaker selected'); return; }
   await fetch(`/api/cmd?host=${activeHost}&action=${a}`);
   setTimeout(pollNow,500);
+}
+
+// ── Dialogue mode (soundbars) ───────────────────────────────────────────────
+// audio_mode is null for speakers without /audiodspcontrols — row stays hidden.
+// A poll landing mid-request would flip the switch back, so polls are ignored
+// for a moment after the user touches either switch.
+let _dialogHold = 0;
+function applyDialogState(d) {
+  const row = document.getElementById('dialog-row');
+  const show = d.audio_mode != null;
+  row.style.display = show ? '' : 'none';
+  document.getElementById('power-row').classList.toggle('tight', show);
+  if (!show || Date.now() < _dialogHold) return;
+  document.getElementById('sw-dialog').checked = d.audio_mode === 'dialog';
+  document.getElementById('sw-dialog-auto').checked = !!d.auto_dialog_tv;
+}
+async function dialogReq(qs, okMsg) {
+  if (!activeHost) { toast('No speaker selected'); return; }
+  const host = activeHost;
+  _dialogHold = Date.now() + 4000;
+  if (navigator.vibrate) navigator.vibrate(8);
+  try {
+    const r = await (await fetch(`/api/audio-mode${qs}${qs.includes('?')?'&':'?'}host=${host}`)).json();
+    if (host !== activeHost) return;
+    if (!r.supported) { toast('Dialogue mode not supported'); return; }
+    document.getElementById('sw-dialog').checked = r.mode === 'dialog';
+    document.getElementById('sw-dialog-auto').checked = !!r.auto_tv;
+    toast(okMsg(r));
+  } catch(e) { toast('Could not reach speaker'); }
+}
+function setDialogMode(on) {
+  dialogReq(`/set?mode=${on?'dialog':'normal'}`,
+            r => r.mode === 'dialog' ? 'Dialogue mode on' : 'Dialogue mode off');
+}
+function setDialogAuto(on) {
+  dialogReq(`/auto?enabled=${on}`,
+            r => r.auto_tv ? 'Dialogue mode will switch on for TV' : 'Auto dialogue mode off');
 }
 
 // ── Preset backup ────────────────────────────────────────────────────────────
@@ -513,18 +795,57 @@ function togglePresets() {
   if (isOpen) {
     closePresets();
   } else {
-    // Position the clip right below the tabs bar so it doesn't matter
-    // how tall the speaker chips section is
-    const tabsEl = document.getElementById('tabs');
-    const tabsBottom = tabsEl.getBoundingClientRect().bottom +
-                       document.getElementById('app').scrollTop;
-    clip.style.top = tabsBottom + 'px';
+    closeSpeakers(); closeSources();
+    // Position the clip right below the header (the tab bar is fixed at
+    // the bottom, so the header is the panel's visual anchor)
+    const hdr = document.querySelector('header');
+    clip.style.top = (hdr.offsetTop + hdr.offsetHeight) + 'px';
     clip.classList.add('open');
     backdrop.classList.add('open');
     btn.classList.add('open');
   }
 }
+// ── Save what's playing to a preset ──────────────────────────────────────────
+// Save mode re-labels the grid: tapping a tile stores the current playlist /
+// station into that slot (on this speaker, or every speaker that can play it).
+let _presetSaving = false;
+function enterPresetSave() {
+  const d = lastState || {};
+  if (!d.presetable) { toast('Nothing that can be saved is playing'); return; }
+  _presetSaving = true;
+  const what = d.item_name || d.track || 'what\'s playing';
+  document.getElementById('preset-save-msg').innerHTML =
+    `Tap a slot to save <b>${what.replace(/</g,'&lt;')}</b>`;
+  document.getElementById('preset-save-all').checked = false;
+  document.getElementById('preset-save-bar').style.display = '';
+  document.getElementById('preset-save-btn').style.visibility = 'hidden';
+  document.getElementById('presets-grid').classList.add('saving');
+}
+function exitPresetSave() {
+  _presetSaving = false;
+  document.getElementById('preset-save-bar').style.display = 'none';
+  document.getElementById('preset-save-btn').style.visibility = '';
+  document.getElementById('presets-grid').classList.remove('saving');
+}
+async function savePresetSlot(slot, currentName) {
+  const all = document.getElementById('preset-save-all').checked;
+  if (currentName && !confirm(`Replace preset ${slot} (${currentName})${all?' on every speaker that can play it':''}?`)) return;
+  let r;
+  try {
+    r = await (await fetch(`/api/presets/save-current?host=${activeHost}&slot=${slot}&all=${all}`)).json();
+  } catch(e) { r = {ok:false, error:'Could not reach the controller'}; }
+  if (!r.ok) { toast(r.error || 'Save failed'); return; }
+  exitPresetSave(); closePresets();
+  const res = Object.entries(r.results||{});
+  const saved = res.filter(([,v])=>v==='saved').length;
+  const missed = res.filter(([,v])=>v!=='saved').map(([n])=>n);
+  toast(all ? `Saved to preset ${slot} on ${saved} speaker${saved===1?'':'s'}${missed.length?` · not ${missed.join(', ')}`:''}`
+            : `Saved ${r.name} to preset ${slot}`);
+  _presetSig = ''; setTimeout(pollNow, 400);
+}
+
 function closePresets() {
+  if (_presetSaving) exitPresetSave();
   document.getElementById('presets-clip').classList.remove('open');
   document.getElementById('presets-backdrop').classList.remove('open');
   document.getElementById('preset-toggle').classList.remove('open');
@@ -646,6 +967,7 @@ async function loadBass() {
     if (d.available) {
       document.getElementById('bass-slider').min = d.min;
       document.getElementById('bass-slider').max = d.max;
+      document.getElementById('bass-slider').step = d.step || 1;
       document.getElementById('bass-slider').value = d.current;
       updateBass(d.current, d.min, d.max);
       row.style.display = 'block';
@@ -673,6 +995,110 @@ let bassD=null;
 function sendBass(v) { clearTimeout(bassD); bassD=setTimeout(()=>{
   if (activeHost) fetch(`/api/cmd?host=${activeHost}&action=bass&value=${v}`);
 }, 200); }
+
+// ── Soundbar treble / centre / rear levels + bar settings ────────────────────────────────────
+// Only the SoundTouch 300 has these; other speakers get null and show nothing.
+// Bass is left to the slider above (it covers both kinds of speaker).
+const AUDIO_CONTROLS = [
+  ['tone',  'treble',                    'Treble'],
+  ['level', 'frontCenterSpeakerLevel',   'Centre speaker'],
+  ['level', 'rearSurroundSpeakersLevel', 'Rear surround'],
+];
+async function loadAudioControls() {
+  const el = document.getElementById('eq-extra');
+  if (!el || !activeHost) return;
+  const h = activeHost, q = '?host='+encodeURIComponent(h);
+  let d, sb;
+  try {
+    [d, sb] = await Promise.all([fetch('/api/audio-controls'+q).then(r=>r.json()),
+                                 fetch('/api/soundbar'+q).then(r=>r.json())]);
+  } catch(e) { return; }
+  if (h !== activeHost) return;
+  // No point offering a level for speakers that aren't plugged in
+  const fitted = n => !(n === 'rearSurroundSpeakersLevel' && sb.rear === false);
+  el.innerHTML = AUDIO_CONTROLS.filter(([g,n]) => d[g] && d[g][n] && fitted(n)).map(([g,n,label]) => {
+    const c = d[g][n];
+    return `
+    <div class="eq-head"><span>${label}</span><span class="eq-val" id="eqv-${n}">${fmtEq(c.value)}</span></div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="bass-label">−</span>
+      <div class="eq-track" style="flex:1;position:relative;padding-top:22px">
+        <div class="eq-tooltip" id="eqt-${n}"></div>
+        <input type="range" class="eq-slider" id="eq-${n}" min="${c.min}" max="${c.max}"
+               step="${c.step||1}" value="${c.value}"
+               oninput="onEqInput('${n}',this)" onchange="sendEq('${g}','${n}',this.value)">
+      </div>
+      <span class="bass-label">+</span>
+    </div>`;}).join('') + soundbarSettingsHtml(sb);
+  el.querySelectorAll('.eq-slider').forEach(paintEq);
+}
+// AV delay slider + auto-off / HDMI-CEC switches (whatever the speaker reports)
+function soundbarSettingsHtml(sb) {
+  let html = '';
+  if (sb.av_delay != null) html += `
+    <div class="eq-head"><span title="Delays the sound to line up with the picture">Lip sync delay</span>
+      <span class="eq-val" id="eqv-avdelay">${sb.av_delay} ms</span></div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="bass-label">0</span>
+      <div class="eq-track" style="flex:1;position:relative;padding-top:22px">
+        <div class="eq-tooltip" id="eqt-avdelay"></div>
+        <input type="range" class="eq-slider" id="eq-avdelay" min="0" max="300" step="10"
+               value="${Math.min(sb.av_delay,300)}"
+               oninput="onEqInput('avdelay',this,' ms')" onchange="sendSoundbar('av_delay',this.value)">
+      </div>
+      <span class="bass-label">300</span>
+    </div>`;
+  const sw = (key, label, title) => sb[key] == null ? '' : `
+      <label class="sw-pill" title="${title}">
+        <span>${label}</span>
+        <input type="checkbox" ${sb[key]?'checked':''} onchange="sendSoundbar('${key}',this.checked,this)">
+        <span class="sw-track"></span>
+      </label>`;
+  const sws = sw('auto_off', 'Auto-off', 'Switch the bar off after a while with no audio') +
+              sw('cec', 'HDMI-CEC', 'Let the TV switch the bar on/off and control its volume');
+  if (sws) html += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px">${sws}</div>`;
+  return html;
+}
+const SOUNDBAR_MSG = {
+  av_delay: v => `Lip sync delay ${v} ms`,
+  auto_off: v => v ? 'Auto-off on' : 'Auto-off disabled — the bar stays on',
+  cec:      v => v ? 'HDMI-CEC on' : 'HDMI-CEC off — the TV won\'t control the bar',
+};
+async function sendSoundbar(name, value, input) {
+  if (!activeHost) return;
+  try {
+    const r = await (await fetch(`/api/soundbar/set?host=${encodeURIComponent(activeHost)}`+
+      `&name=${name}&value=${value}`)).json();
+    if (!r.ok) throw 0;
+    toast(SOUNDBAR_MSG[name](r[name]));
+  } catch(e) {
+    toast("Couldn't change that setting");
+    if (input) input.checked = !input.checked;   // put the switch back
+  }
+}
+function fmtEq(v, unit) { v = parseInt(v); return unit ? v+unit : v > 0 ? '+'+v : String(v); }
+function paintEq(sl) {
+  const pct = ((sl.value - sl.min) / (sl.max - sl.min) * 100) + '%';
+  sl.style.setProperty('--pct', pct);
+  const tip = sl.previousElementSibling; if (tip) tip.style.left = pct;
+}
+const eqTipTimers = {};
+function onEqInput(n, sl, unit) {
+  paintEq(sl);
+  const tip = document.getElementById('eqt-'+n);
+  tip.textContent = fmtEq(sl.value, unit); tip.classList.add('visible');
+  document.getElementById('eqv-'+n).textContent = fmtEq(sl.value, unit);
+  clearTimeout(eqTipTimers[n]);
+  eqTipTimers[n] = setTimeout(() => tip.classList.remove('visible'), 1200);
+}
+async function sendEq(g, n, v) {
+  if (!activeHost) return;
+  try {
+    const r = await (await fetch(`/api/audio-controls/set?host=${encodeURIComponent(activeHost)}`+
+      `&group=${g}&name=${n}&value=${v}`)).json();
+    if (!r.ok) toast("Couldn't change that setting");
+  } catch(e) { toast("Couldn't change that setting"); }
+}
 
 // ── Backup All ────────────────────────────────────────────────────────────────
 async function backupAll() {
@@ -753,11 +1179,103 @@ async function loadSpeakerInfo() {
         </div>
         <span class="bass-label">+</span>
       </div>
+    </div>
+    <div id="eq-extra"></div>
+    <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">
+      <button class="mc-btn" id="reboot-btn" onclick="rebootSpeaker('${d.device_id||''}')">Restart speaker</button>
+      <p style="font-size:11px;color:var(--fg3);margin-top:6px">
+        Fixes a blank clock or a speaker that's stopped responding. Takes about a minute.
+      </p>
     </div>`;
-    loadBass();
+    loadBass(); loadAudioControls();
   } catch(e) {
     el.innerHTML = '<p style="font-size:12px;color:var(--fg3)">Could not load device info.</p>';
   }
+}
+
+// ── Weekly restart (ST20 clock fix) ─────────────────────────────────────────
+const MAINT_DAYS=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+function _maintRender(c) {
+  document.getElementById('maint-enabled').checked = !!c.enabled;
+  document.getElementById('maint-day').value = c.day;
+  document.getElementById('maint-time').value = c.time;
+  const spk = (c.speakers||[]).join(', ') || 'none found';
+  let last = 'Not run yet.';
+  if (c.last_run) {
+    const res = Object.entries(c.last_result||{}).map(([n,r])=>`${n}: ${r}`).join(' · ') || 'no clock speakers';
+    last = `Last run ${_alarmWhen(c.last_run)} — ${res}`;
+  }
+  document.getElementById('maint-info').innerHTML =
+    `${c.enabled?`Every ${MAINT_DAYS[c.day]} at ${c.time}`:'Off'} · Speakers: ${spk}<br>${last}`;
+}
+async function loadMaint() {
+  try { _maintRender(await (await fetch('/api/maintenance')).json()); } catch(e) {}
+}
+async function saveMaint() {
+  const q = new URLSearchParams({
+    enabled: document.getElementById('maint-enabled').checked,
+    day: document.getElementById('maint-day').value,
+    time: document.getElementById('maint-time').value,
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone });
+  try { _maintRender(await (await fetch('/api/maintenance/set?'+q)).json()); toast('Saved'); }
+  catch(e) { toast('Could not save'); }
+}
+async function runMaintNow() {
+  if (!confirm('Restart all clock speakers now? They\'ll be offline for a minute or two.')) return;
+  const btn = document.getElementById('maint-run');
+  btn.disabled = true; btn.textContent = 'Restarting…';
+  await fetch('/api/maintenance/run');
+  toast('Restarting clock speakers…');
+  // Results are saved once every speaker is back (~1–3 min)
+  const before = (await (await fetch('/api/maintenance')).json()).last_run, t0 = Date.now();
+  const poll = async () => {
+    const c = await (await fetch('/api/maintenance')).json();
+    if (c.last_run !== before || Date.now()-t0 > 6*60*1000) {
+      _maintRender(c); fetchSpeakers();
+      btn.disabled = false; btn.textContent = 'Restart them now';
+      toast('Clock speakers restarted');
+      return;
+    }
+    setTimeout(poll, 8000);
+  };
+  setTimeout(poll, 30000);
+}
+
+// ── Restart speaker ──────────────────────────────────────────────────────────
+// The speaker can come back on a new DHCP address, so follow it by device ID:
+// the server rescans after the reboot and reports where it reappeared.
+async function rebootSpeaker(deviceId) {
+  const sp = speakers.find(s=>s.host===activeHost);
+  const name = sp ? sp.name : 'this speaker';
+  if (!activeHost || !confirm(`Restart ${name}? It'll be offline for about a minute.`)) return;
+  const btn = document.getElementById('reboot-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Restarting…'; }
+  let r;
+  try { r = await (await fetch('/api/reboot?host='+activeHost)).json(); } catch(e) { r = {ok:false}; }
+  if (!r.ok) {
+    toast(`Couldn't restart ${name}`);
+    if (btn) { btn.disabled = false; btn.textContent = 'Restart speaker'; }
+    return;
+  }
+  toast(`Restarting ${name}…`);
+  const did = r.device_id || deviceId, oldHost = activeHost, t0 = Date.now();
+  const poll = async () => {
+    let st = {};
+    try { st = await (await fetch('/api/reboot/status?device_id='+did)).json(); } catch(e) {}
+    if (st.state === 'back') {
+      await fetchSpeakers();
+      if (activeHost === oldHost || !speakers.some(s=>s.host===activeHost)) setActive(st.host);
+      toast(`${name} is back online${st.host!==oldHost?' ('+st.host+')':''}`);
+      return;
+    }
+    if (st.state === 'lost' || Date.now()-t0 > 6*60*1000) {
+      toast(`${name} hasn't come back yet — try Discover Speakers`);
+      if (btn) { btn.disabled = false; btn.textContent = 'Restart speaker'; }
+      return;
+    }
+    setTimeout(poll, 5000);
+  };
+  setTimeout(poll, 10000);
 }
 
 // ── Settings — Radio Presets (UPNP speakers) ──────────────────────────────────
@@ -845,6 +1363,7 @@ function toggleSection(bodyId, chevronId) {
   if (opening && bodyId === 'sec-stations')      loadStations();
   if (opening && bodyId === 'sec-scenes')        loadScenes();
   if (opening && bodyId === 'sec-alarms')        loadAlarms();
+  if (opening && bodyId === 'sec-maint')         loadMaint();
   if (opening && bodyId === 'sec-announce')      loadAnnounceSection();
 }
 function loadAnnounceSection() {
@@ -1066,11 +1585,22 @@ const ALARM_DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 function updateAlarmSpeakerSelect() {
   const sel=document.getElementById('alarm-speaker-select');
   if(!sel)return;
-  const cur=sel.value;
+  const cur=sel.value || activeHost || '';   // default to the speaker you're on
   sel.innerHTML='<option value="">Select a speaker…</option>'+
     speakers.map(s=>`<option value="${s.host}"${s.host===cur?' selected':''}>${s.name}</option>`).join('');
+  if (sel.value && sel.value !== sel.dataset.namesFor) {
+    sel.dataset.namesFor = sel.value; loadAlarmPresetNames();
+  }
 }
 
+// "2026-10-09T07:00:12+01:00" → "Fri 9 Oct 07:00" (the alarm's own local time)
+function _alarmWhen(iso) {
+  const m = iso.match(/^(\d{4})-(\d\d)-(\d\d)T(\d\d:\d\d)/);
+  if (!m) return iso;
+  const d = new Date(Date.UTC(+m[1], +m[2]-1, +m[3]));
+  const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()];
+  return `${ALARM_DAYS[(d.getUTCDay()+6)%7]} ${d.getUTCDate()} ${mon} ${m[4]}`;
+}
 function _alarmHtml(a, closeModalId) {
   const dayStr=a.days.length===7?'Every day':
     (a.days.length===5&&!a.days.includes(5)&&!a.days.includes(6)?'Weekdays':
@@ -1080,9 +1610,11 @@ function _alarmHtml(a, closeModalId) {
   return`<div class="manage-card">
     <div class="mc-left">
       <div class="mc-name">${a.name} · ${a.time}</div>
-      <div class="mc-meta">${spk?spk.name:a.host} · Preset ${a.preset} · ${dayStr}${a.volume!=null?' · Vol '+a.volume:''}</div>
+      <div class="mc-meta">${spk?spk.name:a.host} · Preset ${a.preset}${a.preset_name?' · '+presetLabel({name:a.preset_name,source:a.preset_source}):''} · ${dayStr}${a.volume!=null?' · Vol '+a.volume:''}</div>
+      ${a.last_fired?`<div class="mc-meta">Last rang ${_alarmWhen(a.last_fired)} — ${a.last_result==='played'||a.last_result==='played (retry)'?'✓ '+a.last_result:'⚠ '+a.last_result}</div>`:''}
     </div>
     <div class="mc-actions">
+      <button class="mc-btn" onclick="editAlarm('${a.id}'${closeArg})">Edit</button>
       <button class="mc-btn${a.enabled?' primary':''}" onclick="toggleAlarm('${a.id}',${!a.enabled}${closeArg})">${a.enabled?'On':'Off'}</button>
       <button class="mc-btn danger" onclick="deleteAlarm('${a.id}'${closeArg})">✕</button>
     </div>
@@ -1092,13 +1624,84 @@ function _alarmHtml(a, closeModalId) {
 async function loadAlarms() {
   const el=document.getElementById('alarms-list');
   if(!el)return;
+  // A new alarm defaults to the speaker you're on now (not whichever was
+  // active when the list first loaded); an alarm being edited keeps its own
+  const spkSel=document.getElementById('alarm-speaker-select');
+  if (spkSel && !_editingAlarmId && activeHost) spkSel.value='';
   updateAlarmSpeakerSelect();
   try{
     const alarms=await(await fetch('/api/alarms')).json();
+    _alarmsCache=alarms;
     el.innerHTML=alarms.length
       ?alarms.map(a=>_alarmHtml(a)).join('')
       :'<p style="font-size:12px;color:var(--fg3);margin-bottom:10px">No alarms set.</p>';
   }catch(e){}
+}
+
+// "Discover Weekly (Spotify)" — the source matters for alarms: a Spotify
+// preset needs the speaker's linked account, a radio one doesn't
+function presetLabel(p) {
+  const src = {SPOTIFY:'Spotify', UPNP:'Radio', LOCAL_INTERNET_RADIO:'Radio', TUNEIN:'TuneIn',
+               AMAZON:'Amazon', DEEZER:'Deezer', IHEART:'iHeart', PANDORA:'Pandora'}[p.source] || p.source || '';
+  return (p.name||'').replace(/</g,'&lt;') + (src ? ` (${src})` : '');
+}
+// Label the alarm preset choices with the chosen speaker's preset names
+async function loadAlarmPresetNames() {
+  const spk = document.getElementById('alarm-speaker-select');
+  const host = spk.value; spk.dataset.namesFor = host;
+  const sel = document.getElementById('alarm-preset');
+  const cur = sel.value || '1';
+  let presets = [];
+  if (host) {
+    try { presets = (await (await fetch('/api/state?host='+host)).json()).presets || []; } catch(e) {}
+  }
+  sel.innerHTML = [1,2,3,4,5,6].map(n => {
+    const p = presets.find(x => String(x.id) === String(n));
+    return `<option value="${n}">${n}${p && p.name ? ' · ' + presetLabel(p) : ''}</option>`;
+  }).join('');
+  sel.value = cur;
+}
+
+// ── Edit an existing alarm: load it into the form, save back under its id ────
+let _alarmsCache=[], _editingAlarmId=null;
+async function editAlarm(id, modalId) {
+  if (!_alarmsCache.some(a=>a.id===id)) {
+    try { _alarmsCache = await (await fetch('/api/alarms')).json(); } catch(e) {}
+  }
+  const a = _alarmsCache.find(x=>x.id===id);
+  if (!a) { toast('Alarm not found'); return; }
+  if (modalId) closeModal(modalId);
+  // Make sure the Alarms section is visible (editing can start from the ⏱ modal)
+  if (document.querySelector('.tab.active')?.dataset?.tab !== 'settings') switchTab('settings');
+  const sec = document.getElementById('sec-alarms');
+  if (sec.style.display === 'none') toggleSection('sec-alarms','chev-alarms');
+  _editingAlarmId = id;
+  const spk = document.getElementById('alarm-speaker-select');
+  updateAlarmSpeakerSelect();
+  spk.value = a.host;
+  await loadAlarmPresetNames();
+  document.getElementById('alarm-preset').value = String(a.preset);
+  document.getElementById('alarm-name').value = a.name || '';
+  document.getElementById('alarm-time').value = a.time;
+  document.getElementById('alarm-vol').value = a.volume ?? '';
+  document.querySelectorAll('.alarm-day-chk').forEach(cb => cb.checked = a.days.includes(parseInt(cb.value)));
+  document.getElementById('alarm-form-title').textContent = `Editing "${a.name || 'Alarm'}"`;
+  document.getElementById('alarm-save-btn').textContent = 'Save changes';
+  document.getElementById('alarm-cancel-btn').style.display = '';
+  const form = document.getElementById('alarm-form');
+  form.classList.add('editing');
+  form.scrollIntoView({behavior:'smooth', block:'start'});
+}
+function cancelAlarmEdit() {
+  _editingAlarmId = null;
+  document.getElementById('alarm-form-title').textContent = 'New alarm';
+  document.getElementById('alarm-save-btn').textContent = 'Add Alarm';
+  document.getElementById('alarm-cancel-btn').style.display = 'none';
+  document.getElementById('alarm-form').classList.remove('editing');
+  document.getElementById('alarm-name').value = '';
+  document.getElementById('alarm-vol').value = '';
+  document.getElementById('alarm-time').value = '07:00';
+  document.querySelectorAll('.alarm-day-chk').forEach(cb => cb.checked = parseInt(cb.value) < 5);
 }
 
 async function addAlarm() {
@@ -1115,15 +1718,17 @@ async function addAlarm() {
   const volume=volRaw!==''?parseInt(volRaw):null;
   try{
     await fetch('/api/alarms',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({name,host,preset,time,days,volume})});
-    document.getElementById('alarm-name').value='';
-    toast('Alarm saved'); loadAlarms();
+      body:JSON.stringify({id:_editingAlarmId,name,host,preset,time,days,volume,
+        tz:Intl.DateTimeFormat().resolvedOptions().timeZone})});
+    toast(_editingAlarmId ? 'Alarm updated' : 'Alarm saved');
+    cancelAlarmEdit(); loadAlarms();
   }catch(e){toast('Failed to save alarm');}
 }
 
 async function deleteAlarm(id, modalId) {
   if(!confirm('Delete this alarm?'))return;
   await fetch('/api/alarms/delete?id='+id);
+  if (id === _editingAlarmId) cancelAlarmEdit();
   toast('Alarm deleted'); loadAlarms();
   if(modalId) _refreshAlarmsModal();
 }
@@ -1161,6 +1766,7 @@ async function _refreshAlarmsModal() {
   const el=document.getElementById('alarms-modal-body'); if(!el)return;
   try{
     const alarms=await(await fetch('/api/alarms')).json();
+    _alarmsCache=alarms;
     el.innerHTML=alarms.length
       ?alarms.map(a=>_alarmHtml(a,'alarms-modal')).join('')
       :'<p style="font-size:12px;color:var(--fg3)">No alarms set.</p>';
