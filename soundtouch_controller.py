@@ -586,8 +586,9 @@ class SoundTouchDevice:
             me = vx.find("muteenabled")
             if me is not None:
                 d["muted"] = me.text.lower() == "true"
-        # now playing
+        # now playing (None = the speaker didn't answer — e.g. DHCP moved it)
         np = f_np.result()
+        d["online"] = np is not None
         if np is not None:
             d["source"]     = np.get("source","")
             d["source_account"] = np.get("sourceAccount","")
@@ -687,6 +688,13 @@ class SoundTouchDevice:
             return self.play_via_avt(p["location"])
         self.preset(n)
         return True
+
+    def ping(self, timeout=2):
+        """True if the speaker answers on its API port right now."""
+        try:
+            return self._session.get(f"{self.url}/info", timeout=timeout).status_code == 200
+        except Exception:
+            return False
 
     def is_playing(self):
         np = self._get("/now_playing")
@@ -2947,6 +2955,8 @@ class AppState:
         self.maintenance_store = MaintenanceStore()
         threading.Thread(target=self._audio_mode_loop, daemon=True).start()
 
+        threading.Thread(target=self._rediscovery_watchdog, daemon=True).start()
+
     def cancel_audio_mode_pending(self, host):
         """Stop enforcing an automatic mode — called when the user sets one by hand."""
         self._audio_pending.pop(host, None)
@@ -3162,6 +3172,36 @@ class AppState:
         self.maintenance_store.update(last_run=started.isoformat(timespec="seconds"),
                                       last_result=result)
         return result
+
+    def _rediscovery_watchdog(self):
+        """Every minute, check each known speaker still answers; if one doesn't,
+        rescan (at most every 5 min). Speakers are addressed by IP everywhere —
+        preset autoplay, Spotify, alarms — so a DHCP move otherwise breaks them
+        silently until someone presses Discover Speakers (that's what stopped
+        the Dining Room's physical preset buttons). A speaker that's really
+        switched off just drops out of the list, which ends the rescans."""
+        time.sleep(90)
+        last_scan = -1e9
+        while True:
+            time.sleep(60)
+            try:
+                with self._lock:
+                    devices = list(self.devices)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+                    alive = list(ex.map(lambda d: d.ping(), devices))
+                gone = [d for d, ok in zip(devices, alive) if not ok]
+                if gone and time.monotonic() - last_scan > 300:
+                    log.info(f"[WATCHDOG] not answering: {[f'{d.name} ({d.host})' for d in gone]} — rescanning")
+                    last_scan = time.monotonic()
+                    before = {d.device_id: d.host for d in devices}
+                    self.scan()
+                    with self._lock:
+                        moved = [f"{d.name} {before[d.device_id]}→{d.host}" for d in self.devices
+                                 if d.device_id in before and before[d.device_id] != d.host]
+                    if moved:
+                        log.info(f"[WATCHDOG] speakers moved: {moved}")
+            except Exception as e:
+                log.warning(f"[WATCHDOG] {e}")
 
     def scan(self):
         log.info("Scanning network…")
