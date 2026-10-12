@@ -298,14 +298,30 @@ async function pollNow() {
   clearTimeout(pollTimer);
   if (!activeHost) { schedPoll(); return; }
   try {
-    applyState(await (await fetch('/api/state?host='+activeHost)).json());
+    const d = await (await fetch('/api/state?host='+activeHost)).json();
+    if (d.error === 'no_device' || d.online === false) throw new Error('speaker not answering');
+    applyState(d);
     speakerErrors[activeHost] = 0;
     setChipOffline(activeHost, false);
   } catch(e) {
     speakerErrors[activeHost] = (speakerErrors[activeHost]||0) + 1;
-    if (speakerErrors[activeHost] >= 2) setChipOffline(activeHost, true);
+    if (speakerErrors[activeHost] >= 2) { setChipOffline(activeHost, true); followMovedSpeaker(); }
   }
   schedPoll();
+}
+
+// The active speaker stopped answering: it may have a new IP (DHCP). The
+// controller rescans by itself; re-fetch its list and follow the speaker by
+// name. Rate-limited so a speaker that's really off doesn't hammer the API.
+let _lastFollow = 0;
+async function followMovedSpeaker() {
+  if (Date.now() - _lastFollow < 30000) return;
+  _lastFollow = Date.now();
+  const name = (speakers.find(s => s.host === activeHost) || {}).name;
+  try { speakers = await (await fetch('/api/speakers')).json(); } catch(e) { return; }
+  renderRooms();
+  const moved = name && speakers.find(s => s.name === name && s.host !== activeHost);
+  if (moved) { toast(`${name} moved to ${moved.host}`); setActive(moved.host); }
 }
 function setChipOffline(host, offline) {
   const chip = document.getElementById('chip-'+host.replace(/\./g,'_'));
