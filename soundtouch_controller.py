@@ -3592,6 +3592,7 @@ class AppState:
         self.audio_mode_store = AudioModeStore()
         self._audio_pending   = {}  # host → [mode, deadline, attempts] being enforced
         self.reboot_status    = {}  # deviceID → {state, host, name} after reboot_device()
+        self._known           = {}  # deviceID → (last host, name) for every speaker ever seen
         self.maintenance_store = MaintenanceStore()
         threading.Thread(target=self._audio_mode_loop, daemon=True).start()
 
@@ -3826,12 +3827,15 @@ class AppState:
         return result
 
     def _rediscovery_watchdog(self):
-        """Every minute, check each known speaker still answers; if one doesn't,
-        rescan (at most every 5 min). Speakers are addressed by IP everywhere —
-        preset autoplay, Spotify, alarms — so a DHCP move otherwise breaks them
-        silently until someone presses Discover Speakers (that's what stopped
-        the Dining Room's physical preset buttons). A speaker that's really
-        switched off just drops out of the list, which ends the rescans."""
+        """Every minute, keep the speaker list honest. Speakers are addressed by
+        IP everywhere — preset autoplay, Spotify, alarms — so a speaker missing
+        from the list silently loses its physical preset buttons (the Dining
+        Room after a DHCP move on 12 Oct; the Bedroom after a scan missed it).
+
+        - A listed speaker that stops answering → rescan (at most every 5 min).
+        - A speaker seen before but no longer listed → check its last address
+          (reliable with DHCP reservations) and re-add it if it answers; if it
+          doesn't (probably unplugged) → rescan at most every 30 min."""
         time.sleep(90)
         last_scan = -1e9
         while True:
@@ -3842,8 +3846,28 @@ class AppState:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
                     alive = list(ex.map(lambda d: d.ping(), devices))
                 gone = [d for d, ok in zip(devices, alive) if not ok]
-                if gone and time.monotonic() - last_scan > 300:
-                    log.info(f"[WATCHDOG] not answering: {[f'{d.name} ({d.host})' for d in gone]} — rescanning")
+                # Speakers we've seen before but that aren't in the list (a scan
+                # missed them): with DHCP reservations their last address is
+                # reliable, so just check it and put them back.
+                listed = {d.device_id for d in devices}
+                lost = []
+                for did, (host, name) in list(self._known.items()):
+                    if did not in listed:
+                        dev = self.add_device(host)
+                        if dev and dev.device_id == did:
+                            log.info(f"[WATCHDOG] {name} back at {host} — re-added")
+                        elif dev:            # someone else answers there now
+                            log.info(f"[WATCHDOG] {host} is now {dev.name}, not {name}")
+                        else:
+                            lost.append(name)          # still missing → an occasional rescan looks for it
+                now = time.monotonic()
+                # Listed speakers that stop answering: rescan within 5 min (DHCP
+                # move). Known speakers missing for a while (probably unplugged):
+                # only every 30 min, so one switched-off speaker doesn't keep
+                # the network busy.
+                if (gone and now - last_scan > 300) or (lost and now - last_scan > 1800):
+                    names = [f"{d.name} ({d.host})" for d in gone] + [f"{n} (missing)" for n in lost]
+                    log.info(f"[WATCHDOG] not answering: {names} — rescanning")
                     last_scan = time.monotonic()
                     before = {d.device_id: d.host for d in devices}
                     self.scan()
@@ -3858,18 +3882,34 @@ class AppState:
     def scan(self):
         log.info("Scanning network…")
         found = discover_all(timeout=3)
+        # The sweep's 1.5 s probe can miss a slow speaker (the Bedroom's wifi
+        # was taking up to 157 ms just to ping). Before dropping a speaker we
+        # knew, check it directly at its last address.
+        seen = {d.device_id for d in found}
+        with self._lock:
+            missing = [d for d in self.devices if d.device_id and d.device_id not in seen]
+        for d in missing:
+            if d.ping(timeout=4):
+                log.info(f"Scan missed {d.name} ({d.host}) but it answers — keeping it")
+                found.append(d)
         for dev in found:
             dev.has_backup = self.store.load_backup(dev.host) is not None
         with self._lock:
             self.devices = found
+            for d in found:
+                if d.device_id:
+                    self._known[d.device_id] = (d.host, d.name)
         log.info(f"Scan complete — {len(self.devices)} speaker(s).")
 
     def add_device(self, host, port=8090):
         dev = SoundTouchDevice(host, port)
         if dev.fetch_info():
+            dev.has_backup = self.store.load_backup(dev.host) is not None
             with self._lock:
                 if not any(d.host == host for d in self.devices):
                     self.devices.append(dev)
+                if dev.device_id:
+                    self._known[dev.device_id] = (dev.host, dev.name)
             return dev
         return None
 
