@@ -161,28 +161,7 @@ else
   fi
 fi
 
-# ── 3. Spotify Client ID (optional) ──────────────────────────────────────────
-step "Spotify (optional)"
-SP_APP="$DATA_DIR/spotify/app.json"
-if [ -n "${SPOTIFY_CLIENT_ID:-}" ] || [ -s "$SP_APP" ]; then
-  ok "Spotify Client ID already configured"
-elif [ "$ASSUME_YES" = false ] && [ -t 0 ]; then
-  echo "  The Spotify tab needs a Client ID from https://developer.spotify.com/dashboard"
-  echo "  (redirect URI: http://127.0.0.1:$WEB_PORT/api/spotify/callback). Leave blank to skip."
-  read -rp "  Spotify Client ID: " SP_ID
-  SP_ID="$(echo "$SP_ID" | tr -d '[:space:]')"
-  if [ -n "$SP_ID" ]; then
-    mkdir -p "$DATA_DIR/spotify"; chmod 700 "$DATA_DIR/spotify"
-    printf '{"client_id": "%s"}\n' "$SP_ID" > "$SP_APP"; chmod 600 "$SP_APP"
-    ok "Saved to data/spotify/app.json"
-  else
-    info "Skipped — add it later by re-running this script."
-  fi
-else
-  info "Not configured (re-run interactively, or write data/spotify/app.json)."
-fi
-
-# ── 4. Firewall ──────────────────────────────────────────────────────────────
+# ── 3. Firewall ──────────────────────────────────────────────────────────────
 step "Firewall"
 if command -v ufw &>/dev/null && sudo ufw status 2>/dev/null | grep -q "Status: active"; then
   sudo ufw allow $WEB_PORT/tcp comment 'SoundTouch web UI'    >/dev/null && ok "$WEB_PORT/tcp (web UI)"
@@ -193,7 +172,7 @@ else
   ok "No active ufw firewall — nothing to open"
 fi
 
-# ── 5. Services ──────────────────────────────────────────────────────────────
+# ── 4. Services ──────────────────────────────────────────────────────────────
 step "Background services"
 if [ -z "$WANT_SERVICE" ]; then
   echo "  Runs the controller (and Alexa bridge) at boot and restarts it if it crashes."
