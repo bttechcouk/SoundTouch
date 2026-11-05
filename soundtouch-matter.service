@@ -1,13 +1,15 @@
+# Template — install.sh fills in the @PLACEHOLDERS@ and installs it as a
+# systemd *user* service (~/.config/systemd/user/soundtouch-matter.service).
 [Unit]
 Description=SoundTouch Matter Bridge (Alexa smart home)
-After=network.target soundtouch.service
-Wants=soundtouch.service
+After=network-online.target soundtouch.service
+Wants=network-online.target soundtouch.service
 
 [Service]
 Type=simple
-WorkingDirectory=/home/bturner/Projects/SoundTouch/matter_bridge
-ExecStart=/usr/bin/node matter_bridge.js
-Restart=on-failure
+WorkingDirectory=@APP_DIR@/matter_bridge
+ExecStart=@NODE@ matter_bridge.js
+Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
