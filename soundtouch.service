@@ -1,22 +1,21 @@
+# Template — install.sh fills in the @PLACEHOLDERS@ and installs it as a
+# systemd *user* service (~/.config/systemd/user/soundtouch.service).
 [Unit]
 Description=SoundTouch Controller
-Documentation=https://github.com/your-repo/soundtouch-controller
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-# Change User to your actual username if not running as the default user
-User=%i
-WorkingDirectory=%h/SoundTouch
-ExecStart=/usr/bin/python3 %h/SoundTouch/soundtouch_controller.py --port 8888
-Restart=on-failure
+WorkingDirectory=@APP_DIR@
+# Optional overrides, e.g. SOUNDTOUCH_TZ=Europe/London or SPOTIFY_CLIENT_ID=…
+EnvironmentFile=-@APP_DIR@/data/env
+ExecStart=@PYTHON@ @APP_DIR@/soundtouch_controller.py --port @PORT@
+Restart=always
 RestartSec=10
-StandardOutput=append:%h/SoundTouch/data/soundtouch.log
-StandardError=append:%h/SoundTouch/data/soundtouch.log
-
-# Allow binding to ports >= 1024 without root
-# (port 8888 is fine; if you want 80 you'd need AmbientCapabilities=CAP_NET_BIND_SERVICE)
+# The app keeps its own rotating soundtouch.log; console output goes to the journal.
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=default.target

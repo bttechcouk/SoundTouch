@@ -137,22 +137,19 @@ Or manage both as systemd user services (see below).
 bash install.sh
 ```
 
-The installer will:
-1. Check for Python 3 and install pip if needed
-2. Install Python packages from `requirements.txt` (`requests`, `zeroconf`, plus optional `Pillow`/`gTTS`)
-3. Check for Node.js 20+ (required for the Matter bridge)
-4. Run `npm install` inside `matter_bridge/`
-5. Open firewall ports if ufw is active
-6. Optionally install systemd user services for both components
+Works on Raspberry Pi OS (Bookworm or later), Debian and Ubuntu. A Pi Zero 2 W, Pi 4 or Pi 5
+is plenty; the original Pi Zero / Pi 1 (ARMv6) can run the controller but not the Alexa bridge.
 
-### Node.js requirement
+The installer:
+1. Checks for Python 3.10+ and installs `requests`, `zeroconf`, `Pillow`, `gTTS` (distro packages first, pip for any gaps)
+2. Offers to install Node.js 22 LTS from NodeSource if Node 20+ is missing, then installs the Alexa bridge packages
+3. Optionally asks for a Spotify Client ID (saved to `data/spotify/app.json`)
+4. Opens firewall ports if ufw is active
+5. Installs systemd user services for both components (with lingering, so they start at boot) and waits for the web UI to answer
 
-The Matter bridge requires **Node.js 20 LTS or later**. If it isn't installed:
-
-```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-```
+`bash install.sh --yes` does all of that unattended (`--no-matter`, `--no-service` to opt out).
+Re-running it is safe and is also how you update: `git pull && bash install.sh --yes`.
+Optional environment overrides (e.g. `SOUNDTOUCH_TZ=Europe/London`) go in `data/env`.
 
 ---
 

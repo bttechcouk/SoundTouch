@@ -20,7 +20,8 @@ cd matter_bridge && node matter_bridge.js           # Matter bridge (Alexa integ
 ## Installation
 
 ```bash
-bash install.sh   # Python deps, firewall ports (8888/tcp, 1900/udp, 5540/udp),
+bash install.sh   # Python deps, Node.js (offered), firewall ports, systemd user services;
+                  # --yes for unattended. Re-run after `git pull` to update.
                   # Matter bridge npm install, optional systemd services
 ```
 
