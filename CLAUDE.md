@@ -22,16 +22,13 @@ cd matter_bridge && node matter_bridge.js           # Matter bridge (Alexa integ
 ```bash
 bash install.sh   # Python deps, Node.js (offered), firewall ports, systemd user services;
                   # --yes for unattended. Re-run after `git pull` to update.
-                  # Matter bridge npm install, optional systemd services
 ```
 
-The installer detects Node.js 20 LTS+ and runs `npm install` in `matter_bridge/`
-automatically. If Node.js is missing it prints install instructions and continues
-(the web controller works without it). To install Node.js manually:
-```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-get install -y nodejs
-cd matter_bridge && npm install
-```
+The installer targets Raspberry Pi OS / Debian / Ubuntu. If Node.js 20+ is missing it offers
+to install Node 22 LTS from NodeSource, then runs `npm ci` in `matter_bridge/`; without Node it
+skips the bridge (the web controller works without it). `soundtouch.service` and
+`soundtouch-matter.service` are templates (`@APP_DIR@`, `@PYTHON@`, `@NODE@`, `@PORT@`) that
+`install.sh` renders into `~/.config/systemd/user/`; optional env overrides go in `data/env`.
 
 ## Service management
 
