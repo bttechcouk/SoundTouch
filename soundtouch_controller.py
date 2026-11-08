@@ -59,6 +59,9 @@ _tts_cache: dict = {}
 # Debounce duplicate requests: last (text, hosts_key) → timestamp
 _tts_last: dict = {}
 _tts_lock = threading.Lock()
+# One announcement at a time per speaker: overlapping ones each saved the volume the
+# previous one had set, so the speaker could be left at announcement volume.
+_tts_host_locks: dict = {}
 
 WEB_PORT      = 8888
 DATA_DIR      = pathlib.Path(__file__).parent / "data"
@@ -1909,7 +1912,13 @@ def _tts_announce(devices, text, volume, web_port):
             # ── play announcement ────────────────────────────────────────────
             dev.set_volume(volume)
             time.sleep(0.5)
-            dev.select_content("LOCAL_INTERNET_RADIO", "stationurl", desc_url, "Announcement")
+            if dev.has_local_internet_radio():
+                dev.select_content("LOCAL_INTERNET_RADIO", "stationurl", desc_url, "Announcement")
+            else:
+                # Kitchen-like speaker (no LOCAL_INTERNET_RADIO): selecting a stationurl
+                # is silently ignored, so push the MP3 over UPnP AVTransport instead.
+                log.info(f"[TTS] {dev.host} has no LOCAL_INTERNET_RADIO — playing via AVTransport")
+                dev.play_via_avt(mp3_url, "Announcement")
 
             # Wait for speaker to reach PLAY_STATE (not just BUFFERING — audio must
             # actually be flowing before we start the duration countdown).
@@ -1945,7 +1954,13 @@ def _tts_announce(devices, text, volume, web_port):
         except Exception as e:
             log.error(f"[TTS] announce_one({dev.host}) error: {e}")
 
-    threads = [threading.Thread(target=announce_one, args=(d,), daemon=True) for d in devices]
+    def announce_locked(dev):
+        with _tts_lock:
+            lock = _tts_host_locks.setdefault(dev.host, threading.Lock())
+        with lock:
+            announce_one(dev)
+
+    threads = [threading.Thread(target=announce_locked, args=(d,), daemon=True) for d in devices]
     for t in threads: t.start()
     for t in threads: t.join()
 
