@@ -1451,6 +1451,18 @@ class AudioModeStore:
             data.setdefault(self._key(dev), {})["auto_tv"] = bool(enabled)
             _atomic_write(self._file, json.dumps(data, indent=2))
 
+    def av_delay(self, dev):
+        """Lip-sync delay (ms) the user chose for this bar, or None if never set."""
+        with self._lock:
+            v = self._load().get(self._key(dev), {}).get("av_delay")
+        return v if isinstance(v, int) else None
+
+    def set_av_delay(self, dev, ms):
+        with self._lock:
+            data = self._load()
+            data.setdefault(self._key(dev), {})["av_delay"] = int(ms)
+            _atomic_write(self._file, json.dumps(data, indent=2))
+
 
 def _source_kind(source):
     """Classify a now_playing source: "tv" (PRODUCT = TV/HDMI input), "idle"
@@ -1479,6 +1491,19 @@ def audio_mode_for_transition(prev_source, source):
         return "dialog"
     if after == "music":
         return "normal"
+    return None
+
+
+def av_delay_for_transition(prev_source, source, saved):
+    """Lip-sync delay (ms) to re-apply when a soundbar moves prev_source →
+    source, or None. The bar forgets its DSP settings (dialogue mode *and*
+    videosyncaudiodelay) when it sleeps, so the delay the user chose is put
+    back each time the TV input is entered. Music is left alone — a delay
+    there only puts the bar out of step with grouped speakers."""
+    if saved is None or prev_source is None:
+        return None
+    if _source_kind(source) == "tv" and _source_kind(prev_source) != "tv":
+        return saved
     return None
 
 
@@ -2457,9 +2482,14 @@ class Handler(BaseHTTPRequestHandler):
                     ok = dev.set_soundbar_setting(qs.get("name",[""])[0], qs.get("value",[""])[0])
                 except ValueError:
                     ok = False
-                self._json({"ok": bool(ok), **dev.get_soundbar_settings()})
+                sb = dev.get_soundbar_settings()
+                if ok and qs.get("name",[""])[0] == "av_delay" and "av_delay" in sb:
+                    # The bar drops this when it sleeps — remember it so the
+                    # soundbar watcher can put it back (see av_delay_for_transition)
+                    self.server_state.audio_mode_store.set_av_delay(dev, sb["av_delay"])
+                self._json({"ok": bool(ok), **self._with_saved_av_delay(dev, sb)})
             else:
-                self._json(dev.get_soundbar_settings())
+                self._json(self._with_saved_av_delay(dev, dev.get_soundbar_settings()))
 
         # ── save what's playing as a preset ───────────────────────────────────
         elif path == "/api/presets/save-current":
@@ -2992,6 +3022,14 @@ class Handler(BaseHTTPRequestHandler):
         except requests.RequestException as e:
             log.warning(f"[SPOTIFY] {action}: {e}")
             self._json({"ok": False, "error": "Couldn't reach Spotify or the speaker"})
+
+    def _with_saved_av_delay(self, dev, sb):
+        """Show the lip-sync delay the user chose rather than the bar's live
+        value, which is 0 whenever it has slept since (restored on TV input)."""
+        saved = self.server_state.audio_mode_store.av_delay(dev)
+        if saved is not None and "av_delay" in sb:
+            sb = {**sb, "av_delay": saved}
+        return sb
 
     def _json(self, obj):
         payload = json.dumps(obj)
@@ -3606,6 +3644,7 @@ class AppState:
 
         self.audio_mode_store = AudioModeStore()
         self._audio_pending   = {}  # host → [mode, deadline, attempts] being enforced
+        self._delay_pending   = {}  # host → [ms, deadline, attempts] lip-sync delay being restored
         self.reboot_status    = {}  # deviceID → {state, host, name} after reboot_device()
         self._known           = {}  # deviceID → (last host, name) for every speaker ever seen
         self.maintenance_store = MaintenanceStore()
@@ -3673,6 +3712,8 @@ class AppState:
                         if action != "wait":
                             woke.pop(dev.host, None)
 
+                    self._restore_av_delay(dev, prev, source)
+
                     if not (dev.supports_dialog_mode() and self.audio_mode_store.auto_enabled(dev)):
                         self._audio_pending.pop(dev.host, None)
                         continue
@@ -3695,6 +3736,26 @@ class AppState:
                         pend[2] += 1
                 except Exception as e:
                     log.debug(f"[DSP-AUTO] {dev.host} error: {e}")
+
+    def _restore_av_delay(self, dev, prev, source):
+        """Put the saved lip-sync delay back when the bar enters the TV input
+        (it resets to 0 in standby). Like the dialogue mode, it is re-checked
+        for ~10 s in case the bar resets it again while settling."""
+        ms = av_delay_for_transition(prev, source, self.audio_mode_store.av_delay(dev))
+        if ms is not None:
+            self._delay_pending[dev.host] = [ms, time.monotonic() + 10, 0]
+        pend = self._delay_pending.get(dev.host)
+        if not pend:
+            return
+        ms, deadline, attempts = pend
+        if time.monotonic() > deadline or attempts >= 4:
+            self._delay_pending.pop(dev.host, None)
+            return
+        current = dev.get_soundbar_settings().get("av_delay")
+        if current is not None and current != ms:
+            log.info(f"[AV-DELAY] {dev.host} lip-sync delay {current} → {ms} ms (restored)")
+            dev.set_soundbar_setting("av_delay", ms)
+            pend[2] += 1
 
     def _upnp_autoplay_loop(self):
         """Watch Kitchen-like speakers (no LOCAL_INTERNET_RADIO) for UPNP preset presses.

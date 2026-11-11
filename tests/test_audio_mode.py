@@ -1,6 +1,7 @@
 """Dialogue mode: transition rules, /audiodspcontrols parsing, support probe
 and the per-speaker auto setting. No speaker hardware — _get / _post / the
 HTTP session are stubbed."""
+import types
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -114,3 +115,30 @@ def test_store_defaults_on_and_keys_by_device_id(tmp_path):
 ])
 def test_tv_wake_action(woke, elapsed, source, playing, want):
     assert stc.tv_wake_action(woke, elapsed, source, playing, grace=8) == want
+
+
+# ── lip-sync delay: remembered and restored on the TV input ──────────────────
+def test_av_delay_store_roundtrip_keeps_auto_tv(tmp_path):
+    store = stc.AudioModeStore(tmp_path / "audio_mode.json")
+    dev = types.SimpleNamespace(device_id="C4F31264FB9F", host="10.0.0.5")
+    assert store.av_delay(dev) is None
+    store.set_auto(dev, False)
+    store.set_av_delay(dev, 40)
+    assert store.av_delay(dev) == 40
+    assert store.auto_enabled(dev) is False
+    store.set_av_delay(dev, 0)
+    assert store.av_delay(dev) == 0
+
+
+@pytest.mark.parametrize("prev,source,saved,expected", [
+    ("STANDBY", "PRODUCT", 40, 40),     # TV on after the bar slept
+    ("SPOTIFY", "PRODUCT", 40, 40),     # music → TV
+    ("STANDBY", "PRODUCT", 0, 0),       # an explicit 0 is restored too
+    ("PRODUCT", "PRODUCT", 40, None),   # staying on TV: leave manual changes
+    ("STANDBY", "SPOTIFY", 40, None),   # music is never delayed
+    ("PRODUCT", "STANDBY", 40, None),
+    (None, "PRODUCT", 40, None),        # controller start-up
+    ("STANDBY", "PRODUCT", None, None), # never set
+])
+def test_av_delay_for_transition(prev, source, saved, expected):
+    assert stc.av_delay_for_transition(prev, source, saved) == expected

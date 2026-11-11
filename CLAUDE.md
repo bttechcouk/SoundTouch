@@ -145,6 +145,8 @@ Key API endpoints:
 
 `_audio_mode_loop` — Polls dialogue-capable soundbars every 2s. Entering the TV input (`source=PRODUCT`, from music or standby) sets dialogue mode; entering a music source sets normal. Rules live in the pure `audio_mode_for_transition()`. The target mode is re-applied for ~10s in case the bar resets it while settling. Settings in `AudioModeStore` (`data/audio_mode.json`, keyed by deviceID, default on).
 
+**Lip-sync delay restore** — the bar forgets `videosyncaudiodelay` (like dialogue mode) when it sleeps, so `/api/soundbar/set` also saves `av_delay` in `AudioModeStore`; `_restore_av_delay()` (same loop, rule in `av_delay_for_transition()`) puts it back on entering the TV input, and `/api/soundbar` reports the saved value rather than the bar's live one.
+
 **TV wake** (`tv_wake_action()`, also in `_audio_mode_loop`) — turning the TV on wakes the soundbar over HDMI-CEC, but it comes up on its last source. If a soundbar (`has_tv_input()`: `PRODUCT/TV` in `/sources`) goes `STANDBY` → a music source and isn't playing within `TV_WAKE_GRACE` (8 s), the watcher selects `PRODUCT/TV`. Don't select the TV input while the TV may be off: with CEC on that turns a Samsung TV on (Anynet+ has no separate setting for it), which is why an earlier "park on TV before power-off" approach was reverted. `_upnp_autoplay_loop` likewise won't auto-play a soundbar coming out of standby onto its last radio station.
 
 **`main()` (line 5225)** — Parses `--port`, `--ip`, `--daemon`, runs `_check_network()`, starts `AppState.scan()`, launches `ThreadingHTTPServer`.
