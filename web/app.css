@@ -239,6 +239,13 @@ header{padding:calc(16px + env(safe-area-inset-top,0px)) 20px 0;
 .eq-head{display:flex;justify-content:space-between;align-items:baseline;margin:16px 0 6px;
   font-size:12px;color:var(--fg3);font-weight:600;text-transform:uppercase;letter-spacing:.06em}
 .eq-head .eq-val{font-weight:500;text-transform:none;letter-spacing:0;color:var(--fg2)}
+.eq-nudge{width:34px;height:34px;margin-top:22px;border-radius:50%;flex-shrink:0;cursor:pointer;
+  background:var(--surface);border:1px solid var(--border);color:var(--fg2);font-size:18px;line-height:1}
+.eq-nudge:active{background:var(--blue-dim);color:var(--blue-light);border-color:var(--blue)}
+.eq-note{font-size:12px;color:var(--amber);margin-top:8px;line-height:1.5}
+.eq-note:empty{display:none}
+.eq-note button{background:none;border:0;padding:0;color:inherit;font:inherit;
+  text-decoration:underline;cursor:pointer}
 
 /* Chip backup warning */
 .chip-warn{font-size:9px;color:var(--amber);flex-shrink:0;margin-left:1px}

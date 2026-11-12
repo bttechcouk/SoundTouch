@@ -1054,21 +1054,38 @@ async function loadAudioControls() {
   el.querySelectorAll('.eq-slider').forEach(paintEq);
 }
 // AV delay slider + auto-off / HDMI-CEC switches (whatever the speaker reports)
+const AV_DELAY_STEP = 5;   // ms — the bar takes any whole number; finer isn't audible
+// The slider shows the saved delay; say so if the bar (on TV) is really on another
+function avDelayNote(sb) {
+  if (sb.av_delay_live == null) return '';
+  return `The bar is currently at ${sb.av_delay_live} ms, not your saved ${sb.av_delay} ms.
+    <button onclick="sendSoundbar('av_delay',${sb.av_delay})">Put it back</button>`;
+}
+let avDelayTimer;
+function nudgeAvDelay(dir) {
+  const sl = document.getElementById('eq-avdelay'); if (!sl) return;
+  const v = Math.max(0, Math.min(300, parseInt(sl.value) + dir*AV_DELAY_STEP));
+  if (v === parseInt(sl.value)) return;
+  sl.value = v; onEqInput('avdelay', sl, ' ms');
+  clearTimeout(avDelayTimer);            // several quick taps → one request
+  avDelayTimer = setTimeout(() => sendSoundbar('av_delay', v), 400);
+}
 function soundbarSettingsHtml(sb) {
   let html = '';
   if (sb.av_delay != null) html += `
     <div class="eq-head"><span title="Delays the sound to line up with the picture">Lip sync delay</span>
       <span class="eq-val" id="eqv-avdelay">${sb.av_delay} ms</span></div>
     <div style="display:flex;align-items:center;gap:10px">
-      <span class="bass-label">0</span>
+      <button class="eq-nudge" onclick="nudgeAvDelay(-1)" aria-label="Less delay">−</button>
       <div class="eq-track" style="flex:1;position:relative;padding-top:22px">
         <div class="eq-tooltip" id="eqt-avdelay"></div>
-        <input type="range" class="eq-slider" id="eq-avdelay" min="0" max="300" step="10"
+        <input type="range" class="eq-slider" id="eq-avdelay" min="0" max="300" step="${AV_DELAY_STEP}"
                value="${Math.min(sb.av_delay,300)}"
                oninput="onEqInput('avdelay',this,' ms')" onchange="sendSoundbar('av_delay',this.value)">
       </div>
-      <span class="bass-label">300</span>
-    </div>`;
+      <button class="eq-nudge" onclick="nudgeAvDelay(1)" aria-label="More delay">+</button>
+    </div>
+    <div class="eq-note" id="avdelay-note">${avDelayNote(sb)}</div>`;
   const sw = (key, label, title) => sb[key] == null ? '' : `
       <label class="sw-pill" title="${title}">
         <span>${label}</span>
@@ -1092,6 +1109,12 @@ async function sendSoundbar(name, value, input) {
       `&name=${name}&value=${value}`)).json();
     if (!r.ok) throw 0;
     toast(SOUNDBAR_MSG[name](r[name]));
+    const sl = document.getElementById('eq-avdelay');
+    if (name === 'av_delay' && sl) {
+      sl.value = Math.min(r.av_delay, 300); paintEq(sl);
+      document.getElementById('eqv-avdelay').textContent = r.av_delay + ' ms';
+      document.getElementById('avdelay-note').innerHTML = avDelayNote(r);
+    }
   } catch(e) {
     toast("Couldn't change that setting");
     if (input) input.checked = !input.checked;   // put the switch back
