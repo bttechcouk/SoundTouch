@@ -925,34 +925,67 @@ class PresetStore:
         self._lock = threading.Lock()   # serialise concurrent writers
 
     # ── per-speaker preset backup ─────────────────────────────────────────────
-    def _speaker_file(self, host):
-        return self.presets_dir / f"{host.replace('.','_')}.json"
+    # Backups are keyed by deviceID so they follow a speaker when DHCP gives it
+    # a new address. `speaker` is a SoundTouchDevice, or a plain key string (a
+    # deviceID, or an IP for a speaker whose ID isn't known).
+    @staticmethod
+    def _key(speaker):
+        if isinstance(speaker, str):
+            return speaker
+        return speaker.device_id or speaker.host
 
-    def backup_presets(self, host, presets):
+    def _speaker_file(self, speaker):
+        return self.presets_dir / f"{self._key(speaker).replace('.','_')}.json"
+
+    def _adopt_ip_backup(self, speaker):
+        """One-off migration: a backup written under the speaker's IP (the old
+        naming) becomes its deviceID backup. Only the file for the address the
+        speaker is at *now* is taken — older files may belong to another one."""
+        if isinstance(speaker, str) or not speaker.device_id:
+            return
+        new, old = self._speaker_file(speaker), self._speaker_file(speaker.host)
+        with self._lock:
+            if new.exists() or not old.exists():
+                return
+            try:
+                data = json.loads(old.read_text())
+            except Exception:
+                return
+            data.update(device_id=speaker.device_id, host=speaker.host, name=speaker.name)
+            _atomic_write(new, json.dumps(data, indent=2))
+            old.unlink()
+        log.info(f"[BACKUP] {speaker.name}: backup {old.name} → {new.name} (now keyed by deviceID)")
+
+    def backup_presets(self, speaker, presets):
         """Save a speaker's presets to disk."""
-        path = self._speaker_file(host)
+        self._adopt_ip_backup(speaker)
+        path = self._speaker_file(speaker)
         data = {
-            "host":       host,
+            "host":       speaker if isinstance(speaker, str) else speaker.host,
             "backed_up":  time.strftime("%Y-%m-%dT%H:%M:%S"),
             "presets":    presets,
         }
+        if not isinstance(speaker, str):
+            data.update(device_id=speaker.device_id, name=speaker.name)
         with self._lock:
             _atomic_write(path, json.dumps(data, indent=2))
-        log.info(f"Backed up {len(presets)} presets for {host}")
+        log.info(f"Backed up {len(presets)} presets for {data['host']}")
         return data
 
-    def load_backup(self, host):
-        path = self._speaker_file(host)
+    def load_backup(self, speaker):
+        self._adopt_ip_backup(speaker)
+        path = self._speaker_file(speaker)
         if path.exists():
             return json.loads(path.read_text())
         return None
 
-    def backup_presets_raw(self, host, data):
+    def backup_presets_raw(self, speaker, data):
         """Save pre-validated backup data (e.g. after user editing)."""
-        path = self._speaker_file(host)
+        self._adopt_ip_backup(speaker)
+        path = self._speaker_file(speaker)
         with self._lock:
             _atomic_write(path, json.dumps(data, indent=2))
-        log.info(f"[BACKUP] Saved edited backup for {host}")
+        log.info(f"[BACKUP] Saved edited backup for {self._key(speaker)}")
 
     def list_backups(self):
         out = []
@@ -1397,6 +1430,28 @@ class SceneStore:
             try: out.append(json.loads(f.read_text()))
             except Exception: pass
         return out
+
+
+def scene_device_ids(scene, devices):
+    """{host: deviceID} for the speakers a scene names — saved with the scene
+    so it can find them again after DHCP moves them."""
+    by_host = {d.host: d.device_id for d in devices if d.device_id}
+    hosts = [scene.get("master"), *scene.get("slaves", []), *scene.get("volumes", {})]
+    return {h: by_host[h] for h in hosts if h in by_host}
+
+
+def resolve_scene_hosts(scene, devices):
+    """The scene with every speaker address swapped for where that speaker is
+    now (matched by the deviceIDs saved with it). Scenes saved before deviceIDs
+    were recorded, and speakers that aren't online, keep their saved address."""
+    ids   = scene.get("device_ids") or {}
+    by_id = {d.device_id: d.host for d in devices if d.device_id}
+    cur   = lambda h: by_id.get(ids.get(h), h)
+    return {**scene,
+            "master":  cur(scene.get("master")),
+            "slaves":  [cur(h) for h in scene.get("slaves", [])],
+            "volumes": {cur(h): v for h, v in scene.get("volumes", {}).items()},
+            "device_ids": {cur(h): i for h, i in ids.items()}}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2155,7 +2210,7 @@ class Handler(BaseHTTPRequestHandler):
             if dev:
                 dev.invalidate_preset_cache()
                 presets = dev.get_presets_detail()
-                data = self.server_state.store.backup_presets(host, presets)
+                data = self.server_state.store.backup_presets(dev, presets)
                 dev.has_backup = True
                 self._json(data)
             else:
@@ -2163,7 +2218,7 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/presets/backup-json":
             host = qs.get("host", [None])[0]
-            data = self.server_state.store.load_backup(host)
+            data = self.server_state.store.load_backup(self.server_state.backup_key(host))
             if data:
                 self._json(data)
             else:
@@ -2182,7 +2237,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     presets = None
             if not presets:
-                backup = self.server_state.store.load_backup(host)
+                backup = self.server_state.store.load_backup(self.server_state.backup_key(host))
                 if backup:
                     presets = backup.get("presets", [])
                     source_label = "backup"
@@ -2218,13 +2273,13 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/presets/backup-info":
             host = qs.get("host",[None])[0]
-            data = self.server_state.store.load_backup(host)
+            data = self.server_state.store.load_backup(self.server_state.backup_key(host))
             self._json(data or {"backed_up":None,"presets":[]})
 
         elif path == "/api/presets/restore":
             host = qs.get("host",[None])[0]
             dev  = self.server_state.get_device(host)
-            data = self.server_state.store.load_backup(host)
+            data = self.server_state.store.load_backup(self.server_state.backup_key(host))
             if not dev:
                 self._json({"ok":False,"error":"no_device"})
             elif not data:
@@ -2560,7 +2615,7 @@ class Handler(BaseHTTPRequestHandler):
                                       item["location"], item["account"], item["art"]):
                         d.invalidate_preset_cache()
                         # Keep the backup in step so a restore doesn't undo it
-                        st.store.backup_presets(d.host, d.get_presets_detail())
+                        st.store.backup_presets(d, d.get_presets_detail())
                         d.has_backup = True
                         results[d.name] = "saved"
                     else:
@@ -2661,7 +2716,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     dev.invalidate_preset_cache()
                     presets = dev.get_presets_detail()
-                    data    = self.server_state.store.backup_presets(dev.host, presets)
+                    data    = self.server_state.store.backup_presets(dev, presets)
                     dev.has_backup = True
                     results.append({"host":dev.host,"name":dev.name,"ok":True,"count":len(presets)})
                 except Exception as e:
@@ -2697,7 +2752,9 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── scenes ────────────────────────────────────────────────────────────
         elif path == "/api/scenes":
-            self._json(self.server_state.scene_store.list_scenes())
+            devs = list(self.server_state.devices)
+            self._json([resolve_scene_hosts(sc, devs)
+                        for sc in self.server_state.scene_store.list_scenes()])
 
         elif path == "/api/scenes/delete":
             sid = qs.get("id", [""])[0]
@@ -2710,6 +2767,7 @@ class Handler(BaseHTTPRequestHandler):
             if not scene:
                 self._json({"ok": False, "error": "not_found"})
             else:
+                scene = resolve_scene_hosts(scene, list(self.server_state.devices))
                 master_host = scene.get("master")
                 slave_hosts = scene.get("slaves", [])
                 master_dev  = self.server_state.get_device(master_host)
@@ -2884,7 +2942,7 @@ class Handler(BaseHTTPRequestHandler):
                 if "presets" not in data:
                     self._json({"ok": False, "error": "invalid: missing 'presets' key"})
                 else:
-                    self.server_state.store.backup_presets_raw(host, data)
+                    self.server_state.store.backup_presets_raw(self.server_state.backup_key(host), data)
                     dev = self.server_state.get_device(host)
                     if dev: dev.has_backup = True
                     self._json({"ok": True})
@@ -2909,6 +2967,7 @@ class Handler(BaseHTTPRequestHandler):
                         "preset":  int(data.get("preset", 1)),
                         "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
                     }
+                    scene["device_ids"] = scene_device_ids(scene, list(self.server_state.devices))
                     self.server_state.scene_store.save(sid, scene)
                     log.info(f"[SCENE] Saved '{name}'")
                     self._json({"ok": True, "id": sid})
@@ -3019,7 +3078,7 @@ class Handler(BaseHTTPRequestHandler):
             if d.store_preset(slot, item["name"], item["source"], item["type"],
                               item["location"], item["account"], item["art"]):
                 d.invalidate_preset_cache()
-                st.store.backup_presets(d.host, d.get_presets_detail())
+                st.store.backup_presets(d, d.get_presets_detail())
                 d.has_backup = True
                 results[d.name] = "saved"
             else:
@@ -4047,7 +4106,7 @@ class AppState:
                 log.info(f"Scan missed {d.name} ({d.host}) but it answers — keeping it")
                 found.append(d)
         for dev in found:
-            dev.has_backup = self.store.load_backup(dev.host) is not None
+            dev.has_backup = self.store.load_backup(dev) is not None
         with self._lock:
             self.devices = found
             for d in found:
@@ -4058,7 +4117,7 @@ class AppState:
     def add_device(self, host, port=8090):
         dev = SoundTouchDevice(host, port)
         if dev.fetch_info():
-            dev.has_backup = self.store.load_backup(dev.host) is not None
+            dev.has_backup = self.store.load_backup(dev) is not None
             with self._lock:
                 if not any(d.host == host for d in self.devices):
                     self.devices.append(dev)
@@ -4073,6 +4132,19 @@ class AppState:
                 if d.host == host:
                     return d
         return None
+
+    def backup_key(self, host):
+        """What PresetStore should key this speaker's backup by: the device if
+        it is online, its deviceID if we have seen it at this address before
+        (so an offline speaker's backup can still be read), else the address."""
+        dev = self.get_device(host)
+        if dev:
+            return dev
+        with self._lock:
+            for did, (h, _name) in self._known.items():
+                if h == host:
+                    return did
+        return host or ""
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
