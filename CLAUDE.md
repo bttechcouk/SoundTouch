@@ -46,6 +46,7 @@ journalctl --user -u soundtouch-matter -f                # bridge live logs
 | 8888 | TCP | Web UI and DLNA redirect endpoints |
 | 8090 | TCP | SoundTouch speaker API (outbound to speaker) |
 | 8091 | TCP | UPnP AVTransport on speaker (outbound, used for UPNP-only speakers) |
+| 8080 | TCP | Speaker push notifications (WebSocket `gabbo`), outbound — preset-button presses |
 | 1900 | UDP | SSDP multicast — DLNA server announcements |
 | 17000 | TCP | Speaker diagnostic console (TAP), outbound — used only to send `sys reboot` |
 | 5540 | UDP | Matter protocol (Alexa smart home) |
@@ -143,6 +144,8 @@ Key API endpoints:
 **`AppState` (line 5074)** — Singleton holding the device list, `PresetStore`, `SceneStore`, `AlarmStore`, `AlarmScheduler`, and `DLNAServer`. On init, starts the DLNA server and the `_upnp_autoplay_loop` daemon thread.
 
 `_upnp_autoplay_loop` (line 5098) — Polls Kitchen-like speakers every 2s. Fires `play_via_avt()` when it detects either `source=UPNP`+stopped (ContentItem has our DLNA URL) or a fresh transition into `source=INVALID_SOURCE` (the more common case when a physical preset button is pressed). Uses `prev_source`, `last_upnp_loc`, and `last_fired` dicts for debounce.
+
+**Push notifications (`SpeakerSocket`, `_speaker_listener`)** — speakers push state changes over a WebSocket on port 8080 (subprotocol `gabbo`); `SpeakerSocket` is a small stdlib-only client. `_upnp_autoplay_loop` keeps one listener thread per Kitchen-like speaker (`_ensure_listener`). A physical preset press arrives as `<nowSelectionUpdated>` naming the preset and its `/dlna/stream/<id>` location ~100 ms before the speaker drops to `INVALID_SOURCE` (`preset_press()`); `_handle_push()` waits `PRESS_PLAY_DELAY` (1.5 s — the renderer drops an earlier Play), plays that station via `play_via_avt()`, checks `is_playing()`, retries once and records the result in the history. The poll loop stands back for `PRESS_HOLD_OFF` (20 s) after a pushed press and remains the fallback when a listener is down — on its own it can only replay the *last* station it saw, so it does nothing after a controller restart. Soundbars are listened to but not acted on yet (a CEC wake might look like a selection). `prototypes/speaker_ws.py <host> --raw` prints everything a speaker pushes.
 
 `_audio_mode_loop` — Polls dialogue-capable soundbars every 2s. Entering the TV input (`source=PRODUCT`, from music or standby) sets dialogue mode; entering a music source sets normal. Rules live in the pure `audio_mode_for_transition()`. The target mode is re-applied for ~10s in case the bar resets it while settling. Settings in `AudioModeStore` (`data/audio_mode.json`, keyed by deviceID, default on).
 

@@ -249,6 +249,119 @@ def bar_event(dev, msg, tag="BAR"):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Speaker push notifications (WebSocket, port 8080, subprotocol "gabbo")
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SpeakerSocket:
+    """Minimal RFC 6455 client for a speaker's notification channel — text
+    frames, ping/pong and close are all it needs, so no extra dependency.
+    Speakers push state changes here (now playing, volume, preset selection…)
+    within ~100 ms, where polling takes up to 2 s and can't say *which*
+    preset button was pressed."""
+
+    def __init__(self, host, port=8080, timeout=10):
+        self.sock = socket.create_connection((host, port), timeout=timeout)
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.sock.sendall((
+            f"GET / HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\n"
+            f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+            "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: gabbo\r\n\r\n").encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = self.sock.recv(1024)
+            if not chunk:
+                raise ConnectionError("closed during the WebSocket handshake")
+            head += chunk
+        head, self._buf = head.split(b"\r\n\r\n", 1)
+        if b" 101 " not in head.split(b"\r\n", 1)[0] + b" ":
+            raise ConnectionError(f"not a WebSocket upgrade: {head[:60]!r}")
+        self.last_rx = time.monotonic()    # last time anything arrived (incl. pongs)
+
+    def _read(self, n):
+        while len(self._buf) < n:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("speaker closed the connection")
+            self._buf += chunk
+        out, self._buf = self._buf[:n], self._buf[n:]
+        return out
+
+    def _send(self, opcode, payload=b""):
+        mask, n = os.urandom(4), len(payload)      # clients must mask
+        head = bytes([0x80 | opcode]) + (bytes([0x80 | n]) if n < 126
+                                         else bytes([0x80 | 126]) + struct.pack(">H", n))
+        self.sock.sendall(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+
+    def ping(self):
+        self._send(0x9)
+
+    def recv(self, timeout=None):
+        """Next text message, or None if nothing arrives within `timeout`.
+        Pings are answered here; a close or a dropped link raises ConnectionError."""
+        text = b""
+        while True:
+            self.sock.settimeout(timeout)
+            try:
+                b0, b1 = self._read(2)
+            except socket.timeout:
+                return None
+            self.sock.settimeout(10)               # a frame has started: finish it
+            try:
+                n = b1 & 0x7F
+                if n == 126:   n = struct.unpack(">H", self._read(2))[0]
+                elif n == 127: n = struct.unpack(">Q", self._read(8))[0]
+                mask = self._read(4) if b1 & 0x80 else None
+                data = self._read(n)
+            except socket.timeout:
+                raise ConnectionError("speaker stalled mid-frame")
+            if mask:
+                data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+            self.last_rx = time.monotonic()
+            opcode = b0 & 0x0F
+            if opcode == 0x9:
+                self._send(0xA, data)                          # ping → pong
+            elif opcode == 0x8:
+                raise ConnectionError("speaker sent close")
+            elif opcode in (0x0, 0x1):
+                text += data
+                if b0 & 0x80:                                  # FIN
+                    return text.decode("utf-8", "replace")
+
+    def close(self):
+        try: self._send(0x8)
+        except OSError: pass
+        try: self.sock.close()
+        except OSError: pass
+
+
+def preset_press(xml_text):
+    """(slot, name, station_id) if a push notification says a preset holding
+    one of *our* radio stations was just selected — i.e. someone pressed a
+    preset button — else None.
+
+    The speaker sends <nowSelectionUpdated> with the preset's ContentItem the
+    instant the button is pressed, ~100 ms before it gives up and drops to
+    INVALID_SOURCE (which it reports as a second selection, preset id 0)."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+    if root.tag != "updates":
+        return None
+    preset = root.find("nowSelectionUpdated/preset")
+    ci = preset.find("ContentItem") if preset is not None else None
+    if ci is None or ci.get("source") != "UPNP":
+        return None
+    loc = ci.get("location", "")
+    if "/dlna/stream/" not in loc:
+        return None
+    station = loc.split("/dlna/stream/", 1)[1].split("?")[0].strip("/")
+    if not station:
+        return None
+    return preset.get("id", ""), (ci.findtext("itemName") or "").strip(), station
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SoundTouch device API
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1901,6 +2014,10 @@ def discover_all(timeout=4):
 # ═══════════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
+
+PRESS_PLAY_DELAY = 1.5   # s between a pushed preset press and our AVTransport Play
+PRESS_HOLD_OFF   = 20    # s the poll loop leaves a speaker alone after a pushed press
+
 
 def get_local_ip():
     try:
@@ -3780,6 +3897,8 @@ class AppState:
         self.dlna.start()
 
         self._kitchen_like = {}  # host → bool, cached after first check
+        self._listeners     = {}  # host → push-notification listener thread
+        self._press_handled = {}  # host → monotonic time a pushed preset press was handled
         t = threading.Thread(target=self._upnp_autoplay_loop, daemon=True)
         t.start()
 
@@ -3956,6 +4075,7 @@ class AppState:
                         self._kitchen_like[dev.host] = not dev.has_local_internet_radio()
                     if not self._kitchen_like[dev.host]:
                         continue
+                    self._ensure_listener(dev)
                     np = dev._get("/now_playing")
                     if np is None:
                         continue
@@ -3963,8 +4083,16 @@ class AppState:
                     play_status = np.get("playStatus") or np.findtext("playStatus") or ""
                     ci  = np.find("ContentItem")
                     loc = ci.get("location", "") if ci is not None else ""
+                    # The push listener knows which preset was pressed and is
+                    # already playing it — don't also guess from the poll.
+                    pushed = time.monotonic() - self._press_handled.get(dev.host, -1e9) < PRESS_HOLD_OFF
 
-                    if source == "UPNP":
+                    if pushed and source in ("UPNP", "INVALID_SOURCE"):
+                        if source == "UPNP" and loc.startswith(dlna_prefix):
+                            last_upnp_loc[dev.host] = loc
+                        inv_retry.pop(dev.host, None)
+
+                    elif source == "UPNP":
                         if loc.startswith(dlna_prefix):
                             last_upnp_loc[dev.host] = loc
                         if play_status in ("PLAY_STATE", "BUFFERING_STATE"):
@@ -4012,6 +4140,78 @@ class AppState:
                     prev_source[dev.host] = source
                 except Exception as e:
                     log.debug(f"[AVT-AUTO] {dev.host} error: {e}")
+
+    # ── push notifications: physical preset buttons ──────────────────────────
+    def _ensure_listener(self, dev):
+        """Keep one push-notification listener running per Kitchen-like speaker
+        (called from the 2 s poll, which stays as the fallback)."""
+        t = self._listeners.get(dev.host)
+        if t is None or not t.is_alive():
+            t = threading.Thread(target=self._speaker_listener, args=(dev,), daemon=True)
+            self._listeners[dev.host] = t
+            t.start()
+
+    def _speaker_listener(self, dev):
+        """Listen to one speaker's WebSocket until it drops or the speaker
+        leaves the list (e.g. moved address); _ensure_listener starts a new one."""
+        try:
+            ws = SpeakerSocket(dev.host)
+        except Exception as e:
+            log.debug(f"[PUSH] {dev.host} connect failed: {e}")
+            time.sleep(30)                 # unplugged / restarting — don't hammer it
+            return
+        log.info(f"[PUSH] {dev.name} ({dev.host}) listening for preset presses")
+        try:
+            while self.get_device(dev.host) is dev:
+                msg = ws.recv(timeout=30)
+                if msg is None:
+                    # Quiet: a speaker that lost power leaves the socket open
+                    # with nothing on it, so ask, and give up if it stays silent.
+                    if time.monotonic() - ws.last_rx > 150:
+                        raise ConnectionError("no answer to pings")
+                    ws.ping()
+                    continue
+                self._handle_push(dev, msg)
+        except Exception as e:
+            log.info(f"[PUSH] {dev.name} ({dev.host}) listener stopped: {e}")
+        finally:
+            ws.close()
+
+    def _handle_push(self, dev, msg):
+        """A preset button was pressed on a speaker that can't play our radio
+        presets itself: play the station it named. Returns True if it started."""
+        press = preset_press(msg)
+        if not press:
+            return None
+        slot, name, station = press
+        if dev.has_tv_input():
+            # A soundbar the TV wakes over CEC comes up on its last source; if
+            # that also arrives as a "selection", playing it would put the
+            # radio over the TV. Until that's been observed, only record it
+            # and leave soundbars to the poll loop (which knows about TV wake).
+            log.info(f"[PUSH] {dev.name} preset {slot} ({name}) selected — soundbar, left to the poll")
+            return None
+        url = self.dlna.stream_url(station)
+        self._press_handled[dev.host] = time.monotonic()
+        log.info(f"[PUSH] {dev.name} preset {slot} ({name}) pressed → {url}")
+        # The renderer silently drops a Play sent while the speaker is still
+        # falling into INVALID_SOURCE (~120 ms after the press).
+        time.sleep(PRESS_PLAY_DELAY)
+        ok = False
+        for attempt in (1, 2):
+            dev.play_via_avt(url)
+            for _ in range(6):
+                time.sleep(1)
+                if dev.is_playing():
+                    ok = True
+                    break
+            self._press_handled[dev.host] = time.monotonic()
+            if ok:
+                break
+            log.warning(f"[PUSH] {dev.name} preset {slot} not playing after attempt {attempt}")
+        history_event("speaker", dev.name,
+                      f"preset {slot} ({name}) pressed — {'playing' if ok else 'did not start'}")
+        return ok
 
     def reboot_device(self, dev):
         """Reboot a speaker, then rescan until it's back (matched by deviceID —
