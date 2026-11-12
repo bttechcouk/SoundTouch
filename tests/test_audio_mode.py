@@ -1,6 +1,7 @@
 """Dialogue mode: transition rules, /audiodspcontrols parsing, support probe
 and the per-speaker auto setting. No speaker hardware — _get / _post / the
 HTTP session are stubbed."""
+import types
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -114,3 +115,94 @@ def test_store_defaults_on_and_keys_by_device_id(tmp_path):
 ])
 def test_tv_wake_action(woke, elapsed, source, playing, want):
     assert stc.tv_wake_action(woke, elapsed, source, playing, grace=8) == want
+
+
+# ── lip-sync delay: remembered and restored on the TV input ──────────────────
+def test_av_delay_store_roundtrip_keeps_auto_tv(tmp_path):
+    store = stc.AudioModeStore(tmp_path / "audio_mode.json")
+    dev = types.SimpleNamespace(device_id="C4F31264FB9F", host="10.0.0.5")
+    assert store.av_delay(dev) is None
+    store.set_auto(dev, False)
+    store.set_av_delay(dev, 40)
+    assert store.av_delay(dev) == 40
+    assert store.auto_enabled(dev) is False
+    store.set_av_delay(dev, 0)
+    assert store.av_delay(dev) == 0
+
+
+@pytest.mark.parametrize("prev,source,saved,expected", [
+    ("STANDBY", "PRODUCT", 40, 40),     # TV on after the bar slept
+    ("SPOTIFY", "PRODUCT", 40, 40),     # music → TV
+    ("STANDBY", "PRODUCT", 0, 0),       # an explicit 0 is restored too
+    ("PRODUCT", "PRODUCT", 40, None),   # staying on TV: leave manual changes
+    ("STANDBY", "SPOTIFY", 40, None),   # music is never delayed
+    ("PRODUCT", "STANDBY", 40, None),
+    (None, "PRODUCT", 40, None),        # controller start-up
+    ("STANDBY", "PRODUCT", None, None), # never set
+])
+def test_av_delay_for_transition(prev, source, saved, expected):
+    assert stc.av_delay_for_transition(prev, source, saved) == expected
+
+
+# ── saved vs live lip-sync delay shown in the UI ─────────────────────────────
+def test_merge_saved_av_delay_shows_saved_value():
+    boom = lambda: pytest.fail("source should not be read when nothing differs")
+    assert stc.merge_saved_av_delay({"av_delay": 10, "cec": True}, 10, boom) == \
+        {"av_delay": 10, "cec": True}
+    assert stc.merge_saved_av_delay({"av_delay": 0}, None, boom) == {"av_delay": 0}
+    assert stc.merge_saved_av_delay({"cec": True}, 10, boom) == {"cec": True}
+
+
+@pytest.mark.parametrize("source,expected", [
+    ("STANDBY", {"av_delay": 10}),                      # asleep: the bar just reports 0
+    ("SPOTIFY", {"av_delay": 10}),
+    ("PRODUCT", {"av_delay": 10, "av_delay_live": 0}),  # on TV and really different
+])
+def test_merge_saved_av_delay_flags_real_difference_on_tv(source, expected):
+    assert stc.merge_saved_av_delay({"av_delay": 0}, 10, lambda: source) == expected
+
+
+# ── soundbar event log ───────────────────────────────────────────────────────
+def _bar(dsp):
+    """Fake soundbar whose /audiodspcontrols answers from the mutable `dsp`."""
+    def _get(path):
+        assert path == "/audiodspcontrols"
+        return ET.fromstring(f'<audiodspcontrols audiomode="{dsp["mode"]}" '
+                             f'videosyncaudiodelay="{dsp["delay"]}"/>')
+    return types.SimpleNamespace(host="10.0.0.5", name="Lounge", _get=_get,
+                                 capabilities=lambda: {"audiodspcontrols"})
+
+
+def test_record_bar_state_logs_changes_but_not_standby(monkeypatch):
+    seen = []
+    monkeypatch.setattr(stc, "bar_event", lambda dev, msg, tag="BAR": seen.append(msg))
+    dsp = {"mode": "AUDIO_MODE_NORMAL", "delay": 10}
+    dev, dsp_seen, dsp_next = _bar(dsp), {}, {}
+    rec = lambda prev, src, acct="": stc.AppState._record_bar_state(
+        None, dev, prev, src, acct, dsp_seen, dsp_next)
+
+    rec("STANDBY", "PRODUCT", "TV")                 # wakes: source + state on wake
+    assert seen == ["source STANDBY → PRODUCT/TV", "audio mode normal, lip-sync delay 10 ms"]
+
+    seen.clear(); dsp["delay"] = 0
+    rec("PRODUCT", "PRODUCT", "TV")                 # within 10 s: not re-read
+    assert seen == []
+    dsp_next.clear()
+    rec("PRODUCT", "PRODUCT", "TV")                 # a real reset while on TV
+    assert seen == ["lip-sync delay 10 → 0 ms"]
+
+    seen.clear()
+    rec("PRODUCT", "STANDBY")                       # asleep: never read (reports 0)
+    assert seen == ["source PRODUCT → STANDBY"] and dsp_seen == {}
+
+
+def test_bar_event_writes_the_event_file(tmp_path, monkeypatch):
+    import logging
+    logger = logging.getLogger("soundtouch.events.test")
+    logger.propagate = False
+    h = logging.FileHandler(tmp_path / "ev.log")
+    logger.addHandler(h); logger.setLevel(logging.INFO)
+    monkeypatch.setattr(stc, "events", logger)
+    stc.bar_event(types.SimpleNamespace(host="10.0.0.5", name="Lounge"), "source A → B")
+    h.close()
+    assert "Lounge (10.0.0.5)  source A → B" in (tmp_path / "ev.log").read_text()

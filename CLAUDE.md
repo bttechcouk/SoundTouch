@@ -137,11 +137,17 @@ Key API endpoints:
 - `GET /api/matter/qr`
 - `GET /api/audio-mode?host=` / `/api/audio-mode/set?host=&mode=dialog|normal` / `/api/audio-mode/auto?host=&enabled=` — dialogue mode + per-speaker "Auto on TV" setting
 
+**Spotify (`SpotifyAccountStore`, `SpotifyClient`, module global `SPOTIFY`)** — browse via the Web API, play by logging the speaker in. A speaker only plays Spotify while ZeroConf `getInfo` (port 8200) shows an `activeUser`; phones set it by casting and restarts clear it, while `/sources` keeps saying READY (stale). `ensure_login()` pushes the account's access token with ZeroConf `addUser` (`clientKey` = device clientID, `tokenType=accesstoken`), then `play()` wakes the speaker onto its Spotify input, finds it in `/me/player/devices` and calls `PUT /me/player/play`, confirming the *requested* context/track is playing (waking resumes the old one) and retrying. Local `/select` / preset keys of Spotify content are unreliable — don't use them. `keep_speakers_logged_in()` (every 5 min) refreshes logins on idle speakers linked to a linked account, never touching one logged in as someone else or playing Spotify. `play_preset()` routes SPOTIFY presets through `SPOTIFY.play()` (so app preset buttons and alarms work after restarts); physical preset buttons still can't (the speaker doesn't report which preset was pressed). Accounts: `data/spotify/<user_id>.json` (0600); Client ID from `$SPOTIFY_CLIENT_ID` or `data/spotify/app.json`; login is PKCE paste-back to `http://127.0.0.1:8888/api/spotify/callback`. Feb 2026 Web API quirks: `/playlists/{id}/items` (not `/tracks`), artist albums `limit` ≤ 10, artist top-tracks 403, Spotify-owned playlists 404 → `oembed()` for name/cover. Endpoints: `GET /api/spotify/accounts|login|link?url=|unlink|home|search?q=&type=|item?uri=|play?uri=&hosts=&offset=` (all take `account=`). Plan: `docs/plans/spotify-browser.md`.
+
 **`AppState` (line 5074)** — Singleton holding the device list, `PresetStore`, `SceneStore`, `AlarmStore`, `AlarmScheduler`, and `DLNAServer`. On init, starts the DLNA server and the `_upnp_autoplay_loop` daemon thread.
 
 `_upnp_autoplay_loop` (line 5098) — Polls Kitchen-like speakers every 2s. Fires `play_via_avt()` when it detects either `source=UPNP`+stopped (ContentItem has our DLNA URL) or a fresh transition into `source=INVALID_SOURCE` (the more common case when a physical preset button is pressed). Uses `prev_source`, `last_upnp_loc`, and `last_fired` dicts for debounce.
 
 `_audio_mode_loop` — Polls dialogue-capable soundbars every 2s. Entering the TV input (`source=PRODUCT`, from music or standby) sets dialogue mode; entering a music source sets normal. Rules live in the pure `audio_mode_for_transition()`. The target mode is re-applied for ~10s in case the bar resets it while settling. Settings in `AudioModeStore` (`data/audio_mode.json`, keyed by deviceID, default on).
+
+**Lip-sync delay** — in standby the bar *reports* `videosyncaudiodelay="0"` (and normal mode) but brings the real delay back on wake (verified overnight); it takes any whole ms. `/api/soundbar/set` saves `av_delay` in `AudioModeStore`, and `/api/soundbar` reports that saved value (`merge_saved_av_delay()`), adding `av_delay_live` only when the bar is on TV and really differs — the UI then shows a "Put it back" note. As a safety net `_restore_av_delay()` (same loop, rule in `av_delay_for_transition()`) re-checks it on entering the TV input.
+
+**Soundbar event log** — `soundbar_events.log` in the project root (256 KB × 3, a few lines a day) via `bar_event()`: source changes, DSP mode / lip-sync delay on wake and on change (`_record_bar_state()`, read every 10 s, never while idle), settings set from the app, and watcher actions. Look here first — `soundtouch.log` only reaches back ~45 minutes.
 
 **TV wake** (`tv_wake_action()`, also in `_audio_mode_loop`) — turning the TV on wakes the soundbar over HDMI-CEC, but it comes up on its last source. If a soundbar (`has_tv_input()`: `PRODUCT/TV` in `/sources`) goes `STANDBY` → a music source and isn't playing within `TV_WAKE_GRACE` (8 s), the watcher selects `PRODUCT/TV`. Don't select the TV input while the TV may be off: with CEC on that turns a Samsung TV on (Anynet+ has no separate setting for it), which is why an earlier "park on TV before power-off" approach was reverted. `_upnp_autoplay_loop` likewise won't auto-play a soundbar coming out of standby onto its last radio station.
 
@@ -173,7 +179,7 @@ Commissioning state is persisted to `matter_bridge/data/matter/bridge.json`. Del
 
 ## Web UI (`web/` directory — `index.html`, `app.css`, `app.js`)
 
-**Tabs:** Player, Presets, Groups, Settings. Active tab is saved to `localStorage`.
+**Tabs:** Player, Spotify, Presets, Groups, Settings (`TAB_ORDER` in app.js; the indicator width is `/5` in app.css). Active tab is saved to `localStorage`.
 
 **Key JS functions:**
 - `setActive(host)` — switch active speaker; triggers poll and reloads any open Settings sections
@@ -183,6 +189,8 @@ Commissioning state is persisted to `matter_bridge/data/matter/bridge.json`. Del
 - `applyState(d)` — applies `/api/state` response to the Player UI
 - `toggleSection(bodyId, chevronId)` — expand/collapse a collapsible panel; triggers lazy-load of section data on first open
 - `switchTab(name)` — switches visible page
+
+**Spotify tab — `web/spotify.js`** (separate module, loaded after app.js and using its globals): `SP` state; views home / search / detail rendered into `#sp-root`; `spPlay()` → `/api/spotify/play` (active speaker, or several from the speaker sheet); track taps pass `offset`; ☆ Preset → `/api/spotify/save-preset`; Settings → Spotify (`#sp-settings`, lazy-loaded via `toggleSection`) lists accounts and runs the paste-back login. Search input is never re-rendered while typing (`spSyncSearchBox`).
 
 Settings sections (all collapsible via `toggleSection`): Discover Speakers, Speaker Details (with bass slider), Radio Presets (UPNP preset list with art + play, `loadUpnpStations()`), Preset Backup, Alarms, Scenes, Announce (TTS), Alexa Integration (Matter QR). When adding a new Settings section, register its lazy-load function in both `toggleSection()` and `setActive()`.
 

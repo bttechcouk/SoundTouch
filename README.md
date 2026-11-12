@@ -143,8 +143,9 @@ is plenty; the original Pi Zero / Pi 1 (ARMv6) can run the controller but not th
 The installer:
 1. Checks for Python 3.10+ and installs `requests`, `zeroconf`, `Pillow`, `gTTS` (distro packages first, pip for any gaps)
 2. Offers to install Node.js 22 LTS from NodeSource if Node 20+ is missing, then installs the Alexa bridge packages
-3. Opens firewall ports if ufw is active
-4. Installs systemd user services for both components (with lingering, so they start at boot) and waits for the web UI to answer
+3. Optionally asks for a Spotify Client ID (saved to `data/spotify/app.json`)
+4. Opens firewall ports if ufw is active
+5. Installs systemd user services for both components (with lingering, so they start at boot) and waits for the web UI to answer
 
 `bash install.sh --yes` does all of that unattended (`--no-matter`, `--no-service` to opt out).
 Re-running it is safe and is also how you update: `git pull && bash install.sh --yes`.

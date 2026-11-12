@@ -92,7 +92,7 @@ function collapseAll(pageId) {
   page.querySelectorAll('.qr-body').forEach(b => b.style.display = 'none');
   page.querySelectorAll('.qr-chevron').forEach(c => c.classList.remove('open'));
 }
-const TAB_ORDER = ['player', 'manage', 'groups', 'settings'];
+const TAB_ORDER = ['player', 'spotify', 'manage', 'groups', 'settings'];
 function switchTab(name) {
   const prev = document.querySelector('.tab.active')?.dataset?.tab;
   document.querySelectorAll('.tab').forEach(t =>
@@ -112,6 +112,7 @@ function switchTab(name) {
   collapseAll('page-' + name);
   if (name === 'manage')   { /* sections load on expand */ }
   if (name === 'groups')   { loadGroups(); }
+  if (name === 'spotify' && typeof spOpen === 'function') spOpen();
   if (name === 'settings') { /* sections load on expand */ }
   localStorage.setItem('activeTab', name);
 }
@@ -170,7 +171,11 @@ function syncSpeakerBar() {
   bar.classList.toggle('playing', !!row && row.classList.contains('playing'));
   bar.classList.toggle('offline', !!row && row.classList.contains('offline'));
   const others = document.querySelectorAll('#rooms-list .room-chip.playing:not(.active)').length;
-  document.getElementById('spk-others').textContent = others ? `+${others} playing` : '';
+  // Compact: the picker is half-width, and "+1 playing" squeezed the speaker
+  // name down to "D…". The title spells it out.
+  const oth = document.getElementById('spk-others');
+  oth.textContent = others ? `+${others}` : '';
+  oth.title = others ? `${others} other speaker${others>1?'s':''} playing` : '';
 }
 function toggleSpeakers() {
   const clip = document.getElementById('speakers-clip');
@@ -1049,21 +1054,38 @@ async function loadAudioControls() {
   el.querySelectorAll('.eq-slider').forEach(paintEq);
 }
 // AV delay slider + auto-off / HDMI-CEC switches (whatever the speaker reports)
+const AV_DELAY_STEP = 5;   // ms — the bar takes any whole number; finer isn't audible
+// The slider shows the saved delay; say so if the bar (on TV) is really on another
+function avDelayNote(sb) {
+  if (sb.av_delay_live == null) return '';
+  return `The bar is currently at ${sb.av_delay_live} ms, not your saved ${sb.av_delay} ms.
+    <button onclick="sendSoundbar('av_delay',${sb.av_delay})">Put it back</button>`;
+}
+let avDelayTimer;
+function nudgeAvDelay(dir) {
+  const sl = document.getElementById('eq-avdelay'); if (!sl) return;
+  const v = Math.max(0, Math.min(300, parseInt(sl.value) + dir*AV_DELAY_STEP));
+  if (v === parseInt(sl.value)) return;
+  sl.value = v; onEqInput('avdelay', sl, ' ms');
+  clearTimeout(avDelayTimer);            // several quick taps → one request
+  avDelayTimer = setTimeout(() => sendSoundbar('av_delay', v), 400);
+}
 function soundbarSettingsHtml(sb) {
   let html = '';
   if (sb.av_delay != null) html += `
     <div class="eq-head"><span title="Delays the sound to line up with the picture">Lip sync delay</span>
       <span class="eq-val" id="eqv-avdelay">${sb.av_delay} ms</span></div>
     <div style="display:flex;align-items:center;gap:10px">
-      <span class="bass-label">0</span>
+      <button class="eq-nudge" onclick="nudgeAvDelay(-1)" aria-label="Less delay">−</button>
       <div class="eq-track" style="flex:1;position:relative;padding-top:22px">
         <div class="eq-tooltip" id="eqt-avdelay"></div>
-        <input type="range" class="eq-slider" id="eq-avdelay" min="0" max="300" step="10"
+        <input type="range" class="eq-slider" id="eq-avdelay" min="0" max="300" step="${AV_DELAY_STEP}"
                value="${Math.min(sb.av_delay,300)}"
                oninput="onEqInput('avdelay',this,' ms')" onchange="sendSoundbar('av_delay',this.value)">
       </div>
-      <span class="bass-label">300</span>
-    </div>`;
+      <button class="eq-nudge" onclick="nudgeAvDelay(1)" aria-label="More delay">+</button>
+    </div>
+    <div class="eq-note" id="avdelay-note">${avDelayNote(sb)}</div>`;
   const sw = (key, label, title) => sb[key] == null ? '' : `
       <label class="sw-pill" title="${title}">
         <span>${label}</span>
@@ -1087,6 +1109,12 @@ async function sendSoundbar(name, value, input) {
       `&name=${name}&value=${value}`)).json();
     if (!r.ok) throw 0;
     toast(SOUNDBAR_MSG[name](r[name]));
+    const sl = document.getElementById('eq-avdelay');
+    if (name === 'av_delay' && sl) {
+      sl.value = Math.min(r.av_delay, 300); paintEq(sl);
+      document.getElementById('eqv-avdelay').textContent = r.av_delay + ' ms';
+      document.getElementById('avdelay-note').innerHTML = avDelayNote(r);
+    }
   } catch(e) {
     toast("Couldn't change that setting");
     if (input) input.checked = !input.checked;   // put the switch back
@@ -1379,6 +1407,7 @@ function toggleSection(bodyId, chevronId) {
   if (opening && bodyId === 'sec-stations')      loadStations();
   if (opening && bodyId === 'sec-scenes')        loadScenes();
   if (opening && bodyId === 'sec-alarms')        loadAlarms();
+  if (opening && bodyId === 'sec-spotify')       spLoadSettings();
   if (opening && bodyId === 'sec-maint')         loadMaint();
   if (opening && bodyId === 'sec-announce')      loadAnnounceSection();
 }
