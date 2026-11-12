@@ -97,7 +97,7 @@ Key methods:
 - `reboot()` — restarts the speaker via its TAP console on port 17000 (`sys reboot`; the 8090 API has no reboot). Never send anything else there — the console also has `sys factorydefault`. Fixes ST20s whose clock goes blank. `AppState.reboot_device()` then rescans until the deviceID reappears, since it can return on a new DHCP address; `GET /api/reboot?host=` / `/api/reboot/status?device_id=`
 - `has_clock()` — `<clockDisplay>true</clockDisplay>` in `/capabilities` (ST20s). **Weekly restart:** ST20 front-panel clocks go blank after running a while even though `/clockTime` stays correct (undetectable via the API); a restart fixes it. `MaintenanceStore` (`data/maintenance.json`, default Sunday 04:00 Europe/London) + `maintenance_due_key()` checked from `AlarmScheduler._tick`; `AppState.restart_clock_speakers()` reboots idle clock speakers (skips playing ones) and rediscovers them all in one `_rediscover()` pass. `GET /api/maintenance[/set]`, `/api/maintenance/run`; Settings → Weekly Restart
 
-**`PresetStore` (line 624)** — Reads/writes preset backups as JSON to `data/presets/<ip>.json` and custom station definitions to `data/stations/<id>.json`. `station_descriptor()` (line 706) returns the JSON the speaker fetches to resolve a `LOCAL_INTERNET_RADIO` stream URL.
+**`PresetStore` (line 624)** — Reads/writes preset backups as JSON to `data/presets/<deviceID>.json` (keyed by deviceID so they survive DHCP moves; methods take a device, or a key string — `AppState.backup_key(host)` resolves an offline speaker's ID from `_known`; a legacy `<ip>.json` for the speaker's *current* address is renamed on first use) and custom station definitions to `data/stations/<id>.json`. `station_descriptor()` (line 706) returns the JSON the speaker fetches to resolve a `LOCAL_INTERNET_RADIO` stream URL.
 
 **`DLNAServer` (line 727)** — Embedded UPnP MediaServer for speakers that lack `LOCAL_INTERNET_RADIO`. Runs SSDP announcements on UDP 1900 and serves:
 - `GET /dlna/device.xml` — UPnP device description
@@ -107,7 +107,7 @@ Key methods:
 
 `stream_url(station_id)` (line 760) returns the HTTP redirect URL used as the ContentItem location in UPNP presets. UUID is persisted to `data/dlna_uuid.txt`.
 
-**`SceneStore` (line 1040)** — Persists named scenes as JSON to `data/scenes/<id>.json`.
+**`SceneStore` (line 1040)** — Persists named scenes as JSON to `data/scenes/<id>.json`. Scenes store hosts plus a `device_ids` map (`scene_device_ids()`); `resolve_scene_hosts()` swaps in each speaker's current address when listing/activating.
 
 **`AlarmStore` / `AlarmScheduler` (lines 1074, 1113)** — Persist alarm definitions to `data/alarms.json`; background thread fires alarms at scheduled times.
 
@@ -198,7 +198,7 @@ Settings sections (all collapsible via `toggleSection`): Discover Speakers, Spea
 
 ```
 data/
-  presets/<ip>.json     # per-speaker preset backups
+  presets/<deviceID>.json  # per-speaker preset backups (old <ip>.json files are adopted on sight)
   stations/<id>.json    # custom station definitions (name, stream_url, art_url)
   scenes/<id>.json      # named multi-speaker scenes
   alarms.json           # alarm definitions
