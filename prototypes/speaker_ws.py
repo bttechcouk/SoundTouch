@@ -8,88 +8,22 @@ speaker and prints every notification with a millisecond timestamp, so the
 delay between a physical button press and the notification can be compared
 with the controller's 2-second poll.
 
-Standard library only — a deliberately small RFC 6455 client (text frames,
-ping/pong, close), so the real thing would not need a new dependency.
+Uses the controller's own SpeakerSocket (a small stdlib-only RFC 6455 client),
+which now drives preset-button handling for UPnP-only speakers; this script
+stays as a way to watch what a speaker pushes.
 
     python3 prototypes/speaker_ws.py 10.10.10.128            # until Ctrl-C
     python3 prototypes/speaker_ws.py 10.10.10.128 --seconds 600
 """
 import argparse
-import base64
 import datetime
-import os
-import socket
-import struct
+import pathlib
+import sys
 import time
 import xml.etree.ElementTree as ET
 
-
-class SpeakerSocket:
-    """Minimal WebSocket client for a speaker's notification channel."""
-
-    def __init__(self, host, port=8080, timeout=10):
-        self.sock = socket.create_connection((host, port), timeout=timeout)
-        key = base64.b64encode(os.urandom(16)).decode()
-        self.sock.sendall((
-            f"GET / HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\n"
-            f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
-            "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: gabbo\r\n\r\n").encode())
-        head = b""
-        while b"\r\n\r\n" not in head:
-            chunk = self.sock.recv(1024)
-            if not chunk:
-                raise ConnectionError("speaker closed the connection during the handshake")
-            head += chunk
-        self.handshake, self._buf = head.split(b"\r\n\r\n", 1)
-        if b" 101 " not in self.handshake.split(b"\r\n", 1)[0]:
-            raise ConnectionError(f"not a WebSocket upgrade: {self.handshake[:80]!r}")
-
-    def _read(self, n):
-        while len(self._buf) < n:
-            chunk = self.sock.recv(4096)
-            if not chunk:
-                raise ConnectionError("speaker closed the connection")
-            self._buf += chunk
-        out, self._buf = self._buf[:n], self._buf[n:]
-        return out
-
-    def _send(self, opcode, payload=b""):
-        mask = os.urandom(4)                       # clients must mask
-        head = bytes([0x80 | opcode])
-        n = len(payload)
-        head += bytes([0x80 | n]) if n < 126 else bytes([0x80 | 126]) + struct.pack(">H", n)
-        self.sock.sendall(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
-
-    def recv(self, timeout=None):
-        """Next text message, or None on timeout. Answers pings itself."""
-        self.sock.settimeout(timeout)
-        text = b""
-        while True:
-            try:
-                b0, b1 = self._read(2)
-            except socket.timeout:
-                return None
-            self.sock.settimeout(10)               # a frame has started: finish it
-            n = b1 & 0x7F
-            if n == 126: n = struct.unpack(">H", self._read(2))[0]
-            elif n == 127: n = struct.unpack(">Q", self._read(8))[0]
-            mask = self._read(4) if b1 & 0x80 else None
-            data = self._read(n)
-            if mask:
-                data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
-            opcode = b0 & 0x0F
-            if opcode == 0x9:   self._send(0xA, data)          # ping → pong
-            elif opcode == 0x8: raise ConnectionError("speaker sent close")
-            elif opcode in (0x0, 0x1):
-                text += data
-                if b0 & 0x80:                                  # FIN
-                    return text.decode("utf-8", "replace")
-            self.sock.settimeout(timeout)
-
-    def close(self):
-        try: self._send(0x8)
-        except OSError: pass
-        self.sock.close()
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+from soundtouch_controller import SpeakerSocket  # noqa: E402
 
 
 def summarise(xml_text):
