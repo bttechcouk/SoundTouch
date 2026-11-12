@@ -28,3 +28,14 @@ def dlna(store):
     """A DLNAServer wired to the temp-backed store (no sockets opened)."""
     return stc.DLNAServer(uuid="test-uuid", http_port=8888,
                           local_ip="192.168.1.10", store=store)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_history(monkeypatch):
+    """history_event() must never append to the real events.log from a test."""
+    import logging
+    null = logging.getLogger("soundtouch.events.null")
+    null.propagate = False
+    if not null.handlers:
+        null.addHandler(logging.NullHandler())
+    monkeypatch.setattr(stc, "events", null)

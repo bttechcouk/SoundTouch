@@ -71,7 +71,7 @@ LOG_FILE      = pathlib.Path(__file__).parent / "soundtouch.log"
 SCENES_DIR    = DATA_DIR / "scenes"
 ALARMS_FILE   = DATA_DIR / "alarms.json"
 AUDIO_MODE_FILE = DATA_DIR / "audio_mode.json"
-EVENT_LOG_FILE  = pathlib.Path(__file__).parent / "soundbar_events.log"
+EVENT_LOG_FILE  = pathlib.Path(__file__).parent / "events.log"
 MAINTENANCE_FILE = DATA_DIR / "maintenance.json"
 # A soundbar that wakes from standby into a music source and hasn't started
 # playing after this many seconds was woken by the TV (CEC) → switch to TV.
@@ -193,31 +193,59 @@ log = _setup_logger()
 
 
 def _setup_event_logger(path=EVENT_LOG_FILE):
-    """Slim, long-lived record of what the soundbars did: source changes, DSP
-    mode / lip-sync delay changes, settings changed from the app and anything
-    the watcher did about them. soundtouch.log drowns these in poll chatter
-    and only reaches back ~45 minutes; this is a few lines a day (256 KB × 3)."""
+    """Slim, long-lived history of the things worth knowing later: what the
+    soundbar did, whether alarms played, speakers dropping off or changing
+    address, restarts. soundtouch.log drowns these in poll chatter and only
+    reaches back ~45 minutes; this is a few lines a day (256 KB × 3).
+    One event per line: UTC time, kind, who, message — tab separated."""
     logger = logging.getLogger("soundtouch.events")
     logger.setLevel(logging.INFO)
     logger.propagate = False
     if not logger.handlers:
         h = RotatingFileHandler(path, maxBytes=256_000, backupCount=3,
                                 encoding="utf-8", delay=True)
-        h.setFormatter(logging.Formatter("%(asctime)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+        h.setFormatter(logging.Formatter("%(message)s"))
         logger.addHandler(h)
     return logger
 
 
 events = _setup_event_logger()
+HISTORY_KINDS = ("soundbar", "alarm", "speaker")
+
+
+def history_event(kind, who, msg):
+    """Add a line to the history (events.log) shown in Settings → History."""
+    try:
+        clean = lambda v: " ".join(str(v).split())
+        now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+        events.info("\t".join((now, kind, clean(who), clean(msg))))
+    except Exception as e:
+        log.debug(f"[HISTORY] write failed: {e}")
+
+
+def read_history(limit=200, kind=None, path=EVENT_LOG_FILE):
+    """Newest-first [{t, kind, who, msg}] from events.log and its rotated
+    copies, optionally only one kind."""
+    path, out = pathlib.Path(path), []
+    for f in [path] + [path.with_name(f"{path.name}.{i}") for i in range(1, 4)]:
+        try:
+            lines = f.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            parts = line.split("\t")
+            if len(parts) != 4 or (kind and parts[1] != kind):
+                continue
+            out.append(dict(zip(("t", "kind", "who", "msg"), parts)))
+            if len(out) >= limit:
+                return out
+    return out
 
 
 def bar_event(dev, msg, tag="BAR"):
-    """Record a soundbar event in soundbar_events.log and the main log."""
+    """Record a soundbar event in the history and the main log."""
     log.info(f"[{tag}] {dev.host} {msg}")
-    try:
-        events.info(f"{getattr(dev, 'name', '') or dev.host} ({dev.host})  {msg}")
-    except Exception as e:
-        log.debug(f"[BAR] event log write failed: {e}")
+    history_event("soundbar", getattr(dev, "name", "") or dev.host, msg)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1783,6 +1811,7 @@ class AlarmScheduler:
         dev = self._device(alarm)
         if not dev:
             log.warning(f"[ALARM] '{name}': speaker {alarm.get('host')} not found")
+            history_event("alarm", alarm.get("host") or "?", f"'{name}': speaker not found")
             self._store.record_result(alarm["id"], fired_at, "speaker not found")
             return
         log.info(f"[ALARM] Firing '{name}' — {dev.name} ({dev.host}) preset {n}")
@@ -1800,6 +1829,7 @@ class AlarmScheduler:
                 break
             log.warning(f"[ALARM] '{name}' not playing after attempt {attempt}")
         log.info(f"[ALARM] '{name}' result: {result}")
+        history_event("alarm", dev.name, f"'{name}' (preset {n}): {result}")
         self._store.record_result(alarm["id"], fired_at, result)
 
 
@@ -2570,6 +2600,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": bool(ok)})
             else:
                 self._json({g: dev.get_audio_controls(g) for g in dev.AUDIO_CONTROL_PATHS})
+
+        # ── history (soundbar events, alarm results, speaker drop-offs) ──────
+        elif path == "/api/history":
+            kind = qs.get("kind",[""])[0]
+            try: limit = max(1, min(1000, int(qs.get("limit",["200"])[0])))
+            except ValueError: limit = 200
+            self._json(read_history(limit, kind if kind in HISTORY_KINDS else None))
 
         # ── soundbar settings (AV delay, auto-off, CEC, attached speakers) ───
         elif path in ("/api/soundbar", "/api/soundbar/set"):
@@ -4000,6 +4037,7 @@ class AppState:
                 back = next((d for d in self.devices if d.device_id == did), None)
                 if back:
                     log.info(f"[REBOOT] {pending[did]} back at {back.host}")
+                    history_event("speaker", pending[did], f"restarted — back at {back.host}")
                     self.reboot_status[did] = {"state": "back", "host": back.host, "name": pending[did]}
                     found[did] = back.host
                     del pending[did]
@@ -4008,6 +4046,7 @@ class AppState:
             time.sleep(20)
         for did, name in pending.items():
             log.warning(f"[REBOOT] {name} not found after reboot")
+            history_event("speaker", name, "restarted — not found afterwards")
             self.reboot_status[did] = {"state": "lost", "host": None, "name": name}
             found[did] = None
         return found
@@ -4026,12 +4065,14 @@ class AppState:
                 continue
             if dev.is_playing():
                 result[dev.name] = "skipped (playing)"
+                history_event("speaker", dev.name, f"{reason}: restart skipped (playing)")
                 continue
             if dev.reboot():
                 self.reboot_status[dev.device_id] = {"state": "rebooting", "host": None, "name": dev.name}
                 pending[dev.device_id] = dev.name
             else:
                 result[dev.name] = "restart refused"
+                history_event("speaker", dev.name, f"{reason}: restart refused")
         for did, host in (self._rediscover(pending) if pending else {}).items():
             result[pending[did]] = f"restarted ({host})" if host else "not back yet"
         log.info(f"[MAINT] {reason} done: {result}")
@@ -4069,8 +4110,10 @@ class AppState:
                         dev = self.add_device(host)
                         if dev and dev.device_id == did:
                             log.info(f"[WATCHDOG] {name} back at {host} — re-added")
+                            history_event("speaker", name, f"missing from the list — back at {host}")
                         elif dev:            # someone else answers there now
                             log.info(f"[WATCHDOG] {host} is now {dev.name}, not {name}")
+                            history_event("speaker", name, f"its address {host} now belongs to {dev.name}")
                         else:
                             lost.append(name)          # still missing → an occasional rescan looks for it
                 now = time.monotonic()
@@ -4081,14 +4124,19 @@ class AppState:
                 if (gone and now - last_scan > 300) or (lost and now - last_scan > 1800):
                     names = [f"{d.name} ({d.host})" for d in gone] + [f"{n} (missing)" for n in lost]
                     log.info(f"[WATCHDOG] not answering: {names} — rescanning")
+                    for d in gone:
+                        history_event("speaker", d.name, f"not answering at {d.host}")
+                    for n in lost:
+                        history_event("speaker", n, "still missing — rescanning")
                     last_scan = time.monotonic()
                     before = {d.device_id: d.host for d in devices}
                     self.scan()
                     with self._lock:
-                        moved = [f"{d.name} {before[d.device_id]}→{d.host}" for d in self.devices
+                        moved = [(d.name, before[d.device_id], d.host) for d in self.devices
                                  if d.device_id in before and before[d.device_id] != d.host]
-                    if moved:
-                        log.info(f"[WATCHDOG] speakers moved: {moved}")
+                    for name, old, new in moved:
+                        log.info(f"[WATCHDOG] {name} moved {old} → {new}")
+                        history_event("speaker", name, f"moved address {old} → {new}")
             except Exception as e:
                 log.warning(f"[WATCHDOG] {e}")
 

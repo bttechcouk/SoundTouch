@@ -194,15 +194,3 @@ def test_record_bar_state_logs_changes_but_not_standby(monkeypatch):
     seen.clear()
     rec("PRODUCT", "STANDBY")                       # asleep: never read (reports 0)
     assert seen == ["source PRODUCT → STANDBY"] and dsp_seen == {}
-
-
-def test_bar_event_writes_the_event_file(tmp_path, monkeypatch):
-    import logging
-    logger = logging.getLogger("soundtouch.events.test")
-    logger.propagate = False
-    h = logging.FileHandler(tmp_path / "ev.log")
-    logger.addHandler(h); logger.setLevel(logging.INFO)
-    monkeypatch.setattr(stc, "events", logger)
-    stc.bar_event(types.SimpleNamespace(host="10.0.0.5", name="Lounge"), "source A → B")
-    h.close()
-    assert "Lounge (10.0.0.5)  source A → B" in (tmp_path / "ev.log").read_text()

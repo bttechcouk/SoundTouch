@@ -1252,6 +1252,35 @@ function _maintRender(c) {
   document.getElementById('maint-info').innerHTML =
     `${c.enabled?`Every ${MAINT_DAYS[c.day]} at ${c.time}`:'Off'} · Speakers: ${spk}<br>${last}`;
 }
+// ── History (events.log: soundbar, alarms, speakers) ─────────────────────────
+let histKind = '';
+function setHistKind(btn) {
+  histKind = btn.dataset.kind;
+  document.querySelectorAll('.hist-chip').forEach(b => b.classList.toggle('active', b === btn));
+  loadHistory();
+}
+function histEsc(v) {
+  return String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+async function loadHistory() {
+  const el = document.getElementById('hist-list'); if (!el) return;
+  let ev;
+  try { ev = await (await fetch('/api/history?limit=200' + (histKind ? '&kind='+histKind : ''))).json(); }
+  catch(e) { el.innerHTML = '<p class="hist-empty">Could not load the history.</p>'; return; }
+  if (!ev.length) { el.innerHTML = '<p class="hist-empty">Nothing recorded yet.</p>'; return; }
+  let day = '', html = '';
+  for (const e of ev) {
+    const d  = new Date(e.t);           // stored in UTC, shown in this phone's time
+    const dl = d.toLocaleDateString(undefined, {weekday:'short', day:'numeric', month:'short'});
+    if (dl !== day) { day = dl; html += `<div class="hist-day">${dl}</div>`; }
+    html += `<div class="hist-row">
+      <span class="hist-time">${d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
+      <span class="hist-dot hist-${histEsc(e.kind)}"></span>
+      <span class="hist-text"><b>${histEsc(e.who)}</b> ${histEsc(e.msg)}</span></div>`;
+  }
+  el.innerHTML = html;
+}
+
 async function loadMaint() {
   try { _maintRender(await (await fetch('/api/maintenance')).json()); } catch(e) {}
 }
@@ -1409,6 +1438,7 @@ function toggleSection(bodyId, chevronId) {
   if (opening && bodyId === 'sec-alarms')        loadAlarms();
   if (opening && bodyId === 'sec-spotify')       spLoadSettings();
   if (opening && bodyId === 'sec-maint')         loadMaint();
+  if (opening && bodyId === 'sec-history')       loadHistory();
   if (opening && bodyId === 'sec-announce')      loadAnnounceSection();
 }
 function loadAnnounceSection() {
