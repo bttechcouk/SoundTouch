@@ -756,3 +756,21 @@ header{padding:calc(16px + env(safe-area-inset-top,0px)) 20px 0;
 .sp-step textarea{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--fg);border-radius:8px;
   padding:8px 10px;font-family:ui-monospace,Menlo,monospace;font-size:12px;resize:vertical;outline:none;margin-bottom:8px}
 .sp-step textarea:focus{border-color:var(--blue)}
+
+/* ── Settings → History ─────────────────────────────────────────────────── */
+.hist-filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.hist-chip{background:var(--surface2);border:1px solid var(--border);color:var(--fg2);
+  border-radius:14px;padding:5px 12px;font-size:12px;cursor:pointer}
+.hist-chip.active{background:var(--blue-dim);color:var(--blue-light);border-color:var(--blue)}
+#hist-list{max-height:55vh;overflow-y:auto}
+.hist-day{font-size:11px;font-weight:600;color:var(--fg3);text-transform:uppercase;
+  letter-spacing:.06em;margin:12px 0 4px}
+.hist-row{display:flex;gap:8px;align-items:baseline;padding:5px 0;font-size:13px;
+  color:var(--fg2);border-bottom:1px solid var(--border)}
+.hist-time{flex-shrink:0;width:42px;color:var(--fg3);font-variant-numeric:tabular-nums}
+.hist-dot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:var(--fg3)}
+.hist-dot.hist-soundbar{background:var(--blue)}
+.hist-dot.hist-alarm{background:var(--amber)}
+.hist-text{min-width:0;overflow-wrap:anywhere}
+.hist-text b{color:var(--fg);font-weight:600}
+.hist-empty{font-size:12px;color:var(--fg3)}

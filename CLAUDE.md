@@ -53,6 +53,7 @@ journalctl --user -u soundtouch-matter -f                # bridge live logs
 ## Logs
 
 - Controller: `soundtouch.log` in project root (rotates at 1 MB, keeps 5 files). Console shows INFO+; file shows DEBUG+.
+- History: `events.log` in project root — long-lived record of soundbar, alarm and speaker events (see History below).
 - Matter bridge: `matter_bridge/matter_bridge.log` (appended, not rotated) and systemd journal.
 
 ## Dependencies
@@ -147,7 +148,7 @@ Key API endpoints:
 
 **Lip-sync delay** — in standby the bar *reports* `videosyncaudiodelay="0"` (and normal mode) but brings the real delay back on wake (verified overnight); it takes any whole ms. `/api/soundbar/set` saves `av_delay` in `AudioModeStore`, and `/api/soundbar` reports that saved value (`merge_saved_av_delay()`), adding `av_delay_live` only when the bar is on TV and really differs — the UI then shows a "Put it back" note. As a safety net `_restore_av_delay()` (same loop, rule in `av_delay_for_transition()`) re-checks it on entering the TV input.
 
-**Soundbar event log** — `soundbar_events.log` in the project root (256 KB × 3, a few lines a day) via `bar_event()`: source changes, DSP mode / lip-sync delay on wake and on change (`_record_bar_state()`, read every 10 s, never while idle), settings set from the app, and watcher actions. Look here first — `soundtouch.log` only reaches back ~45 minutes.
+**History (`events.log`)** — project root, 256 KB × 3, a few lines a day, one tab-separated event per line (UTC time, kind `soundbar|alarm|speaker`, who, message) via `history_event()`. `bar_event()` records soundbar source changes, DSP mode / lip-sync delay on wake and on change (`_record_bar_state()`, read every 10 s, never while idle), settings set from the app and watcher actions; `AlarmScheduler._fire` records each alarm's result; the watchdog / reboot code records speakers not answering, moving address and restarting. `GET /api/history?limit=&kind=` (`read_history()`, newest first) feeds Settings → History (`loadHistory()`). Look here first — `soundtouch.log` only reaches back ~45 minutes.
 
 **TV wake** (`tv_wake_action()`, also in `_audio_mode_loop`) — turning the TV on wakes the soundbar over HDMI-CEC, but it comes up on its last source. If a soundbar (`has_tv_input()`: `PRODUCT/TV` in `/sources`) goes `STANDBY` → a music source and isn't playing within `TV_WAKE_GRACE` (8 s), the watcher selects `PRODUCT/TV`. Don't select the TV input while the TV may be off: with CEC on that turns a Samsung TV on (Anynet+ has no separate setting for it), which is why an earlier "park on TV before power-off" approach was reverted. `_upnp_autoplay_loop` likewise won't auto-play a soundbar coming out of standby onto its last radio station.
 
